@@ -410,7 +410,6 @@
 			<param index="8" name="count" type="int" default="-1" />
 			<description>
 				Draws a triangle array on the [CanvasItem] pointed to by the [param item] [RID]. This is internally used by [Line2D] and [StyleBoxFlat] for rendering. [method canvas_item_add_triangle_array] is highly flexible, but more complex to use than [method canvas_item_add_polygon].
-				[b]Note:[/b] [param count] is unused and can be left unspecified.
 			</description>
 		</method>
 		<method name="canvas_item_attach_skeleton">

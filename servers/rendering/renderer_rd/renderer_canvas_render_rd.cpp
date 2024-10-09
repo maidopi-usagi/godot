@@ -100,7 +100,7 @@ void RendererCanvasRenderRD::_update_transform_to_mat4(const Transform3D &p_tran
 	p_mat4[15] = 1;
 }
 
-RendererCanvasRender::PolygonID RendererCanvasRenderRD::request_polygon(const Vector<int> &p_indices, const Vector<Point2> &p_points, const Vector<Color> &p_colors, const Vector<Point2> &p_uvs, const Vector<int> &p_bones, const Vector<float> &p_weights) {
+RendererCanvasRender::PolygonID RendererCanvasRenderRD::request_polygon(const Vector<int> &p_indices, const Vector<Point2> &p_points, const Vector<Color> &p_colors, const Vector<Point2> &p_uvs, const Vector<int> &p_bones, const Vector<float> &p_weights, int p_count) {
 	// Care must be taken to generate array formats
 	// in ways where they could be reused, so we will
 	// put single-occuring elements first, and repeated
@@ -111,19 +111,19 @@ RendererCanvasRender::PolygonID RendererCanvasRenderRD::request_polygon(const Ve
 
 	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
 
-	uint32_t vertex_count = p_points.size();
+	uint32_t vertex_count = p_count < 0 ? p_points.size() : p_count;
 	uint32_t stride = 2; //vertices always repeat
-	if ((uint32_t)p_colors.size() == vertex_count || p_colors.size() == 1) {
+	if ((uint32_t)p_colors.size() >= vertex_count || p_colors.size() == 1) {
 		stride += 4;
 	}
-	if ((uint32_t)p_uvs.size() == vertex_count) {
+	if ((uint32_t)p_uvs.size() >= vertex_count) {
 		stride += 2;
 	}
-	if ((uint32_t)p_bones.size() == vertex_count * 4 && (uint32_t)p_weights.size() == vertex_count * 4) {
+	if ((uint32_t)p_bones.size() >= vertex_count * 4 && (uint32_t)p_weights.size() == vertex_count * 4) {
 		stride += 4;
 	}
 
-	uint32_t buffer_size = stride * p_points.size();
+	uint32_t buffer_size = stride * vertex_count;
 
 	Vector<uint8_t> polygon_buffer;
 	polygon_buffer.resize(buffer_size * sizeof(float));
@@ -157,7 +157,7 @@ RendererCanvasRender::PolygonID RendererCanvasRenderRD::request_polygon(const Ve
 		}
 
 		//colors
-		if ((uint32_t)p_colors.size() == vertex_count || p_colors.size() == 1) {
+		if ((uint32_t)p_colors.size() >= vertex_count || p_colors.size() == 1) {
 			RD::VertexAttribute vd;
 			vd.format = RD::DATA_FORMAT_R32G32B32A32_SFLOAT;
 			vd.offset = base_offset * sizeof(float);
@@ -197,7 +197,7 @@ RendererCanvasRender::PolygonID RendererCanvasRenderRD::request_polygon(const Ve
 		}
 
 		//uvs
-		if ((uint32_t)p_uvs.size() == vertex_count) {
+		if ((uint32_t)p_uvs.size() >= vertex_count) {
 			RD::VertexAttribute vd;
 			vd.format = RD::DATA_FORMAT_R32G32_SFLOAT;
 			vd.offset = base_offset * sizeof(float);
@@ -225,7 +225,7 @@ RendererCanvasRender::PolygonID RendererCanvasRenderRD::request_polygon(const Ve
 		}
 
 		//bones
-		if ((uint32_t)p_indices.size() == vertex_count * 4 && (uint32_t)p_weights.size() == vertex_count * 4) {
+		if ((uint32_t)p_indices.size() >= vertex_count * 4 && (uint32_t)p_weights.size() == vertex_count * 4) {
 			RD::VertexAttribute vd;
 			vd.format = RD::DATA_FORMAT_R16G16B16A16_UINT;
 			vd.offset = base_offset * sizeof(float);
@@ -258,7 +258,7 @@ RendererCanvasRender::PolygonID RendererCanvasRenderRD::request_polygon(const Ve
 		}
 
 		//weights
-		if ((uint32_t)p_weights.size() == vertex_count * 4) {
+		if ((uint32_t)p_weights.size() >= vertex_count * 4) {
 			RD::VertexAttribute vd;
 			vd.format = RD::DATA_FORMAT_R16G16B16A16_UNORM;
 			vd.offset = base_offset * sizeof(float);

@@ -2391,17 +2391,17 @@ void RasterizerCanvasGLES3::reset_canvas() {
 void RasterizerCanvasGLES3::draw_lens_distortion_rect(const Rect2 &p_rect, float p_k1, float p_k2, const Vector2 &p_eye_center, float p_oversample) {
 }
 
-RendererCanvasRender::PolygonID RasterizerCanvasGLES3::request_polygon(const Vector<int> &p_indices, const Vector<Point2> &p_points, const Vector<Color> &p_colors, const Vector<Point2> &p_uvs, const Vector<int> &p_bones, const Vector<float> &p_weights) {
+RendererCanvasRender::PolygonID RasterizerCanvasGLES3::request_polygon(const Vector<int> &p_indices, const Vector<Point2> &p_points, const Vector<Color> &p_colors, const Vector<Point2> &p_uvs, const Vector<int> &p_bones, const Vector<float> &p_weights, int p_count) {
 	// We interleave the vertex data into one big VBO to improve cache coherence
-	uint32_t vertex_count = p_points.size();
+	uint32_t vertex_count = p_count < 0 ? p_points.size() : p_count;
 	uint32_t stride = 2;
-	if ((uint32_t)p_colors.size() == vertex_count) {
+	if ((uint32_t)p_colors.size() >= vertex_count) {
 		stride += 4;
 	}
-	if ((uint32_t)p_uvs.size() == vertex_count) {
+	if ((uint32_t)p_uvs.size() >= vertex_count) {
 		stride += 2;
 	}
-	if ((uint32_t)p_bones.size() == vertex_count * 4 && (uint32_t)p_weights.size() == vertex_count * 4) {
+	if ((uint32_t)p_bones.size() >= vertex_count * 4 && (uint32_t)p_weights.size() == vertex_count * 4) {
 		stride += 4;
 	}
 
@@ -2412,7 +2412,7 @@ RendererCanvasRender::PolygonID RasterizerCanvasGLES3::request_polygon(const Vec
 	pb.count = vertex_count;
 	pb.index_buffer = 0;
 
-	uint32_t buffer_size = stride * p_points.size();
+	uint32_t buffer_size = stride * vertex_count;
 
 	Vector<uint8_t> polygon_buffer;
 	polygon_buffer.resize(buffer_size * sizeof(float));
@@ -2437,7 +2437,7 @@ RendererCanvasRender::PolygonID RasterizerCanvasGLES3::request_polygon(const Vec
 		}
 
 		// Next add colors
-		if ((uint32_t)p_colors.size() == vertex_count) {
+		if ((uint32_t)p_colors.size() >= vertex_count) {
 			glEnableVertexAttribArray(RS::ARRAY_COLOR);
 			glVertexAttribPointer(RS::ARRAY_COLOR, 4, GL_FLOAT, GL_FALSE, stride * sizeof(float), CAST_INT_TO_UCHAR_PTR(base_offset * sizeof(float)));
 
@@ -2456,7 +2456,7 @@ RendererCanvasRender::PolygonID RasterizerCanvasGLES3::request_polygon(const Vec
 			pb.color = p_colors.size() == 1 ? p_colors[0] : Color(1.0, 1.0, 1.0, 1.0);
 		}
 
-		if ((uint32_t)p_uvs.size() == vertex_count) {
+		if ((uint32_t)p_uvs.size() >= vertex_count) {
 			glEnableVertexAttribArray(RS::ARRAY_TEX_UV);
 			glVertexAttribPointer(RS::ARRAY_TEX_UV, 2, GL_FLOAT, GL_FALSE, stride * sizeof(float), CAST_INT_TO_UCHAR_PTR(base_offset * sizeof(float)));
 
@@ -2472,7 +2472,7 @@ RendererCanvasRender::PolygonID RasterizerCanvasGLES3::request_polygon(const Vec
 			glDisableVertexAttribArray(RS::ARRAY_TEX_UV);
 		}
 
-		if ((uint32_t)p_indices.size() == vertex_count * 4 && (uint32_t)p_weights.size() == vertex_count * 4) {
+		if ((uint32_t)p_indices.size() >= vertex_count * 4 && (uint32_t)p_weights.size() == vertex_count * 4) {
 			glEnableVertexAttribArray(RS::ARRAY_BONES);
 			glVertexAttribPointer(RS::ARRAY_BONES, 4, GL_UNSIGNED_INT, GL_FALSE, stride * sizeof(float), CAST_INT_TO_UCHAR_PTR(base_offset * sizeof(float)));
 
@@ -2492,7 +2492,7 @@ RendererCanvasRender::PolygonID RasterizerCanvasGLES3::request_polygon(const Vec
 			glDisableVertexAttribArray(RS::ARRAY_BONES);
 		}
 
-		if ((uint32_t)p_weights.size() == vertex_count * 4) {
+		if ((uint32_t)p_weights.size() >= vertex_count * 4) {
 			glEnableVertexAttribArray(RS::ARRAY_WEIGHTS);
 			glVertexAttribPointer(RS::ARRAY_WEIGHTS, 4, GL_FLOAT, GL_FALSE, stride * sizeof(float), CAST_INT_TO_UCHAR_PTR(base_offset * sizeof(float)));
 

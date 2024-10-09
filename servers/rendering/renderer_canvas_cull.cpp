@@ -1645,19 +1645,19 @@ void RendererCanvasCull::canvas_item_add_triangle_array(RID p_item, const Vector
 	Item *canvas_item = canvas_item_owner.get_or_null(p_item);
 	ERR_FAIL_NULL(canvas_item);
 
-	int vertex_count = p_points.size();
+	int vertex_count = p_count < 0 ? p_points.size() : p_count;
 	ERR_FAIL_COND(vertex_count == 0);
-	ERR_FAIL_COND(!p_colors.is_empty() && p_colors.size() != vertex_count && p_colors.size() != 1);
-	ERR_FAIL_COND(!p_uvs.is_empty() && p_uvs.size() != vertex_count);
-	ERR_FAIL_COND(!p_bones.is_empty() && p_bones.size() != vertex_count * 4);
-	ERR_FAIL_COND(!p_weights.is_empty() && p_weights.size() != vertex_count * 4);
+	ERR_FAIL_COND(!p_colors.is_empty() && p_colors.size() < vertex_count && p_colors.size() != 1);
+	ERR_FAIL_COND(!p_uvs.is_empty() && p_uvs.size() < vertex_count);
+	ERR_FAIL_COND(!p_bones.is_empty() && p_bones.size() < vertex_count * 4);
+	ERR_FAIL_COND(!p_weights.is_empty() && p_weights.size() < vertex_count * 4);
 
 	Item::CommandPolygon *polygon = canvas_item->alloc_command<Item::CommandPolygon>();
 	ERR_FAIL_NULL(polygon);
 
 	polygon->texture = p_texture;
 
-	polygon->polygon.create(p_indices, p_points, p_colors, p_uvs, p_bones, p_weights);
+	polygon->polygon.create(p_indices, p_points, p_colors, p_uvs, p_bones, p_weights, p_count);
 
 	polygon->primitive = RS::PRIMITIVE_TRIANGLES;
 }
