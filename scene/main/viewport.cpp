@@ -1448,7 +1448,11 @@ void Viewport::_gui_show_tooltip() {
 			&tooltip_owner);
 	gui.tooltip_text = gui.tooltip_text.strip_edges();
 
-	if (gui.tooltip_text.is_empty()) {
+	// Controls can implement `make_custom_tooltip` to provide their own tooltip.
+	// This should be a Control node which will be added as child to a TooltipPanel.
+	Control *base_tooltip = tooltip_owner ? tooltip_owner->make_custom_tooltip(gui.tooltip_text) : nullptr;
+
+	if (gui.tooltip_text.is_empty() && !base_tooltip) {
 		return; // Nothing to show.
 	}
 
@@ -1469,21 +1473,17 @@ void Viewport::_gui_show_tooltip() {
 	// Ensure no opaque background behind the panel as its StyleBox can be partially transparent (e.g. corners).
 	panel->set_transparent_background(true);
 
-	// Controls can implement `make_custom_tooltip` to provide their own tooltip.
-	// This should be a Control node which will be added as child to a TooltipPanel.
-	Control *base_tooltip = tooltip_owner->make_custom_tooltip(gui.tooltip_text);
-
 	// If no custom tooltip is given, use a default implementation.
 	if (!base_tooltip) {
 		gui.tooltip_label = memnew(Label);
 		gui.tooltip_label->set_theme_type_variation(SNAME("TooltipLabel"));
 		gui.tooltip_label->set_text(gui.tooltip_text);
+		gui.tooltip_label->set_auto_translate_mode(tooltip_owner->get_tooltip_auto_translate_mode());
 		base_tooltip = gui.tooltip_label;
 		panel->connect(SceneStringName(mouse_entered), callable_mp(this, &Viewport::_gui_cancel_tooltip));
 	}
 
 	base_tooltip->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
-	base_tooltip->set_auto_translate_mode(tooltip_owner->get_tooltip_auto_translate_mode());
 
 	panel->set_transient(true);
 	panel->set_flag(Window::FLAG_NO_FOCUS, true);
@@ -1921,7 +1921,7 @@ void Viewport::_gui_input_event(Ref<InputEvent> p_event) {
 						String tooltip = _gui_get_tooltip(over, gui.tooltip_control->get_global_transform_with_canvas().affine_inverse().xform(mpos));
 						tooltip = tooltip.strip_edges();
 
-						if (tooltip.is_empty() || tooltip != gui.tooltip_text) {
+						if (tooltip != gui.tooltip_text) {
 							_gui_cancel_tooltip();
 						} else {
 							is_tooltip_shown = true;

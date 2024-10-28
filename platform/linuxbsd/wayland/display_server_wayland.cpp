@@ -627,6 +627,18 @@ int64_t DisplayServerWayland::window_get_native_handle(HandleType p_handle_type,
 			}
 			return 0;
 		} break;
+		case EGL_DISPLAY: {
+			if (egl_manager) {
+				return (int64_t)egl_manager->get_display(p_window);
+			}
+			return 0;
+		}
+		case EGL_CONFIG: {
+			if (egl_manager) {
+				return (int64_t)egl_manager->get_config(p_window);
+			}
+			return 0;
+		}
 #endif // GLES3_ENABLED
 
 		default: {
@@ -1479,12 +1491,12 @@ DisplayServerWayland::DisplayServerWayland(const String &p_rendering_driver, Win
 			driver_found = true;
 		}
 	}
+#endif // GLES3_ENABLED
 
 	if (!driver_found) {
 		r_error = ERR_UNAVAILABLE;
 		ERR_FAIL_MSG("Video driver not found.");
 	}
-#endif // GLES3_ENABLED
 
 	cursor_set_shape(CURSOR_BUSY);
 
