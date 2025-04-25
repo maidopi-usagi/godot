@@ -1917,6 +1917,25 @@ void RendererCanvasCull::canvas_item_set_draw_index(RID p_item, int p_index) {
 	}
 }
 
+void RendererCanvasCull::canvas_item_set_relative_index(RID p_item, int p_index) {
+	Item *canvas_item = canvas_item_owner.get_or_null(p_item);
+	ERR_FAIL_NULL(canvas_item);
+
+	canvas_item->relative_index = p_index;
+
+	if (canvas_item_owner.owns(canvas_item->parent)) {
+		Item *canvas_item_parent = canvas_item_owner.get_or_null(canvas_item->parent);
+		canvas_item_parent->children_order_dirty = true;
+		return;
+	}
+
+	Canvas *canvas = canvas_owner.get_or_null(canvas_item->parent);
+	if (canvas) {
+		canvas->children_order_dirty = true;
+		return;
+	}
+}
+
 void RendererCanvasCull::canvas_item_set_material(RID p_item, RID p_material) {
 	Item *canvas_item = canvas_item_owner.get_or_null(p_item);
 	ERR_FAIL_NULL(canvas_item);

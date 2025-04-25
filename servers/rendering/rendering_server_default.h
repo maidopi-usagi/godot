@@ -992,6 +992,7 @@ public:
 
 	FUNC1(canvas_item_clear, RID)
 	FUNC2(canvas_item_set_draw_index, RID, int)
+	FUNC2(canvas_item_set_relative_index, RID, int)
 
 	FUNC2(canvas_item_set_material, RID, RID)
 

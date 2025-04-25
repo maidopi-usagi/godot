@@ -670,6 +670,18 @@ int CanvasItem::get_z_index() const {
 	return z_index;
 }
 
+int CanvasItem::get_relative_index() const {
+	ERR_READ_THREAD_GUARD_V(0);
+	return relative_index;
+}
+
+void CanvasItem::set_relative_index(int p_index) {
+	ERR_THREAD_GUARD;
+	relative_index = p_index;
+	RS::get_singleton()->canvas_item_set_relative_index(canvas_item, relative_index);
+	update_configuration_warnings();
+}
+
 int CanvasItem::get_effective_z_index() const {
 	ERR_READ_THREAD_GUARD_V(0);
 	int effective_z_index = z_index;
@@ -1340,6 +1352,9 @@ void CanvasItem::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_z_index", "z_index"), &CanvasItem::set_z_index);
 	ClassDB::bind_method(D_METHOD("get_z_index"), &CanvasItem::get_z_index);
 
+	ClassDB::bind_method(D_METHOD("set_relative_index", "relative_index"), &CanvasItem::set_relative_index);
+	ClassDB::bind_method(D_METHOD("get_relative_index"), &CanvasItem::get_relative_index);
+
 	ClassDB::bind_method(D_METHOD("set_z_as_relative", "enable"), &CanvasItem::set_z_as_relative);
 	ClassDB::bind_method(D_METHOD("is_z_relative"), &CanvasItem::is_z_relative);
 
@@ -1441,6 +1456,7 @@ void CanvasItem::_bind_methods() {
 
 	ADD_GROUP("Ordering", "");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "z_index", PROPERTY_HINT_RANGE, itos(RS::CANVAS_ITEM_Z_MIN) + "," + itos(RS::CANVAS_ITEM_Z_MAX) + ",1"), "set_z_index", "get_z_index");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "relative_index", PROPERTY_HINT_RANGE, itos(RS::CANVAS_ITEM_Z_MIN) + "," + itos(RS::CANVAS_ITEM_Z_MAX) + ",1"), "set_relative_index", "get_relative_index");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "z_as_relative"), "set_z_as_relative", "is_z_relative");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "y_sort_enabled"), "set_y_sort_enabled", "is_y_sort_enabled");
 

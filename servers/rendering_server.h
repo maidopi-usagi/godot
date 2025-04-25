@@ -1582,6 +1582,7 @@ public:
 
 	virtual void canvas_item_clear(RID p_item) = 0;
 	virtual void canvas_item_set_draw_index(RID p_item, int p_index) = 0;
+	virtual void canvas_item_set_relative_index(RID p_item, int p_index) = 0;
 
 	virtual void canvas_item_set_material(RID p_item, RID p_material) = 0;
 

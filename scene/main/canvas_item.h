@@ -92,6 +92,7 @@ private:
 	int z_index = 0;
 	bool z_relative = true;
 	bool y_sort_enabled = false;
+	int relative_index = 0;
 
 	Window *window = nullptr;
 	bool visible = true;
@@ -285,6 +286,8 @@ public:
 
 	virtual void set_z_index(int p_z);
 	int get_z_index() const;
+	void set_relative_index(int p_z);
+	int get_relative_index() const;
 	int get_effective_z_index() const;
 
 	void set_z_as_relative(bool p_enabled);
