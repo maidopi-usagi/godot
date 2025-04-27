@@ -39,6 +39,7 @@ void RenderSceneData::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_view_projection", "view"), &RenderSceneData::get_view_projection);
 
 	ClassDB::bind_method(D_METHOD("get_uniform_buffer"), &RenderSceneData::get_uniform_buffer);
+	ClassDB::bind_method(D_METHOD("get_taa_jitter"), &RenderSceneData::get_taa_jitter);
 }
 
 void RenderSceneDataExtension::_bind_methods() {
@@ -84,5 +85,11 @@ Projection RenderSceneDataExtension::get_view_projection(uint32_t p_view) const 
 RID RenderSceneDataExtension::get_uniform_buffer() const {
 	RID ret;
 	GDVIRTUAL_CALL(_get_uniform_buffer, ret);
+	return ret;
+}
+
+Vector2 RenderSceneDataExtension::get_taa_jitter() const {
+	Vector2 ret;
+	GDVIRTUAL_CALL(get_taa_jitter, ret);
 	return ret;
 }

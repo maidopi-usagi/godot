@@ -5244,6 +5244,8 @@ String EditorNode::_get_system_info() const {
 	// Prettify
 	if (rendering_method == "forward_plus") {
 		rendering_method = "Forward+";
+	} else if (rendering_method == "customized_maid") {
+		rendering_method = "CustomizedMaid";
 	} else if (rendering_method == "mobile") {
 		rendering_method = "Mobile";
 	} else if (rendering_method == "gl_compatibility") {
@@ -6849,6 +6851,8 @@ void EditorNode::_update_renderer_color() {
 
 	if (rendering_method == "forward_plus") {
 		renderer->add_theme_color_override(SceneStringName(font_color), theme->get_color(SNAME("forward_plus_color"), EditorStringName(Editor)));
+	} else if (rendering_method == "customized_maid") {
+		renderer->add_theme_color_override(SceneStringName(font_color), theme->get_color(SNAME("customized_maid_color"), EditorStringName(Editor)));
 	} else if (rendering_method == "mobile") {
 		renderer->add_theme_color_override(SceneStringName(font_color), theme->get_color(SNAME("mobile_color"), EditorStringName(Editor)));
 	} else if (rendering_method == "gl_compatibility") {
@@ -6878,6 +6882,9 @@ void EditorNode::_add_renderer_entry(const String &p_renderer_name, bool p_mark_
 	String item_text;
 	if (p_renderer_name == "forward_plus") {
 		item_text = TTR("Forward+");
+	}
+	if (p_renderer_name == "customized_maid") {
+		item_text = TTR("CustomizedMaid");
 	}
 	if (p_renderer_name == "mobile") {
 		item_text = TTR("Mobile");

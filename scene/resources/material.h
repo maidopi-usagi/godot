@@ -134,6 +134,46 @@ public:
 	~ShaderMaterial();
 };
 
+class SlangShaderMaterial : public Material {
+	GDCLASS(SlangShaderMaterial, Material);
+
+	mutable HashMap<StringName, StringName> remap_cache;
+	mutable HashMap<StringName, Variant> param_cache;
+	mutable Mutex material_rid_mutex;
+
+protected:
+	bool _set(const StringName &p_name, const Variant &p_value);
+	bool _get(const StringName &p_name, Variant &r_ret) const;
+	void _get_property_list(List<PropertyInfo> *p_list) const;
+	bool _property_can_revert(const StringName &p_name) const;
+	bool _property_get_revert(const StringName &p_name, Variant &r_property) const;
+
+	static void _bind_methods();
+
+#ifdef TOOLS_ENABLED
+	void get_argument_options(const StringName &p_function, int p_idx, List<String> *r_options) const override;
+#endif
+
+
+	virtual bool _can_do_next_pass() const override;
+	virtual bool _can_use_render_priority() const override;
+
+	virtual Shader::Mode get_shader_mode() const override;
+
+	void _shader_changed();
+	void _check_material_rid() const;
+
+public:
+	void set_shader_parameter(const StringName &p_param, const Variant &p_value);
+	Variant get_shader_parameter(const StringName &p_param) const;
+
+	virtual RID get_rid() const override;
+	virtual RID get_shader_rid() const override;
+
+	SlangShaderMaterial();
+	~SlangShaderMaterial();
+};
+
 class StandardMaterial3D;
 
 class BaseMaterial3D : public Material {

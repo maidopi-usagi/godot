@@ -309,6 +309,35 @@ public:
 		return stages;
 	}
 
+	Dictionary get_reflection_data() const {
+		// TODO: Implement reflection data extraction from SPIR-V bytecode.
+		Dictionary reflection_data;
+		for (int i = 0; i < RD::SHADER_STAGE_MAX; i++) {
+			RD::ShaderStage stage = RD::ShaderStage(i);
+			switch (stage)
+			{
+			case RD::SHADER_STAGE_VERTEX:
+				reflection_data["vertex"] = 0;
+				break;
+			case RD::SHADER_STAGE_FRAGMENT:
+				reflection_data["fragment"] = 0;
+				break;
+			case RD::SHADER_STAGE_TESSELATION_CONTROL:
+				reflection_data["tesselation_control"] = 0;
+				break;
+			case RD::SHADER_STAGE_TESSELATION_EVALUATION:
+				reflection_data["tesselation_evaluation"] = 0;
+				break;
+			case RD::SHADER_STAGE_COMPUTE:
+				reflection_data["compute"] = 0;
+				break;
+			default:
+				break;
+			}
+		}
+		return reflection_data;
+	}
+
 	void set_stage_compile_error(RD::ShaderStage p_stage, const String &p_compile_error) {
 		ERR_FAIL_INDEX(p_stage, RD::SHADER_STAGE_MAX);
 		compile_error[p_stage] = p_compile_error;
@@ -326,6 +355,8 @@ protected:
 
 		ClassDB::bind_method(D_METHOD("set_stage_compile_error", "stage", "compile_error"), &RDShaderSPIRV::set_stage_compile_error);
 		ClassDB::bind_method(D_METHOD("get_stage_compile_error", "stage"), &RDShaderSPIRV::get_stage_compile_error);
+
+		ClassDB::bind_method(D_METHOD("get_reflection_data"), &RDShaderSPIRV::get_reflection_data);
 
 		ADD_GROUP("Bytecode", "bytecode_");
 		ADD_PROPERTYI(PropertyInfo(Variant::PACKED_BYTE_ARRAY, "bytecode_vertex"), "set_stage_bytecode", "get_stage_bytecode", RD::SHADER_STAGE_VERTEX);

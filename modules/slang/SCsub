@@ -1,0 +1,38 @@
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
+import os
+
+Import("env")
+Import("env_modules")
+
+env_slang = env_modules.Clone()
+
+# Thirdparty source files
+
+SLANG_DIR = '/Volumes/External/Projects/code/slang-2025.7.1-macos-aarch64'
+SLANG_INCLUDE = os.path.join(SLANG_DIR, 'include')
+SLANG_LIB = os.path.join(SLANG_DIR, 'lib')
+
+thirdparty_obj = []
+thirdparty_dir = "#thirdparty/slang/"
+thirdparty_sources = []
+thirdparty_sources = [thirdparty_dir + file for file in thirdparty_sources]
+
+env_slang.Append(CPPPATH=[SLANG_INCLUDE])
+env_slang.Append(LIBPATH=[SLANG_LIB])
+env.Append(LIBS=[File(SLANG_LIB + "/libslang.dylib")])
+
+env_thirdparty = env_slang.Clone()
+env_thirdparty.disable_warnings()
+env_thirdparty.add_source_files(thirdparty_obj, thirdparty_sources)
+env.modules_sources += thirdparty_obj
+
+# Godot source files
+
+module_obj = []
+
+env_slang.add_source_files(module_obj, "*.cpp")
+env.modules_sources += module_obj
+
+# Needed to force rebuilding the module files when the thirdparty library is updated.
+env.Depends(module_obj, thirdparty_obj)

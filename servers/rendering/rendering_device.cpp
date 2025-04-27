@@ -6692,8 +6692,11 @@ Error RenderingDevice::initialize(RenderingContextDriver *p_context, DisplayServ
 	if (is_main_instance) {
 		// Only the singleton instance with a display should print this information.
 		String rendering_method;
-		if (OS::get_singleton()->get_current_rendering_method() == "mobile") {
+		auto current_rendering_method = OS::get_singleton()->get_current_rendering_method();
+		if (current_rendering_method == "mobile") {
 			rendering_method = "Forward Mobile";
+		} else if (current_rendering_method == "customized_maid") {
+			rendering_method = "Customized Maid";
 		} else {
 			rendering_method = "Forward+";
 		}

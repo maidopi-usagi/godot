@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  render_scene_data.h                                                   */
+/*  slang_loader.h                                                              */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,56 +30,27 @@
 
 #pragma once
 
-#include "core/object/class_db.h"
-#include "core/object/gdvirtual.gen.inc"
-#include "core/object/object.h"
-#include "core/object/script_language.h"
+#include "slang.h"
+#include "slang-com-ptr.h"
 
-class RenderSceneData : public Object {
-	GDCLASS(RenderSceneData, Object);
+#include "core/io/resource.h"
+#include "core/io/resource_loader.h"
+#include "core/io/resource_saver.h"
+#include "scene/resources/texture.h"
 
-protected:
-	static void _bind_methods();
 
+class ResourceFormatLoaderSlangShader : public ResourceFormatLoader {
 public:
-	virtual Transform3D get_cam_transform() const = 0;
-	virtual Projection get_cam_projection() const = 0;
-
-	virtual uint32_t get_view_count() const = 0;
-	virtual Vector3 get_view_eye_offset(uint32_t p_view) const = 0;
-	virtual Projection get_view_projection(uint32_t p_view) const = 0;
-
-	virtual RID get_uniform_buffer() const = 0;
-
-	virtual Vector2 get_taa_jitter() const = 0;
+    virtual Ref<Resource> load(const String &p_path, const String &p_original_path = "", Error *r_error = nullptr, bool p_use_sub_threads = false, float *r_progress = nullptr, CacheMode p_cache_mode = CACHE_MODE_REUSE) override;
+    virtual void get_recognized_extensions(List<String> *p_extensions) const override;
+    virtual bool handles_type(const String &p_type) const override;
+    virtual String get_resource_type(const String &p_path) const override;
 };
 
-class RenderSceneDataExtension : public RenderSceneData {
-	GDCLASS(RenderSceneDataExtension, RenderSceneData);
-
-protected:
-	static void _bind_methods();
-
+class ResourceFormatSaverSlangShader : public ResourceFormatSaver {
 public:
-	virtual Transform3D get_cam_transform() const override;
-	virtual Projection get_cam_projection() const override;
-
-	virtual uint32_t get_view_count() const override;
-	virtual Vector3 get_view_eye_offset(uint32_t p_view) const override;
-	virtual Projection get_view_projection(uint32_t p_view) const override;
-
-	virtual RID get_uniform_buffer() const override;
-
-	virtual Vector2 get_taa_jitter() const override;
-
-	GDVIRTUAL0RC(Transform3D, _get_cam_transform)
-	GDVIRTUAL0RC(Projection, _get_cam_projection)
-
-	GDVIRTUAL0RC(uint32_t, _get_view_count)
-	GDVIRTUAL1RC(Vector3, _get_view_eye_offset, uint32_t)
-	GDVIRTUAL1RC(Projection, _get_view_projection, uint32_t)
-
-	GDVIRTUAL0RC(RID, _get_uniform_buffer)
-
-	GDVIRTUAL0RC(Vector2, get_taa_jitter)
+    virtual Error save(const Ref<Resource> &p_resource, const String &p_path, uint32_t p_flags = 0) override;
+    virtual void get_recognized_extensions(const Ref<Resource> &p_resource, List<String> *p_extensions) const override;
+    virtual bool recognize(const Ref<Resource> &p_resource) const override;
 };
+    

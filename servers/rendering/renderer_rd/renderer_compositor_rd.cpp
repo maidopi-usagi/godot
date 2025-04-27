@@ -34,6 +34,7 @@
 #include "core/io/dir_access.h"
 
 #include "servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h"
+#include "servers/rendering/renderer_rd/customized_maid/render_customized_maid.h"
 #include "servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h"
 
 void RendererCompositorRD::blit_render_targets_to_screen(DisplayServer::WindowID p_screen, const BlitToScreen *p_render_targets, int p_amount) {
@@ -329,6 +330,8 @@ RendererCompositorRD::RendererCompositorRD() {
 		scene = memnew(RendererSceneRenderImplementation::RenderForwardMobile());
 	} else if (rendering_method == "forward_plus") {
 		scene = memnew(RendererSceneRenderImplementation::RenderForwardClustered());
+	} else if (rendering_method == "customized_maid") {
+		scene = memnew(RendererSceneRenderImplementation::RenderCustomizedMaid());
 	} else {
 		// Fall back to our high end renderer.
 		ERR_PRINT(vformat("Cannot instantiate RenderingDevice-based renderer with renderer type '%s'. Defaulting to Forward+ renderer.", rendering_method));

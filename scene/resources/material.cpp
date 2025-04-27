@@ -579,6 +579,84 @@ ShaderMaterial::~ShaderMaterial() {
 
 /////////////////////////////////
 
+bool SlangShaderMaterial::_set(const StringName &p_name, const Variant &p_value) {
+	return false;
+}
+
+bool SlangShaderMaterial::_get(const StringName &p_name, Variant &r_ret) const {
+	return false;
+}
+
+void SlangShaderMaterial::_get_property_list(List<PropertyInfo> *p_list) const {
+}
+
+bool SlangShaderMaterial::_property_can_revert(const StringName &p_name) const {
+	return false;
+}
+
+bool SlangShaderMaterial::_property_get_revert(const StringName &p_name, Variant &r_property) const {
+	return false;
+}
+
+#ifdef TOOLS_ENABLED
+void SlangShaderMaterial::get_argument_options(const StringName &p_function, int p_idx, List<String> *r_options) const {
+	// No arguments to show.
+}
+#endif
+
+bool SlangShaderMaterial::_can_do_next_pass() const {
+	return false;
+}
+bool SlangShaderMaterial::_can_use_render_priority() const {
+	return false;
+}
+
+Shader::Mode SlangShaderMaterial::get_shader_mode() const {
+	return Shader::MODE_SPATIAL;
+}
+
+void SlangShaderMaterial::_shader_changed() {
+	// No shader to change.
+}
+
+void SlangShaderMaterial::_check_material_rid() const {
+	// No shader to check.
+}
+
+void SlangShaderMaterial::set_shader_parameter(const StringName &p_param, const Variant &p_value) {
+	// No shader to set.
+}
+
+Variant SlangShaderMaterial::get_shader_parameter(const StringName &p_param) const {
+	// No shader to get.
+	return Variant();
+}
+
+RID SlangShaderMaterial::get_rid() const {
+	// No shader to get.
+	return RID();
+}
+
+RID SlangShaderMaterial::get_shader_rid() const {
+	// No shader to get.
+	return RID();
+}
+
+void SlangShaderMaterial::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_shader_parameter", "param", "value"), &SlangShaderMaterial::set_shader_parameter);
+	ClassDB::bind_method(D_METHOD("get_shader_parameter", "param"), &SlangShaderMaterial::get_shader_parameter);
+}
+
+SlangShaderMaterial::SlangShaderMaterial() {
+	// No shader to initialize.
+}
+
+SlangShaderMaterial::~SlangShaderMaterial() {
+	// No shader to free.
+}
+
+/////////////////////////////////
+
 HashMap<BaseMaterial3D::MaterialKey, BaseMaterial3D::ShaderData, BaseMaterial3D::MaterialKey> BaseMaterial3D::shader_map;
 Mutex BaseMaterial3D::shader_map_mutex;
 BaseMaterial3D::ShaderNames *BaseMaterial3D::shader_names = nullptr;

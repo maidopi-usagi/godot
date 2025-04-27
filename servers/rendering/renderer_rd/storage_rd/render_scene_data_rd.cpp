@@ -297,3 +297,7 @@ void RenderSceneDataRD::update_ubo(RID p_uniform_buffer, RS::ViewportDebugDraw p
 RID RenderSceneDataRD::get_uniform_buffer() const {
 	return uniform_buffer;
 }
+
+Vector2 RenderSceneDataRD::get_taa_jitter() const {
+	return taa_jitter;
+}

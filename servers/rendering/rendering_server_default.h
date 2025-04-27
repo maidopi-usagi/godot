@@ -361,6 +361,7 @@ public:
 
 	FUNC3(mesh_surface_set_material, RID, int, RID)
 	FUNC2RC(RID, mesh_surface_get_material, RID, int)
+	FUNC2RC(RID, mesh_surface_get_vertex_buffer, RID, int)
 
 	FUNC2RC(SurfaceData, mesh_get_surface, RID, int)
 

@@ -380,6 +380,7 @@ public:
 
 	virtual void mesh_surface_set_material(RID p_mesh, int p_surface, RID p_material) override;
 	virtual RID mesh_surface_get_material(RID p_mesh, int p_surface) const override;
+	virtual RID mesh_surface_get_vertex_buffer(RID p_mesh, int p_surface) const override;
 
 	virtual RS::SurfaceData mesh_get_surface(RID p_mesh, int p_surface) const override;
 

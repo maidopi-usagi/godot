@@ -1374,7 +1374,8 @@ void RendererViewport::viewport_set_screen_space_aa(RID p_viewport, RS::Viewport
 void RendererViewport::viewport_set_use_taa(RID p_viewport, bool p_use_taa) {
 	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL(viewport);
-	ERR_FAIL_COND_EDMSG(OS::get_singleton()->get_current_rendering_method() != "forward_plus", "TAA is only available when using the Forward+ renderer.");
+	auto rendering_method = OS::get_singleton()->get_current_rendering_method();
+	ERR_FAIL_COND_EDMSG(rendering_method != "forward_plus" && rendering_method != "customized_maid", "TAA is only available when using the Forward+ or Customized Maid renderer.");
 
 	if (viewport->use_taa == p_use_taa) {
 		return;
