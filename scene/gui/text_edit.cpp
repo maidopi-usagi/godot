@@ -1981,6 +1981,8 @@ void TextEdit::_notification(int p_what) {
 
 				queue_accessibility_update();
 				queue_redraw();
+
+				Input::get_singleton()->release_pressed_events();
 			}
 		} break;
 

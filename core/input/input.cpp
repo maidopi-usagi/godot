@@ -677,7 +677,7 @@ void Input::_parse_input_event_impl(const Ref<InputEvent> &p_event, bool p_is_em
 	//   require additional handling by this class.
 
 	Ref<InputEventKey> k = p_event;
-	if (k.is_valid() && !k->is_echo() && k->get_keycode() != Key::NONE) {
+	if (k.is_valid() && !k->is_echo() && k->get_keycode() != Key::NONE && k->get_keycode() != Key::UNKNOWN) {
 		if (k->is_pressed()) {
 			keys_pressed.insert(k->get_keycode());
 		} else {
