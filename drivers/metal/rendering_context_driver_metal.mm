@@ -2,7 +2,12 @@
 /*  rendering_context_driver_metal.mm                                     */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
+/*          			// Flush Rive into the same command buffer before presenting this drawable.
+			id<CAMetalDrawable> camDrawable = (id<CAMetalDrawable>)drawables[rear];
+			rive_integration::flush_frame_with_metal_command_buffer((__bridge void*)p_cmd_buffer->get_command_buffer(), (__bridge void*)camDrawable.texture, current_frame, safe_frame, width, height, (__bridge void*)layer);
+			[p_cmd_buffer->get_command_buffer() presentDrawable:drawables[rear]];
+			drawables[rear] = nil;
+		}             GODOT ENGINE                               */
 /*                        https://godotengine.org                         */
 /**************************************************************************/
 /* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
@@ -32,10 +37,17 @@
 
 #import "rendering_device_driver_metal.h"
 
+// Forward declarations for Rive integration (implemented in modules/rive)
+namespace rive_integration {
+	bool create_metal_context_from_device(void *device_ptr);
+	void flush_frame_with_metal_command_buffer(void *cmd_buffer_ptr, void *texture_ptr, uint64_t current_frame, uint64_t safe_frame, uint32_t w, uint32_t h, void* layer_ptr);
+}
+
 #include "core/templates/sort_array.h"
 
 #import <os/log.h>
 #import <os/signpost.h>
+#include <atomic>
 
 #pragma mark - Logging
 
@@ -78,6 +90,14 @@ Error RenderingContextDriverMetal::initialize() {
 	MetalDeviceProperties props(metal_device);
 	int version = (int)props.features.highestFamily - (int)MTLGPUFamilyApple1 + 1;
 	device.name = vformat("%s (Apple%d)", metal_device.name.UTF8String, version);
+
+ 	// Initialize Rive Metal context using the native MTLDevice
+ 	// Use a bridged cast to pass the Objective-C pointer as void*
+	 // Log and attempt to initialize Rive context. This helps smoke tests
+	 // detect whether the call site is reached in headless runs.
+	 fprintf(stderr, "GODOT: calling rive_integration::create_metal_context_from_device\n");
+	 bool rive_ok = rive_integration::create_metal_context_from_device((__bridge void *)metal_device);
+	 fprintf(stderr, "GODOT: rive create_metal_context returned %d\n", (int)rive_ok);
 
 	return OK;
 }
@@ -186,12 +206,20 @@ public:
 
 		// Release texture and drawable.
 		frame_buffers[front].unset_texture(0);
-		id<MTLDrawable> drawable = drawables[front];
+	id<MTLDrawable> drawable = drawables[front];
 		drawables[front] = nil;
 
 		count--;
 		front = (front + 1) % frame_buffers.size();
 
+		// Keep a simple monotonically increasing frame counter for Rive.
+		static std::atomic_uint64_t s_frame_counter{1};
+		uint64_t current_frame = s_frame_counter.fetch_add(1, std::memory_order_relaxed);
+		uint64_t safe_frame = (current_frame > 0) ? (current_frame - 1) : 0;
+
+		// Let Rive record into the same command buffer before presenting.
+		id<CAMetalDrawable> camDrawable = (id<CAMetalDrawable>)drawable;
+		rive_integration::flush_frame_with_metal_command_buffer((__bridge void*)p_cmd_buffer->get_command_buffer(), (__bridge void*)camDrawable.texture, current_frame, safe_frame, width, height, (__bridge void*)layer);
 		if (vsync_mode != DisplayServer::VSYNC_DISABLED) {
 			[p_cmd_buffer->get_command_buffer() presentDrawable:drawable afterMinimumDuration:present_minimum_duration];
 		} else {
@@ -290,6 +318,14 @@ public:
 		MDFrameBuffer *frame_buffer = &frame_buffers[rear];
 
 		if (drawables[rear] != nil) {
+			// Keep a simple monotonically increasing frame counter for Rive.
+			static std::atomic_uint64_t s_offscreen_frame_counter{1};
+			uint64_t current_frame = s_offscreen_frame_counter.fetch_add(1, std::memory_order_relaxed);
+			uint64_t safe_frame = (current_frame > 0) ? (current_frame - 1) : 0;
+
+			// Flush Rive into the same command buffer before presenting this drawable.
+			id<CAMetalDrawable> camDrawable = (id<CAMetalDrawable>)drawables[rear];
+			rive_integration::flush_frame_with_metal_command_buffer((__bridge void*)p_cmd_buffer->get_command_buffer(), (__bridge void*)camDrawable.texture, current_frame, safe_frame, width, height, (__bridge void*)layer);
 			[p_cmd_buffer->get_command_buffer() presentDrawable:drawables[rear]];
 			drawables[rear] = nil;
 		}

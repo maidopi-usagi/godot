@@ -40,6 +40,12 @@
 #include "d3d12_godot_nir_bridge.h"
 #include "rendering_context_driver_d3d12.h"
 
+#ifdef MODULE_RIVE_ENABLED
+namespace rive_integration {
+	bool create_d3d12_context(ID3D12Device *device, ID3D12GraphicsCommandList *command_list, bool is_intel);
+}
+#endif
+
 GODOT_GCC_WARNING_PUSH
 GODOT_GCC_WARNING_IGNORE("-Wimplicit-fallthrough")
 GODOT_GCC_WARNING_IGNORE("-Wlogical-not-parentheses")
@@ -491,13 +497,15 @@ Error RenderingDeviceDriverD3D12::CPUDescriptorsHeapPool::release(const CPUDescr
 	} else if (next != free_blocks_by_offset.end()) {
 		// Connects to the next block.
 		remove_from_size_map(next->value);
+
+		FreeBlockInfo merged_block = next->value;
+		merged_block.global_offset -= p_result.count;
+		merged_block.size += p_result.count;
+
+		// Replace with the merged block.
 		free_blocks_by_offset.erase(next->value.global_offset);
-
-		next->value.global_offset -= p_result.count;
-		next->value.size += p_result.count;
-
-		DEV_ASSERT(!free_blocks_by_offset.has(next->value.global_offset));
-		new_block = free_blocks_by_offset.insert(next->value.global_offset, next->value);
+		DEV_ASSERT(!free_blocks_by_offset.has(merged_block.global_offset));
+		new_block = free_blocks_by_offset.insert(merged_block.global_offset, merged_block);
 	} else {
 		// Connects to no block.
 		new_block = free_blocks_by_offset.insert(global_offset, FreeBlockInfo{ p_result.heap, global_offset, p_result.base_offset, p_result.count });
@@ -6243,7 +6251,7 @@ uint64_t RenderingDeviceDriverD3D12::api_trait_get(ApiTrait p_trait) {
 bool RenderingDeviceDriverD3D12::has_feature(Features p_feature) {
 	switch (p_feature) {
 		case SUPPORTS_HALF_FLOAT:
-			return shader_capabilities.native_16bit_ops && storage_buffer_capabilities.storage_buffer_16_bit_access_is_supported;
+			return shader_capabilities.native_16bit_ops;
 		case SUPPORTS_FRAGMENT_SHADER_WITH_ONLY_SIDE_EFFECTS:
 			return true;
 		case SUPPORTS_BUFFER_DEVICE_ADDRESS:
@@ -6473,7 +6481,6 @@ Error RenderingDeviceDriverD3D12::_check_capabilities() {
 	subgroup_capabilities.wave_ops_supported = false;
 	shader_capabilities.shader_model = (D3D_SHADER_MODEL)0;
 	shader_capabilities.native_16bit_ops = false;
-	storage_buffer_capabilities.storage_buffer_16_bit_access_is_supported = false;
 	format_capabilities.relaxed_casting_supported = false;
 
 	{
@@ -6514,9 +6521,8 @@ Error RenderingDeviceDriverD3D12::_check_capabilities() {
 
 	D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
 	res = device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
-	if (SUCCEEDED(res)) {
-		storage_buffer_capabilities.storage_buffer_16_bit_access_is_supported = options.TypedUAVLoadAdditionalFormats;
-	}
+	ERR_FAIL_COND_V_MSG(!SUCCEEDED(res), ERR_UNAVAILABLE, "CheckFeatureSupport failed with error " + vformat("0x%08ux", (uint64_t)res) + ".");
+	ERR_FAIL_COND_V_MSG(!options.TypedUAVLoadAdditionalFormats, ERR_UNAVAILABLE, "No support for Typed UAV Load Additional Formats has been found.");
 
 	D3D12_FEATURE_DATA_D3D12_OPTIONS1 options1 = {};
 	res = device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &options1, sizeof(options1));
@@ -6762,6 +6768,41 @@ Error RenderingDeviceDriverD3D12::initialize(uint32_t p_device_index, uint32_t p
 
 	err = _initialize_command_signatures();
 	ERR_FAIL_COND_V(err != OK, ERR_CANT_CREATE);
+
+#ifdef MODULE_RIVE_ENABLED
+	// Rive integration
+	{
+		ComPtr<ID3D12CommandAllocator> cmd_allocator;
+		device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmd_allocator));
+
+		ComPtr<ID3D12GraphicsCommandList> cmd_list;
+		device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmd_allocator.Get(), nullptr, IID_PPV_ARGS(&cmd_list));
+
+		bool is_intel = adapter_desc.VendorId == 0x8086;
+		rive_integration::create_d3d12_context(device.Get(), cmd_list.Get(), is_intel);
+
+		cmd_list->Close();
+
+		ComPtr<ID3D12CommandQueue> cmd_queue;
+		D3D12_COMMAND_QUEUE_DESC queue_desc = {};
+		queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+		device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&cmd_queue));
+
+		ID3D12CommandList *ppCommandLists[] = { cmd_list.Get() };
+		cmd_queue->ExecuteCommandLists(1, ppCommandLists);
+
+		ComPtr<ID3D12Fence> fence;
+		device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+		HANDLE event_handle = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+		cmd_queue->Signal(fence.Get(), 1);
+		if (fence->GetCompletedValue() < 1) {
+			fence->SetEventOnCompletion(1, event_handle);
+			WaitForSingleObject(event_handle, INFINITE);
+		}
+		CloseHandle(event_handle);
+	}
+#endif
 
 	return OK;
 }
