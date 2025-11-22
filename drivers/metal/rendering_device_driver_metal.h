@@ -86,6 +86,10 @@ class API_AVAILABLE(macos(11.0), ios(14.0), tvos(14.0)) RenderingDeviceDriverMet
 
 	String pipeline_cache_id;
 
+public:
+	id<MTLCommandQueue> get_queue() const { return device_queue; }
+
+private:
 	Error _create_device();
 	void _check_capabilities();
 

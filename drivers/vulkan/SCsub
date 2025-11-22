@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 from misc.utility.scons_hints import *
+import os
 
 Import("env")
 
@@ -63,3 +64,7 @@ env.drivers_sources += driver_obj
 
 # Needed to force rebuilding the driver files when the thirdparty code is updated.
 env.Depends(driver_obj, thirdparty_obj)
+
+if os.path.exists(env.Dir("#modules/rive").abspath):
+    print("RIVE MODULE DETECTED - ADDING DEFINE TO VULKAN")
+    env.Append(CPPDEFINES=["MODULE_RIVE_ENABLED"])

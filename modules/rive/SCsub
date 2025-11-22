@@ -1,0 +1,207 @@
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
+import os
+import sys
+
+Import("env")
+Import("env_modules")
+
+env_rive = env_modules.Clone()
+
+# Check for MSVC (cl.exe)
+if env.get("msvc", False) or env.get("CC") == "cl":
+    env_rive.Append(CPPDEFINES=["TYPED_METHOD_BIND"])
+    env_rive.Append(CCFLAGS=["/std:c++20"])
+
+
+# --- Rive Runtime Compilation ---
+
+thirdparty_obj = []
+thirdparty_dir = "#thirdparty/rive-runtime/"
+rive_dir = thirdparty_dir
+
+# Robustly collect all source files using os.walk
+rive_sources = []
+try:
+    abs_rive_dir = env.Dir(rive_dir).abspath
+    
+    # Directories to scan recursively
+    dirs_to_scan = [
+        os.path.join(abs_rive_dir, 'src'),
+        os.path.join(abs_rive_dir, 'runtime'),
+        os.path.join(abs_rive_dir, 'renderer', 'src')
+    ]
+    
+    # Directories to exclude
+    exclude_dir_names = {'d3d', 'd3d11', 'd3d12', 'vulkan', 'webgpu', 'dawn', 'gl', 'android', 'ios'}
+    
+    # If not building for Metal, exclude metal directory
+    if env["platform"] not in ["macos", "ios", "visionos"]:
+        exclude_dir_names.add('metal')
+
+    # Include the 'vulkan' renderer sources when Vulkan is enabled for the
+    # build (VULKAN_ENABLED), or on platforms that normally use Vulkan
+    # natively. When included, define RIVE_UPSTREAM_VULKAN_IMPL so module
+    # code can select the upstream implementation at compile time.
+    include_vulkan_impl = False
+    vulkan_enabled = env.get('vulkan', False)
+    
+    if vulkan_enabled or env["platform"] in ["windows", "linuxbsd", "android", "macos"]:
+        print(f"RIVE: Enabling Vulkan support (vulkan_enabled={vulkan_enabled}, platform={env['platform']})")
+        include_vulkan_impl = True
+        if 'vulkan' in exclude_dir_names:
+            exclude_dir_names.remove('vulkan')
+        if env["platform"] == "android" and 'android' in exclude_dir_names:
+            exclude_dir_names.remove('android')
+    
+    if env["platform"] == "windows":
+        if 'd3d12' in exclude_dir_names:
+            exclude_dir_names.remove('d3d12')
+        if 'd3d' in exclude_dir_names:
+            exclude_dir_names.remove('d3d')
+        
+    seen_paths = set()
+    
+    for d in dirs_to_scan:
+        if not os.path.exists(d):
+            continue
+            
+        for root, dirs, files in os.walk(d):
+            # Modify dirs in-place to skip excluded directories
+            dirs[:] = [x for x in dirs if x not in exclude_dir_names]
+            
+            for f in files:
+                if f.endswith('.cpp') or (f.endswith('.mm') and env["platform"] in ["macos", "ios", "visionos"]):
+                    full_path = os.path.join(root, f)
+                    if full_path not in seen_paths:
+                        seen_paths.add(full_path)
+                        rive_sources.append(full_path)
+                        
+except Exception as e:
+    print(f"RIVE-MODULE: Error scanning sources: {e}")
+    rive_sources = []
+
+env_thirdparty = env_rive.Clone()
+env_thirdparty.disable_warnings()
+
+if rive_sources:
+    env_thirdparty.Prepend(CPPPATH=[rive_dir + "include", rive_dir, rive_dir + "renderer", rive_dir + "renderer/src", rive_dir + "renderer/include", "#generated/shaders"])
+    env_thirdparty.Append(CPPDEFINES=['_RIVE_INTERNAL_'])
+
+    # If we included the upstream Vulkan impl, expose a macro to allow
+    # module code to use it.
+    if vulkan_enabled or env["platform"] in ["windows", "linuxbsd", "android", "macos"]:
+        rive_vulkan_defines = ["RIVE_VULKAN", "RIVE_UPSTREAM_VULKAN_IMPL"]
+        
+        if env["platform"] not in ["macos", "ios", "visionos"]:
+            rive_vulkan_defines.append("VK_NO_PROTOTYPES")
+        else:
+            # On macOS/iOS, we must force static Vulkan functions for VMA to match Godot's configuration
+            # and avoid the requirement for dynamic function pointers which causes crashes.
+            rive_vulkan_defines.append(("VMA_STATIC_VULKAN_FUNCTIONS", 1))
+            
+        env_thirdparty.Append(CPPDEFINES=rive_vulkan_defines)
+
+    if env["platform"] == "windows":
+         env_thirdparty.Append(CPPDEFINES=["RIVE_D3D12"])
+         env_thirdparty.Prepend(CPPPATH=["#thirdparty/directx_headers/include/directx", "#thirdparty/directx_headers/include/dxguids", "#thirdparty/d3d12ma"])
+    
+    # Shader generation logic
+    shader_dst = rive_dir + "renderer/generated/shaders"
+    shader_marker = shader_dst + "/.shaders_built"
+    try:
+        abs_base = env.Dir(rive_dir).abspath
+        abs_shader_dst = env.Dir(shader_dst).abspath
+        abs_marker = os.path.join(abs_shader_dst, '.shaders_built')
+        abs_shaders_dir = os.path.join(abs_base, 'renderer', 'src', 'shaders')
+        
+        generate_script = os.path.join(env.Dir(".").abspath, "generate_shaders.py")
+        platform_arg = env["platform"]
+        
+        cmd_str = f'"{sys.executable}" "{generate_script}" "{abs_shaders_dir}" "{abs_shader_dst}" {platform_arg}'
+        
+        def touch_marker(target, source, env):
+            with open(str(target[0]), 'w') as f:
+                f.write("done")
+            return 0
+
+        env_thirdparty.Command(abs_marker, [], [
+            env_thirdparty.Action(cmd_str, "Generating Rive shaders..."),
+            env_thirdparty.Action(touch_marker, "Updating shader marker...")
+        ])
+        
+    except Exception as e:
+        print(f"RIVE-MODULE: Error configuring shader generation: {e}")
+
+    env_thirdparty.add_source_files(thirdparty_obj, rive_sources)
+    env_thirdparty.Depends(thirdparty_obj, abs_marker)
+
+    # Create static library
+    rive_lib = env_thirdparty.Library("rive_runtime", thirdparty_obj)
+    
+    # Link logic
+    current_platform = env.get('platform', env.get('PLATFORM', ''))
+    try:
+        rive_lib_node = rive_lib[0]
+    except (TypeError, IndexError):
+        rive_lib_node = rive_lib
+
+    try:
+        rive_lib_path = rive_lib_node.abspath
+    except AttributeError:
+        rive_lib_path = str(rive_lib_node)
+
+    if current_platform == 'macos' or current_platform == 'darwin':
+        env.AppendUnique(LINKFLAGS=[f"-Wl,-force_load,{rive_lib_path}"])
+        env.Append(LIBS=[rive_lib_node])
+    else:
+        env.Append(LIBS=[rive_lib_node])
+
+
+# --- Module Compilation ---
+
+# Include upstream headers for the module
+env_rive.Prepend(CPPPATH=[thirdparty_dir + "include", thirdparty_dir])
+
+
+module_obj = []
+# env_rive.add_source_files(module_obj, "*.cpp")
+# Manually add common sources to avoid double-adding platform specific renderers
+env_rive.add_source_files(module_obj, ["register_types.cpp", "rive_renderer.cpp", "rive_render_registry.cpp", "rive_viewer.cpp"])
+
+if env["platform"] in ["macos", "ios", "visionos"]:
+    # Objective-C++ bridge for Metal renderer
+    env_rive.Prepend(CPPPATH=[thirdparty_dir + "include", thirdparty_dir, thirdparty_dir + "renderer/include"])
+    env_rive.add_source_files(module_obj, "rive_renderer_metal.mm")
+
+
+# Add Vulkan renderer sources if Vulkan is enabled in the build (e.g., via MoltenVK on macOS)
+vulkan_enabled = env.get('vulkan', False)
+
+# Force disable Vulkan for Rive on macOS/iOS
+rive_vulkan_enabled = vulkan_enabled
+if env["platform"] in ["macos", "ios", "visionos"]:
+    # rive_vulkan_enabled = False
+    rive_vulkan_enabled = True # Enable for MoltenVK support
+
+if vulkan_enabled or env["platform"] in ["windows", "linuxbsd", "android", "macos"]:
+    # Add macro that module code can use to detect availability of the
+    # upstream Vulkan implementation. This is only meaningful when
+    # VULKAN_ENABLED is set or when the platform is one that supports Vulkan.
+    defines = ["RIVE_VULKAN"]
+    if rive_vulkan_enabled:
+        defines.append("RIVE_UPSTREAM_VULKAN_IMPL")
+    env_rive.Append(CPPDEFINES=defines)
+    env_rive.Prepend(CPPPATH=[thirdparty_dir + "include", thirdparty_dir, thirdparty_dir + "renderer/include", "#generated/shaders"])
+    env_rive.add_source_files(module_obj, "rive_renderer_vulkan.cpp")
+
+if env["platform"] == "windows":
+    env_rive.Append(CPPDEFINES=["RIVE_D3D12"])
+    env_rive.Prepend(CPPPATH=["#thirdparty/directx_headers/include/directx", "#thirdparty/directx_headers/include/dxguids", "#thirdparty/d3d12ma"])
+    env.Append(LINKFLAGS=["d3d12.lib", "dxgi.lib", "d3dcompiler.lib"])
+    env_rive.add_source_files(module_obj, "rive_renderer_d3d12.cpp")
+
+env.modules_sources += module_obj
+
+# Make module sources depend on thirdparty so changes there trigger rebuilds.
+env.Depends(module_obj, thirdparty_obj)

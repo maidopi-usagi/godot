@@ -40,6 +40,12 @@
 #include "d3d12_godot_nir_bridge.h"
 #include "rendering_context_driver_d3d12.h"
 
+#ifdef MODULE_RIVE_ENABLED
+namespace rive_integration {
+	bool create_d3d12_context(ID3D12Device *device, ID3D12GraphicsCommandList *command_list, bool is_intel);
+}
+#endif
+
 GODOT_GCC_WARNING_PUSH
 GODOT_GCC_WARNING_IGNORE("-Wimplicit-fallthrough")
 GODOT_GCC_WARNING_IGNORE("-Wlogical-not-parentheses")
@@ -6762,6 +6768,38 @@ Error RenderingDeviceDriverD3D12::initialize(uint32_t p_device_index, uint32_t p
 
 	err = _initialize_command_signatures();
 	ERR_FAIL_COND_V(err != OK, ERR_CANT_CREATE);
+
+#ifdef MODULE_RIVE_ENABLED
+	ComPtr<ID3D12CommandAllocator> cmd_allocator;
+	device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmd_allocator));
+
+	ComPtr<ID3D12GraphicsCommandList> cmd_list;
+	device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmd_allocator.Get(), nullptr, IID_PPV_ARGS(&cmd_list));
+
+	bool is_intel = adapter_desc.VendorId == 0x8086;
+	rive_integration::create_d3d12_context(device.Get(), cmd_list.Get(), is_intel);
+
+	cmd_list->Close();
+
+	ComPtr<ID3D12CommandQueue> cmd_queue;
+	D3D12_COMMAND_QUEUE_DESC queue_desc = {};
+	queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+	device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&cmd_queue));
+
+	ID3D12CommandList *ppCommandLists[] = { cmd_list.Get() };
+	cmd_queue->ExecuteCommandLists(1, ppCommandLists);
+
+	ComPtr<ID3D12Fence> fence;
+	device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+	HANDLE event_handle = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+	cmd_queue->Signal(fence.Get(), 1);
+	if (fence->GetCompletedValue() < 1) {
+		fence->SetEventOnCompletion(1, event_handle);
+		WaitForSingleObject(event_handle, INFINITE);
+	}
+	CloseHandle(event_handle);
+#endif
 
 	return OK;
 }

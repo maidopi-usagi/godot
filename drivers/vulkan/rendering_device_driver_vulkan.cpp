@@ -1557,6 +1557,12 @@ void RenderingDeviceDriverVulkan::_set_object_name(VkObjectType p_object_type, u
 	}
 }
 
+#ifdef MODULE_RIVE_ENABLED
+namespace rive_integration {
+	bool create_vulkan_context(VkInstance instance, VkPhysicalDevice physical_device, VkDevice device, const VkPhysicalDeviceFeatures &features, PFN_vkGetInstanceProcAddr get_instance_proc_addr);
+}
+#endif
+
 Error RenderingDeviceDriverVulkan::initialize(uint32_t p_device_index, uint32_t p_frame_count) {
 	context_device = context_driver->device_get(p_device_index);
 	physical_device = context_driver->physical_device_get(p_device_index);
@@ -1621,6 +1627,10 @@ Error RenderingDeviceDriverVulkan::initialize(uint32_t p_device_index, uint32_t 
 #endif
 
 	shader_container_format.set_debug_info_enabled(Engine::get_singleton()->is_generate_spirv_debug_info_enabled());
+
+#ifdef MODULE_RIVE_ENABLED
+	rive_integration::create_vulkan_context(context_driver->instance_get(), physical_device, vk_device, physical_device_features, vkGetInstanceProcAddr);
+#endif
 
 	return OK;
 }

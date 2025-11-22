@@ -166,6 +166,9 @@ env_d3d12_rdd.Prepend(CPPPATH=mesa_private_inc_paths)
 # For the same reason as above, the defines must be the same as in the 3rd-party code itself.
 env_d3d12_rdd.Append(CPPDEFINES=extra_defines)
 
+if os.path.exists(env.Dir("#modules/rive").abspath):
+    print("RIVE MODULE DETECTED - ADDING DEFINE")
+    env_d3d12_rdd.Append(CPPDEFINES=["MODULE_RIVE_ENABLED"])
 
 # Add all.
 

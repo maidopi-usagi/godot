@@ -374,6 +374,10 @@ cpp.hint
 __MACOSX
 Godot.app
 
+# Rive runtime generated shaders (ignore generated shader outputs)
+thirdparty/rive-runtime/renderer/generated/shaders/
+thirdparty/rive-runtime/renderer/generated/shaders/.shaders_built
+generated/
 # Windows
 # https://github.com/github/gitignore/blob/main/Global/Windows.gitignore
 [Tt]humbs.db
