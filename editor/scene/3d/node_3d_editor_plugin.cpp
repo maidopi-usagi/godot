@@ -4268,7 +4268,9 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 		case VIEW_DISPLAY_DEBUG_CLUSTER_REFLECTION_PROBES:
 		case VIEW_DISPLAY_DEBUG_OCCLUDERS:
 		case VIEW_DISPLAY_MOTION_VECTORS:
-		case VIEW_DISPLAY_INTERNAL_BUFFER: {
+		case VIEW_DISPLAY_INTERNAL_BUFFER:
+		case VIEW_DISPLAY_DEBUG_RESTIR_GI_LIGHTING:
+		case VIEW_DISPLAY_DEBUG_RESTIR_GI_NORMAL: {
 			static const int display_options[] = {
 				VIEW_DISPLAY_NORMAL,
 				VIEW_DISPLAY_WIREFRAME,
@@ -4297,6 +4299,8 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 				VIEW_DISPLAY_DEBUG_OCCLUDERS,
 				VIEW_DISPLAY_MOTION_VECTORS,
 				VIEW_DISPLAY_INTERNAL_BUFFER,
+				VIEW_DISPLAY_DEBUG_RESTIR_GI_LIGHTING,
+				VIEW_DISPLAY_DEBUG_RESTIR_GI_NORMAL,
 				VIEW_MAX
 			};
 			static const Viewport::DebugDraw debug_draw_modes[] = {
@@ -4327,6 +4331,8 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 				Viewport::DEBUG_DRAW_OCCLUDERS,
 				Viewport::DEBUG_DRAW_MOTION_VECTORS,
 				Viewport::DEBUG_DRAW_INTERNAL_BUFFER,
+				Viewport::DEBUG_DRAW_RESTIR_GI_LIGHTING,
+				Viewport::DEBUG_DRAW_RESTIR_GI_NORMAL,
 			};
 
 			for (int idx = 0; display_options[idx] != VIEW_MAX; idx++) {
@@ -6160,6 +6166,10 @@ Node3DEditorViewport::Node3DEditorViewport(Node3DEditor *p_spatial_editor, int p
 	display_submenu->add_separator();
 	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("VoxelGI/SDFGI Buffer"), VIEW_DISPLAY_DEBUG_GI_BUFFER, SupportedRenderingMethods::FORWARD_PLUS,
 			TTRC("Requires SDFGI or VoxelGI to be enabled to have a visible effect."));
+	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("ReSTIR GI Lighting"), VIEW_DISPLAY_DEBUG_RESTIR_GI_LIGHTING, SupportedRenderingMethods::FORWARD_PLUS,
+			TTRC("Requires ReSTIR GI to be enabled to have a visible effect."));
+	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("ReSTIR GI Normal"), VIEW_DISPLAY_DEBUG_RESTIR_GI_NORMAL, SupportedRenderingMethods::FORWARD_PLUS,
+			TTRC("Requires ReSTIR GI to be enabled to have a visible effect."));
 	display_submenu->add_separator();
 	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("Disable Mesh LOD"), VIEW_DISPLAY_DEBUG_DISABLE_LOD, SupportedRenderingMethods::ALL,
 			TTRC("Renders all meshes with their highest level of detail regardless of their distance from the camera."));

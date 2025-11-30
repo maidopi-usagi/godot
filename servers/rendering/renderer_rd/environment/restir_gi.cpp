@@ -92,11 +92,9 @@ void ReSTIRGI::initialize(GI *p_gi, const Settings &p_settings, Size2i p_screen_
 		sampler_state.repeat_w = RenderingDevice::SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE;
 		nearest_sampler = rd->sampler_create(sampler_state);
 	}
-	
+
 	if (linear_sampler.is_null() || nearest_sampler.is_null()) {
 		print_line("ReSTIR GI: Failed to create samplers!");
-	} else {
-		print_line("ReSTIR GI: Samplers created successfully.");
 	}
 	
 	// Compile shaders
@@ -350,6 +348,9 @@ void ReSTIRGI::_free_resources() {
 	if (screen_trace_pipeline.is_valid()) rd->free_rid(screen_trace_pipeline);
 	if (world_trace_pipeline.is_valid()) rd->free_rid(world_trace_pipeline);
 	if (radiance_cache_pipeline.is_valid()) rd->free_rid(radiance_cache_pipeline);
+	if (temporal_resampling_pipeline.is_valid()) rd->free_rid(temporal_resampling_pipeline);
+	if (spatial_resampling_pipeline.is_valid()) rd->free_rid(spatial_resampling_pipeline);
+	if (resolve_pipeline.is_valid()) rd->free_rid(resolve_pipeline);
 
 	// Clear RIDs
 	gbuffer = GBufferTextures();
@@ -389,6 +390,21 @@ void ReSTIRGI::_compile_shaders() {
 	cache_modes.push_back("\n#define MODE_QUERY_INSERT\n");
 	shaders.radiance_cache.initialize(cache_modes, String());
 	shaders.radiance_cache_version = shaders.radiance_cache.version_create();
+
+	Vector<String> temporal_modes;
+	temporal_modes.push_back("");
+	shaders.temporal_resampling.initialize(temporal_modes, String());
+	shaders.temporal_resampling_version = shaders.temporal_resampling.version_create();
+
+	Vector<String> spatial_modes;
+	spatial_modes.push_back("");
+	shaders.spatial_resampling.initialize(spatial_modes, String());
+	shaders.spatial_resampling_version = shaders.spatial_resampling.version_create();
+
+	Vector<String> resolve_modes;
+	resolve_modes.push_back("");
+	shaders.resolve.initialize(resolve_modes, String());
+	shaders.resolve_version = shaders.resolve.version_create();
 	
 	// Create pipelines
 	RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
@@ -428,6 +444,27 @@ void ReSTIRGI::_compile_shaders() {
 			radiance_cache_pipeline = rd->compute_pipeline_create(shader);
 		}
 	}
+
+	if (!temporal_resampling_pipeline.is_valid()) {
+		RID shader = shaders.temporal_resampling.version_get_shader(shaders.temporal_resampling_version, 0);
+		if (shader.is_valid()) {
+			temporal_resampling_pipeline = rd->compute_pipeline_create(shader);
+		}
+	}
+
+	if (!spatial_resampling_pipeline.is_valid()) {
+		RID shader = shaders.spatial_resampling.version_get_shader(shaders.spatial_resampling_version, 0);
+		if (shader.is_valid()) {
+			spatial_resampling_pipeline = rd->compute_pipeline_create(shader);
+		}
+	}
+
+	if (!resolve_pipeline.is_valid()) {
+		RID shader = shaders.resolve.version_get_shader(shaders.resolve_version, 0);
+		if (shader.is_valid()) {
+			resolve_pipeline = rd->compute_pipeline_create(shader);
+		}
+	}
 }
 
 // ===== Main Rendering Pipeline =====
@@ -444,18 +481,12 @@ void ReSTIRGI::render_gbuffer_prepass(RenderDataRD *p_render_data, Ref<RenderSce
 
 	// Uniforms
 	Vector<RD::Uniform> uniforms;
-	
-	print_line("ReSTIR GI: Creating GBuffer Prepass Uniforms");
-	print_line("ReSTIR GI: UNIFORM_TYPE_SAMPLER_WITH_TEXTURE value: " + itos(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE));
-	print_line("ReSTIR GI: UNIFORM_TYPE_IMAGE value: " + itos(RenderingDevice::UNIFORM_TYPE_IMAGE));
-	
 	{
 		Vector<RID> textures;
 		textures.push_back(linear_sampler);
 		textures.push_back(p_normal_roughness);
 		RenderingDevice::Uniform u(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, textures);
 		uniforms.push_back(u);
-		print_line("ReSTIR GI: Binding 0 - SamplerWithTexture. Type: " + itos(u.uniform_type));
 		
 		if (linear_sampler.is_null()) print_line("ReSTIR GI: Linear sampler is NULL");
 		if (p_normal_roughness.is_null()) print_line("ReSTIR GI: Normal roughness is NULL");
@@ -1054,17 +1085,215 @@ void ReSTIRGI::update_radiance_cache(RenderDataRD *p_render_data) {
 }
 
 void ReSTIRGI::perform_restir_sampling(RenderDataRD *p_render_data) {
-	// TODO: Implement ReSTIR three-stage sampling
-	// 1. Initial sampling
-	// 2. Temporal resampling
-	// 3. Spatial resampling
-	print_line("ReSTIR GI: ReSTIR sampling placeholder");
+	RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
+	RD::get_singleton()->draw_command_begin_label("ReSTIR GI: Sampling");
+
+	Size2i probe_resolution = _get_probe_resolution_for_mode(settings.ray_count_mode, render_resolution);
+	
+	// 1. Temporal Resampling
+	// Input: Trace results, Motion Vectors, Previous Reservoirs (reservoirs_temporal)
+	// Output: Current Reservoirs (reservoirs_current)
+	{
+		Vector<RD::Uniform> uniforms;
+		{
+			Vector<RID> textures;
+			textures.push_back(nearest_sampler);
+			textures.push_back(gbuffer.normal_depth);
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, textures));
+		}
+		{
+			Vector<RID> textures;
+			textures.push_back(linear_sampler);
+			textures.push_back(gbuffer.motion_vectors);
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 1, textures));
+		}
+		{
+			Vector<RID> textures;
+			textures.push_back(nearest_sampler);
+			textures.push_back(tracing_textures.hit_radiance);
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 2, textures));
+		}
+		{
+			Vector<RID> textures;
+			textures.push_back(nearest_sampler);
+			textures.push_back(tracing_textures.ray_directions);
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 3, textures));
+		}
+		{
+			Vector<RID> textures;
+			textures.push_back(nearest_sampler);
+			textures.push_back(tracing_textures.hit_distance);
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 4, textures));
+		}
+		{
+			Vector<RID> buffers;
+			buffers.push_back(restir_buffers.reservoirs_temporal);
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, buffers));
+		}
+		{
+			Vector<RID> buffers;
+			buffers.push_back(restir_buffers.reservoirs_current);
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, buffers));
+		}
+
+		struct TemporalParams {
+			int32_t screen_size[2];
+			uint32_t frame_index;
+			uint32_t max_history_length;
+			float temporal_depth_rejection;
+			float temporal_normal_rejection;
+			float padding[2];
+		} params;
+
+		params.screen_size[0] = probe_resolution.x;
+		params.screen_size[1] = probe_resolution.y;
+		params.frame_index = frame_count;
+		params.max_history_length = 20; // Configurable?
+		params.temporal_depth_rejection = 0.1f;
+		params.temporal_normal_rejection = 0.5f; // Dot product threshold
+
+		Vector<uint8_t> params_data;
+		params_data.resize(sizeof(TemporalParams));
+		memcpy(params_data.ptrw(), &params, sizeof(TemporalParams));
+		RID params_buffer = rd->uniform_buffer_create(sizeof(TemporalParams), params_data);
+		
+		Vector<RID> buffers;
+		buffers.push_back(params_buffer);
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 7, buffers));
+
+		RID shader = shaders.temporal_resampling.version_get_shader(shaders.temporal_resampling_version, 0);
+		RenderingDevice::ComputeListID compute_list = rd->compute_list_begin();
+		rd->compute_list_bind_compute_pipeline(compute_list, temporal_resampling_pipeline);
+		rd->compute_list_bind_uniform_set(compute_list, rd->uniform_set_create(uniforms, shader, 0), 0);
+		
+		uint32_t group_size_x = 8;
+		uint32_t group_size_y = 8;
+		uint32_t dispatch_x = (probe_resolution.x + group_size_x - 1) / group_size_x;
+		uint32_t dispatch_y = (probe_resolution.y + group_size_y - 1) / group_size_y;
+		
+		rd->compute_list_dispatch(compute_list, dispatch_x, dispatch_y, 1);
+		rd->compute_list_end();
+		
+		rd->free_rid(params_buffer);
+	}
+
+	// 2. Spatial Resampling
+	// Input: Current Reservoirs (reservoirs_current)
+	// Output: Spatial Reservoirs (reservoirs_spatial)
+	{
+		Vector<RD::Uniform> uniforms;
+		{
+			Vector<RID> textures;
+			textures.push_back(nearest_sampler);
+			textures.push_back(gbuffer.normal_depth);
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, textures));
+		}
+		{
+			Vector<RID> buffers;
+			buffers.push_back(restir_buffers.reservoirs_current);
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, buffers));
+		}
+		{
+			Vector<RID> buffers;
+			buffers.push_back(restir_buffers.reservoirs_spatial);
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, buffers));
+		}
+
+		struct SpatialParams {
+			int32_t screen_size[2];
+			uint32_t frame_index;
+			uint32_t neighbor_count;
+			float spatial_radius;
+			float depth_threshold;
+			float normal_threshold;
+			float padding;
+		} params;
+
+		params.screen_size[0] = probe_resolution.x;
+		params.screen_size[1] = probe_resolution.y;
+		params.frame_index = frame_count;
+		params.neighbor_count = 5; // Configurable
+		params.spatial_radius = 30.0f; // Pixels
+		params.depth_threshold = 0.1f;
+		params.normal_threshold = 0.5f;
+
+		Vector<uint8_t> params_data;
+		params_data.resize(sizeof(SpatialParams));
+		memcpy(params_data.ptrw(), &params, sizeof(SpatialParams));
+		RID params_buffer = rd->uniform_buffer_create(sizeof(SpatialParams), params_data);
+		
+		Vector<RID> buffers;
+		buffers.push_back(params_buffer);
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, buffers));
+
+		RID shader = shaders.spatial_resampling.version_get_shader(shaders.spatial_resampling_version, 0);
+		RenderingDevice::ComputeListID compute_list = rd->compute_list_begin();
+		rd->compute_list_bind_compute_pipeline(compute_list, spatial_resampling_pipeline);
+		rd->compute_list_bind_uniform_set(compute_list, rd->uniform_set_create(uniforms, shader, 0), 0);
+		
+		uint32_t group_size_x = 8;
+		uint32_t group_size_y = 8;
+		uint32_t dispatch_x = (probe_resolution.x + group_size_x - 1) / group_size_x;
+		uint32_t dispatch_y = (probe_resolution.y + group_size_y - 1) / group_size_y;
+		
+		rd->compute_list_dispatch(compute_list, dispatch_x, dispatch_y, 1);
+		rd->compute_list_end();
+		
+		rd->free_rid(params_buffer);
+	}
+
+	// 3. Resolve
+	// Input: Spatial Reservoirs (reservoirs_spatial)
+	// Output: Radiance Current (tracing_textures.radiance_current)
+	{
+		Vector<RD::Uniform> uniforms;
+		{
+			Vector<RID> buffers;
+			buffers.push_back(restir_buffers.reservoirs_spatial);
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, buffers));
+		}
+		{
+			Vector<RID> images;
+			images.push_back(tracing_textures.radiance_current);
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, images));
+		}
+
+		struct ResolvePushConstant {
+			int32_t screen_size[2];
+			int32_t padding[2];
+		} params;
+
+		params.screen_size[0] = probe_resolution.x;
+		params.screen_size[1] = probe_resolution.y;
+		params.padding[0] = 0;
+		params.padding[1] = 0;
+
+		RID shader = shaders.resolve.version_get_shader(shaders.resolve_version, 0);
+		RenderingDevice::ComputeListID compute_list = rd->compute_list_begin();
+		rd->compute_list_bind_compute_pipeline(compute_list, resolve_pipeline);
+		rd->compute_list_bind_uniform_set(compute_list, rd->uniform_set_create(uniforms, shader, 0), 0);
+		rd->compute_list_set_push_constant(compute_list, &params, sizeof(ResolvePushConstant));
+		
+		uint32_t group_size_x = 8;
+		uint32_t group_size_y = 8;
+		uint32_t dispatch_x = (probe_resolution.x + group_size_x - 1) / group_size_x;
+		uint32_t dispatch_y = (probe_resolution.y + group_size_y - 1) / group_size_y;
+		
+		rd->compute_list_dispatch(compute_list, dispatch_x, dispatch_y, 1);
+		rd->compute_list_end();
+	}
+
+	// Swap buffers for next frame
+	// reservoirs_spatial contains the final result, which becomes the history (reservoirs_temporal) for next frame
+	SWAP(restir_buffers.reservoirs_temporal, restir_buffers.reservoirs_spatial);
+
+	RD::get_singleton()->draw_command_end_label();
 }
 
 void ReSTIRGI::temporal_denoise(RenderDataRD *p_render_data) {
 	// TODO: Implement temporal accumulation and spatial filtering
 	frame_count++;
-	print_line("ReSTIR GI: Temporal denoise placeholder - frame ", frame_count);
+	// print_line("ReSTIR GI: Temporal denoise placeholder - frame ", frame_count);
 }
 
 void ReSTIRGI::composite_gi(RenderDataRD *p_render_data, RID p_output_texture) {
@@ -1072,34 +1301,32 @@ void ReSTIRGI::composite_gi(RenderDataRD *p_render_data, RID p_output_texture) {
 	print_line("ReSTIR GI: Composite placeholder");
 }
 
-void ReSTIRGI::debug_draw(const RenderDataRD *p_render_data, RID p_framebuffer, CopyEffects *p_copy_effects) {
-	if (settings.debug_mode == DEBUG_NONE) {
-		return;
-	}
-	
+void ReSTIRGI::debug_draw(const RenderDataRD *p_render_data, RID p_render_target, CopyEffects *p_copy_effects, RS::ViewportDebugDraw p_debug_draw) {
 	RID texture_to_draw = RID();
-	
-	switch (settings.debug_mode) {
-		case DEBUG_GLOBAL_ILLUMINATION:
+
+	switch (p_debug_draw) {
+		case RS::VIEWPORT_DEBUG_DRAW_GI_BUFFER:
 			texture_to_draw = tracing_textures.hit_radiance;
 			break;
-		case DEBUG_GEOMETRY_NORMALS:
+		case RS::VIEWPORT_DEBUG_DRAW_RESTIR_GI_LIGHTING:
+			texture_to_draw = tracing_textures.radiance_current;
+			break;
+		case RS::VIEWPORT_DEBUG_DRAW_NORMAL_BUFFER:
+		case RS::VIEWPORT_DEBUG_DRAW_RESTIR_GI_NORMAL:
 			texture_to_draw = gbuffer.normal_depth;
 			break;
-		case DEBUG_VOXEL_LIGHTING:
+		case RS::VIEWPORT_DEBUG_DRAW_VOXEL_GI_LIGHTING:
 			texture_to_draw = tracing_textures.hit_radiance; // Placeholder
 			break;
 		default:
 			break;
 	}
+
 	if (texture_to_draw.is_valid() && p_copy_effects) {
-		// Draw to the output framebuffer
-		// We assume the framebuffer covers the whole screen
-		Rect2 rect(0, 0, render_resolution.x, render_resolution.y);
-		// Use copy_to_rect to blit the texture
-		// Note: hit_radiance is RGBA16F, normal_depth is RGBA16F (octahedral normal + depth)
-		// If we draw normal_depth directly, it might look weird but useful for debug.
+		RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
+		RID framebuffer = texture_storage->render_target_get_rd_framebuffer(p_render_target);
+		Size2i size = texture_storage->render_target_get_size(p_render_target);
 		
-		p_copy_effects->copy_to_rect(texture_to_draw, p_framebuffer, rect, false, false, false, false, false);
+		p_copy_effects->copy_to_fb_rect(texture_to_draw, framebuffer, Rect2(Vector2(), size), false, false);
 	}
 }

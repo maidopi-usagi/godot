@@ -35,7 +35,10 @@
 #include "servers/rendering/renderer_rd/shaders/environment/restir_gbuffer.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/restir_radiance_cache.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/restir_ray_gen.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/environment/restir_resolve.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/restir_screen_trace.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/environment/restir_spatial_resampling.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/environment/restir_temporal_resampling.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/restir_world_trace.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_buffer_custom_data_rd.h"
 #include "servers/rendering/rendering_device.h"
@@ -158,6 +161,12 @@ private:
 	GI *gi = nullptr;
 	Settings settings;
 
+	bool initialized = false;
+	Size2i render_resolution;
+	Size2i probe_resolution;
+	uint32_t frame_count = 0;
+	uint32_t hash_update_offset = 0;
+
 	// Render resources
 	GBufferTextures gbuffer;
 	TracingTextures tracing_textures;
@@ -176,12 +185,13 @@ private:
 		RID world_trace_version;
 		RestirRadianceCacheShaderRD radiance_cache;
 		RID radiance_cache_version;
+		RestirTemporalResamplingShaderRD temporal_resampling;
+		RID temporal_resampling_version;
+		RestirSpatialResamplingShaderRD spatial_resampling;
+		RID spatial_resampling_version;
+		RestirResolveShaderRD resolve;
+		RID resolve_version;
 	} shaders;
-
-	RID restir_initial_sampling_shader;
-	RID restir_temporal_resampling_shader;
-	RID restir_spatial_resampling_shader;
-	RID temporal_denoiser_shader;
 
 	// Pipelines
 	RID gbuffer_pipeline;
@@ -189,15 +199,11 @@ private:
 	RID screen_trace_pipeline;
 	RID world_trace_pipeline;
 	RID radiance_cache_pipeline;
+	RID temporal_resampling_pipeline;
+	RID spatial_resampling_pipeline;
+	RID resolve_pipeline;
 
-	// Resolution and frame state
-	Size2i render_resolution;
-	Size2i probe_resolution;
-	uint32_t frame_count = 0;
-	uint32_t hash_update_offset = 0;
-
-	bool initialized = false;
-	
+	// Uniform sets
 	RID linear_sampler;
 	RID nearest_sampler;
 
@@ -233,7 +239,7 @@ public:
 	void composite_gi(RenderDataRD *p_render_data, RID p_output_texture);
 
 	// Debug visualization
-	void debug_draw(const RenderDataRD *p_render_data, RID p_framebuffer, CopyEffects *p_copy_effects);
+	void debug_draw(const RenderDataRD *p_render_data, RID p_render_target, CopyEffects *p_copy_effects, RS::ViewportDebugDraw p_debug_draw);
 
 	// Getters
 	Settings get_settings() const { return settings; }
