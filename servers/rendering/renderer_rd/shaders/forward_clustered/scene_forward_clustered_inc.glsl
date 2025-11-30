@@ -414,6 +414,7 @@ layout(set = 1, binding = 29) uniform texture2D reflection_buffer;
 #endif
 layout(set = 1, binding = 30) uniform texture2DArray sdfgi_lightprobe_texture;
 layout(set = 1, binding = 31) uniform texture3D sdfgi_occlusion_cascades;
+layout(set = 1, binding = 37) uniform texture2D restir_gi_radiance;
 
 struct VoxelGIData {
 	mat4 xform; // 64 - 64

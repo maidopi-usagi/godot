@@ -16,8 +16,23 @@ layout(set = 0, binding = 3) uniform sampler2D u_screen_color;  // Scene color f
 layout(rgba16f, set = 0, binding = 4) uniform restrict writeonly image2D hit_radiance;
 layout(r16f, set = 0, binding = 5) uniform restrict writeonly image2D hit_distance;
 
+// SDFGI Resources
+#define MAX_CASCADES 8
+
+layout(set = 0, binding = 6) uniform sampler3D sdf_cascades[MAX_CASCADES];
+layout(set = 0, binding = 7) uniform sampler3D light_cascades[MAX_CASCADES];
+layout(set = 0, binding = 8) uniform sampler3D occlusion_texture;
+
+struct CascadeData {
+	vec3 offset;
+	float to_cell;
+	ivec3 probe_world_offset;
+	uint pad;
+	vec4 pad2;
+};
+
 // Uniforms
-layout(set = 0, binding = 6, std140) uniform ScreenSpaceParams {
+layout(set = 0, binding = 9, std140) uniform ScreenSpaceParams {
 	mat4 projection_matrix;
 	mat4 inv_projection_matrix;
 	mat4 view_matrix;
@@ -30,8 +45,62 @@ layout(set = 0, binding = 6, std140) uniform ScreenSpaceParams {
 	float stride;
 	float jitter_amount;
 	uint frame_count;
-	vec2 padding;
+	uint has_screen_color;
+	float padding;
+	
+	// SDFGI Params
+	CascadeData cascades[MAX_CASCADES];
+	uint cascade_count;
+	float min_cell_size;
+	float normal_bias;
+	float probe_bias;
+	float sky_energy;
+	float pad_sdfgi1;
+	float pad_sdfgi2;
+	float pad_sdfgi3;
 } params;
+
+// Helper to transform world position to cascade UVW
+vec3 world_to_cascade_uvw(vec3 world_pos, uint cascade_idx) {
+	vec3 local_pos = world_pos - params.cascades[cascade_idx].offset;
+	vec3 cell_pos = local_pos * params.cascades[cascade_idx].to_cell;
+	const float INV_SIZE = 1.0 / 128.0;
+	return cell_pos * INV_SIZE + 0.5;
+}
+
+// Sample lighting from the specified cascade
+vec3 sample_lighting(vec3 world_pos, uint cascade_idx) {
+	if (cascade_idx >= params.cascade_count) return vec3(0.0);
+	
+	vec3 uvw = world_to_cascade_uvw(world_pos, cascade_idx);
+	vec3 light = texture(light_cascades[cascade_idx], uvw).rgb;
+	float occlusion = texture(occlusion_texture, uvw).r;
+	
+	return light + vec3(params.sky_energy) * occlusion;
+}
+
+// Find best cascade for a world position
+uint find_cascade(vec3 world_pos) {
+	for (uint i = 0; i < params.cascade_count; i++) {
+		vec3 uvw = world_to_cascade_uvw(world_pos, i);
+		// Add margin
+		const float margin = 0.01;
+		if (all(greaterThanEqual(uvw, vec3(margin))) && all(lessThanEqual(uvw, vec3(1.0 - margin)))) {
+			return i;
+		}
+	}
+	return params.cascade_count;
+}
+
+// Reconstruct world position from depth
+vec3 reconstruct_world_pos(vec2 uv, float depth) {
+	vec4 ndc = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+	vec4 view_pos = params.inv_projection_matrix * ndc;
+	view_pos /= view_pos.w;
+	
+	mat4 inv_view = inverse(params.view_matrix);
+	return (inv_view * vec4(view_pos.xyz, 1.0)).xyz;
+}
 
 // PCG random
 uint pcg_hash(uint seed) {
@@ -175,6 +244,13 @@ void main() {
 		imageStore(hit_distance, probe_pos, vec4(-1.0));
 		return;
 	}
+
+	// Check if screen color is available
+	// if (params.has_screen_color == 0) {
+	// 	imageStore(hit_radiance, probe_pos, vec4(0.0));
+	// 	imageStore(hit_distance, probe_pos, vec4(-1.0));
+	// 	return;
+	// }
 	
 	// Transform ray to view space
 	vec3 ray_dir_vs = mat3(params.view_matrix) * ray_dir_ws;
@@ -199,8 +275,30 @@ void main() {
 	);
 	
 	if (hit) {
-		// Sample scene color at hit position
-		vec3 radiance = texture(u_screen_color, hit_uv).rgb;
+		vec3 radiance;
+		
+		if (params.has_screen_color != 0) {
+			// Sample scene color at hit position
+			radiance = texture(u_screen_color, hit_uv).rgb;
+		} else {
+			// Fallback to SDFGI
+			// Reconstruct world position of the hit
+			vec3 hit_pos_vs = reconstruct_view_pos(hit_uv, hit_depth_value);
+			// Convert to world space
+			mat4 inv_view = inverse(params.view_matrix);
+			vec3 hit_pos_ws = (inv_view * vec4(hit_pos_vs, 1.0)).xyz;
+			
+			// Apply normal bias?
+			// We don't have the normal at the hit point easily (unless we sample gbuffer at hit_uv)
+			// Sampling gbuffer at hit_uv is good.
+			vec3 hit_normal_vs = mat3(params.view_matrix) * normalize(texture(u_gbuffer_normal_depth, hit_uv).xyz);
+			vec3 hit_normal_ws = mat3(inv_view) * hit_normal_vs;
+			
+			hit_pos_ws += hit_normal_ws * params.normal_bias;
+			
+			uint cascade_idx = find_cascade(hit_pos_ws);
+			radiance = sample_lighting(hit_pos_ws, cascade_idx);
+		}
 		
 		// Calculate hit distance
 		vec3 hit_pos_vs = reconstruct_view_pos(hit_uv, hit_depth_value);

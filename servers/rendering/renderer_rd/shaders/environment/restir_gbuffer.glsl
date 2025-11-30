@@ -26,6 +26,14 @@ layout(push_constant, std430) uniform Params {
 	uint pad2;
 } params;
 
+vec3 decode_octahedral_normal(vec2 e) {
+	vec3 v = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
+	if (v.z < 0.0) {
+		v.xy = (1.0 - abs(v.yx)) * sign(v.xy);
+	}
+	return normalize(v);
+}
+
 void main() {
 	ivec2 dest_pos = ivec2(gl_GlobalInvocationID.xy);
 	
@@ -48,7 +56,8 @@ void main() {
 			vec2 sample_uv = uv_center + offset;
 			
 			vec4 normal_roughness = texture(u_source_normal_roughness, sample_uv);
-			vec3 normal = normalize(normal_roughness.xyz * 2.0 - 1.0);
+			// Godot uses Octahedral compression in RG channels
+			vec3 normal = decode_octahedral_normal(normal_roughness.xy * 2.0 - 1.0);
 			float depth = texture(u_source_depth, sample_uv).r;
 			
 			// Weight by normal validity (non-zero normals)

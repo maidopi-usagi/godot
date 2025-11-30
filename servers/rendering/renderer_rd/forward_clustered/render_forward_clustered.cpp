@@ -1611,16 +1611,17 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		for (uint32_t v = 0; v < rb->get_view_count(); v++) {
 			restir_gi->render_gbuffer_prepass(p_render_data, rb, p_normal_roughness_slices[v], rb->get_depth_texture(v));
 			restir_gi->generate_rays(p_render_data);
-			restir_gi->trace_screen_space(p_render_data, RID()); // Screen color not available yet
 			
 			Ref<RendererRD::GI::SDFGI> sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
+			restir_gi->trace_screen_space(p_render_data, RID(), sdfgi); // Screen color not available yet, fallback to SDFGI
+			
 			if (sdfgi.is_valid()) {
 				restir_gi->trace_world_space(p_render_data, sdfgi);
 			}
 			
 			// restir_gi->update_radiance_cache(p_render_data); // Disabled for now
-			// restir_gi->perform_restir_sampling(p_render_data); // Placeholder
-			// restir_gi->temporal_denoise(p_render_data); // Placeholder
+			restir_gi->perform_restir_sampling(p_render_data);
+			restir_gi->temporal_denoise(p_render_data);
 		}
 	}
 
@@ -2524,6 +2525,17 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	if (rb_data.is_valid()) {
 		_debug_draw_cluster(rb);
 
+		// Capture screen color for ReSTIR GI history
+		if (using_restir_gi && restir_gi) {
+			// Composite GI to screen (DEBUG: Overwrites screen)
+			RID render_target = rb->get_render_target();
+			restir_gi->composite_gi(p_render_data, render_target, copy_effects);
+
+			// Use the first view for now (TODO: Multiview support)
+			RID source_color = rb->get_internal_texture(0);
+			restir_gi->capture_screen_color(p_render_data, source_color);
+		}
+
 		RENDER_TIMESTAMP("Tonemap");
 
 		_render_buffers_post_process_and_tonemap(p_render_data);
@@ -2557,12 +2569,6 @@ void RenderForwardClustered::_render_buffers_debug_draw(const RenderDataRD *p_re
 	Ref<RenderBufferDataForwardClustered> rb_data = rb->get_custom_data(RB_SCOPE_FORWARD_CLUSTERED);
 	ERR_FAIL_COND(rb_data.is_null());
 
-	if (restir_gi) {
-		RID render_target = rb->get_render_target();
-		RID texture = texture_storage->render_target_get_rd_texture(render_target);
-		restir_gi->debug_draw(p_render_data, texture, copy_effects);
-	}
-
 	RendererSceneRenderRD::_render_buffers_debug_draw(p_render_data);
 
 	RID render_target = rb->get_render_target();
@@ -2584,6 +2590,11 @@ void RenderForwardClustered::_render_buffers_debug_draw(const RenderDataRD *p_re
 		RID ambient_texture = rb->get_texture(RB_SCOPE_GI, RB_TEX_AMBIENT);
 		RID reflection_texture = rb->get_texture(RB_SCOPE_GI, RB_TEX_REFLECTION);
 		copy_effects->copy_to_fb_rect(ambient_texture, texture_storage->render_target_get_rd_framebuffer(render_target), Rect2(Vector2(), rtsize), false, false, false, true, reflection_texture, rb->get_view_count() > 1);
+	}
+
+	if (restir_gi) {
+		RID render_target = rb->get_render_target();
+		restir_gi->debug_draw(p_render_data, render_target, copy_effects, get_debug_draw_mode());
 	}
 }
 
@@ -3651,6 +3662,20 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 
 		RID ssr_mip_level = (rb_data.is_valid() && !rb_data->ss_effects_data.ssr.half_size && rb->has_texture(RB_SCOPE_SSR, RB_MIP_LEVEL)) ? rb->get_texture(RB_SCOPE_SSR, RB_MIP_LEVEL) : RID();
 		RID texture = ssr_mip_level.is_valid() ? ssr_mip_level : texture_storage->texture_rd_get_default(is_multiview ? RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_BLACK : RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
+		u.append_id(texture);
+		uniforms.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.binding = 37;
+		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		RID texture;
+		if (restir_gi) {
+			texture = restir_gi->get_gi_output();
+		}
+		if (texture.is_null()) {
+			texture = texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
+		}
 		u.append_id(texture);
 		uniforms.push_back(u);
 	}

@@ -259,5 +259,18 @@ env_rd.add_source_files(env.servers_sources, "environment/restir_gi.cpp")
 **依赖**: 基础追踪管线 (已完成)
 
 ---
-**最后更新**: 2025-11-30
-**当前状态**: 基础追踪管线(RayGen -> ScreenTrace -> WorldTrace)的C++调度已全部实现。下一步是实现ReSTIR采样Shader。
+**最后更新**: 2025-12-01
+**当前状态**: 基础追踪管线(RayGen -> ScreenTrace -> WorldTrace)的C++调度已全部实现。ReSTIR采样Shader框架已建立，但输出全黑，正在进行调试。
+
+## 调试日志
+
+### 2025-12-01: ReSTIR采样调试
+- **问题**: 启用ReSTIR GI后，Debug View显示全黑。
+- **分析**: 
+  1. `restir_world_trace.glsl` 中使用了占位符 `ray_origin_ws = vec3(0.0)`，导致射线原点错误。
+  2. `restir_resolve.glsl` 可能因权重计算问题输出黑屏。
+- **修复**:
+  1. 修改 `restir_world_trace.glsl`，实现 `reconstruct_world_pos`，并从C++传入投影矩阵。
+  2. 修改 `restir_resolve.glsl` 直接输出 `sample_radiance` 以验证Trace结果。
+  3. 修复 Push Constant 对齐问题。
+- **下一步**: 验证Trace结果是否正常。如果正常，恢复 `restir_resolve.glsl` 并调试权重计算。

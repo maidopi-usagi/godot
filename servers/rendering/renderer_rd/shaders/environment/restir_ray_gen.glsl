@@ -118,11 +118,13 @@ void main() {
 	// Read GBuffer data
 	vec2 uv = (vec2(probe_pos) + 0.5) / vec2(params.probe_resolution);
 	vec4 gbuffer_data = texture(u_gbuffer_normal_depth, uv);
-	vec3 normal = normalize(gbuffer_data.xyz);
+	// GBuffer normals are View Space. Transform to World Space for ray generation.
+	vec3 normal_vs = normalize(gbuffer_data.xyz);
+	vec3 normal = normalize(mat3(params.view_to_world) * normal_vs);
 	float depth = gbuffer_data.w;
 	
 	// Check if valid surface
-	if (depth <= 0.0001 || length(normal) < 0.1) {
+	if (depth <= 0.0001 || length(normal_vs) < 0.1) {
 		// No geometry at this probe position - write invalid ray
 		imageStore(ray_directions, probe_pos, vec4(0.0));
 		return;
