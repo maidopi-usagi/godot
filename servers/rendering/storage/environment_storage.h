@@ -144,6 +144,7 @@ private:
 		float sdfgi_energy = 1.0;
 		float sdfgi_normal_bias = 1.1;
 		float sdfgi_probe_bias = 1.1;
+		bool sdfgi_use_screen_probes = false;
 		RS::EnvironmentSDFGIYScale sdfgi_y_scale = RS::ENV_SDFGI_Y_SCALE_75_PERCENT;
 
 		// Adjustments
@@ -283,7 +284,7 @@ public:
 	float environment_get_ssil_normal_rejection(RID p_env) const;
 
 	// SDFGI
-	void environment_set_sdfgi(RID p_env, bool p_enable, int p_cascades, float p_min_cell_size, RS::EnvironmentSDFGIYScale p_y_scale, bool p_use_occlusion, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_probe_bias);
+	void environment_set_sdfgi(RID p_env, bool p_enable, int p_cascades, float p_min_cell_size, RS::EnvironmentSDFGIYScale p_y_scale, bool p_use_occlusion, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_probe_bias, bool p_use_screen_probes);
 	bool environment_get_sdfgi_enabled(RID p_env) const;
 	int environment_get_sdfgi_cascades(RID p_env) const;
 	float environment_get_sdfgi_min_cell_size(RID p_env) const;
@@ -293,6 +294,7 @@ public:
 	float environment_get_sdfgi_energy(RID p_env) const;
 	float environment_get_sdfgi_normal_bias(RID p_env) const;
 	float environment_get_sdfgi_probe_bias(RID p_env) const;
+	bool environment_get_sdfgi_use_screen_probes(RID p_env) const;
 	RS::EnvironmentSDFGIYScale environment_get_sdfgi_y_scale(RID p_env) const;
 
 	// Adjustment

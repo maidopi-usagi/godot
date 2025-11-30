@@ -986,6 +986,7 @@ bool RendererSceneRenderRD::_debug_draw_can_use_effects(RS::ViewportDebugDraw p_
 		case RS::VIEWPORT_DEBUG_DRAW_SCENE_LUMINANCE:
 		case RS::VIEWPORT_DEBUG_DRAW_PSSM_SPLITS:
 		case RS::VIEWPORT_DEBUG_DRAW_SDFGI_PROBES:
+		case RS::VIEWPORT_DEBUG_DRAW_SDFGI_SCREEN_PROBES:
 		case RS::VIEWPORT_DEBUG_DRAW_DISABLE_LOD:
 			can_use_effects = true;
 			break;
@@ -1079,6 +1080,16 @@ void RendererSceneRenderRD::_render_buffers_debug_draw(const RenderDataRD *p_ren
 		if (p_render_data->occluder_debug_tex.is_valid()) {
 			Size2i rtsize = texture_storage->render_target_get_size(render_target);
 			copy_effects->copy_to_fb_rect(texture_storage->texture_get_rd_texture(p_render_data->occluder_debug_tex), texture_storage->render_target_get_rd_framebuffer(render_target), Rect2i(Vector2(), rtsize), true, false);
+		}
+	}
+
+	if (debug_draw == RS::VIEWPORT_DEBUG_DRAW_SDFGI_SCREEN_PROBES) {
+		if (rb->has_custom_data(RB_SCOPE_SDFGI)) {
+			Ref<RendererRD::GI::SDFGI> sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
+			if (sdfgi.is_valid() && sdfgi->screen_probes_texture.is_valid()) {
+				Size2i rtsize = texture_storage->render_target_get_size(render_target);
+				copy_effects->copy_to_fb_rect(sdfgi->screen_probes_texture, texture_storage->render_target_get_rd_framebuffer(render_target), Rect2(Vector2(), rtsize), false, false);
+			}
 		}
 	}
 
@@ -1292,6 +1303,19 @@ void RendererSceneRenderRD::_post_prepass_render(RenderDataRD *p_render_data, bo
 
 		Ref<RendererRD::GI::SDFGI> sdfgi = p_render_data->render_buffers->get_custom_data(RB_SCOPE_SDFGI);
 		sdfgi->update_probes(p_render_data->environment, sky.sky_owner.get_or_null(environment_get_sky(p_render_data->environment)));
+	}
+}
+
+void RendererSceneRenderRD::_update_sdfgi_probes(RenderDataRD *p_render_data) {
+	if (p_render_data->render_buffers.is_valid() && p_render_data->render_buffers->has_custom_data(RB_SCOPE_SDFGI)) {
+		Ref<RendererRD::GI::SDFGI> sdfgi = p_render_data->render_buffers->get_custom_data(RB_SCOPE_SDFGI);
+		RID depth_texture = p_render_data->render_buffers->get_depth_texture();
+		RID normal_texture = _render_buffers_get_normal_texture(p_render_data->render_buffers);
+
+		if (sdfgi->use_screen_probes && depth_texture.is_valid() && normal_texture.is_valid()) {
+			sdfgi->configure(p_render_data->render_buffers.ptr());
+			sdfgi->update_screen_probes(depth_texture, normal_texture, p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform);
+		}
 	}
 }
 

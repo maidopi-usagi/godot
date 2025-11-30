@@ -42,6 +42,7 @@
 #include "servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/sdfgi_integrate.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/sdfgi_preprocess.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/environment/sdfgi_screen_probes.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/voxel_gi.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/voxel_gi_debug.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_buffer_custom_data_rd.h"
@@ -429,6 +430,25 @@ private:
 
 		RID integrate_default_sky_uniform_set;
 
+		struct ScreenProbesSceneData {
+			float projection[16];
+			float inv_projection[16];
+			float transform[16];
+		};
+
+		struct ScreenProbesPushConstant {
+			float grid_size[3];
+			uint32_t max_cascades;
+
+			int32_t screen_size[2];
+			float y_mult;
+			uint32_t pad;
+		};
+
+		SdfgiScreenProbesShaderRD screen_probes;
+		RID screen_probes_shader;
+		PipelineDeferredRD screen_probes_pipeline;
+
 	} sdfgi_shader;
 
 public:
@@ -667,6 +687,7 @@ public:
 		float normal_bias = 1.1;
 		float probe_bias = 1.1;
 		RS::EnvironmentSDFGIYScale y_scale_mode = RS::ENV_SDFGI_Y_SCALE_75_PERCENT;
+		bool use_screen_probes = false;
 
 		float y_mult = 1.0;
 
@@ -676,7 +697,11 @@ public:
 		int32_t cascade_dynamic_light_count[SDFGI::MAX_CASCADES]; //used dynamically
 		RID integrate_sky_uniform_set;
 
-		virtual void configure(RenderSceneBuffersRD *p_render_buffers) override {}
+		RID screen_probes_texture;
+		RID screen_probes_uniform_set;
+		RID screen_probes_scene_data_ubo;
+
+		virtual void configure(RenderSceneBuffersRD *p_render_buffers) override;
 		virtual void free_data() override;
 		~SDFGI();
 
@@ -684,6 +709,7 @@ public:
 		void update(RID p_env, const Vector3 &p_world_position);
 		void update_light();
 		void update_probes(RID p_env, RendererRD::SkyRD::Sky *p_sky);
+		void update_screen_probes(RID p_depth_texture, RID p_normal_texture, const Projection &p_projection, const Transform3D &p_transform);
 		void store_probes();
 		int get_pending_region_data(int p_region, Vector3i &r_local_offset, Vector3i &r_local_size, AABB &r_bounds) const;
 		void update_cascades();

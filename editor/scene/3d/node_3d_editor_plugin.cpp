@@ -4260,6 +4260,7 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 		case VIEW_DISPLAY_DEBUG_DECAL_ATLAS:
 		case VIEW_DISPLAY_DEBUG_SDFGI:
 		case VIEW_DISPLAY_DEBUG_SDFGI_PROBES:
+		case VIEW_DISPLAY_DEBUG_SDFGI_SCREEN_PROBES:
 		case VIEW_DISPLAY_DEBUG_GI_BUFFER:
 		case VIEW_DISPLAY_DEBUG_DISABLE_LOD:
 		case VIEW_DISPLAY_DEBUG_CLUSTER_OMNI_LIGHTS:
@@ -4290,6 +4291,7 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 				VIEW_DISPLAY_DEBUG_DECAL_ATLAS,
 				VIEW_DISPLAY_DEBUG_SDFGI,
 				VIEW_DISPLAY_DEBUG_SDFGI_PROBES,
+				VIEW_DISPLAY_DEBUG_SDFGI_SCREEN_PROBES,
 				VIEW_DISPLAY_DEBUG_CLUSTER_OMNI_LIGHTS,
 				VIEW_DISPLAY_DEBUG_CLUSTER_SPOT_LIGHTS,
 				VIEW_DISPLAY_DEBUG_CLUSTER_DECALS,
@@ -4320,6 +4322,7 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 				Viewport::DEBUG_DRAW_DECAL_ATLAS,
 				Viewport::DEBUG_DRAW_SDFGI,
 				Viewport::DEBUG_DRAW_SDFGI_PROBES,
+				Viewport::DEBUG_DRAW_SDFGI_SCREEN_PROBES,
 				Viewport::DEBUG_DRAW_CLUSTER_OMNI_LIGHTS,
 				Viewport::DEBUG_DRAW_CLUSTER_SPOT_LIGHTS,
 				Viewport::DEBUG_DRAW_CLUSTER_DECALS,
@@ -6148,6 +6151,8 @@ Node3DEditorViewport::Node3DEditorViewport(Node3DEditor *p_spatial_editor, int p
 	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("SDFGI Cascades"), VIEW_DISPLAY_DEBUG_SDFGI, SupportedRenderingMethods::FORWARD_PLUS,
 			TTRC("Requires SDFGI to be enabled in Environment to have a visible effect."));
 	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("SDFGI Probes"), VIEW_DISPLAY_DEBUG_SDFGI_PROBES, SupportedRenderingMethods::FORWARD_PLUS,
+			TTRC("Requires SDFGI to be enabled in Environment to have a visible effect."));
+	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("SDFGI Screen Probes"), VIEW_DISPLAY_DEBUG_SDFGI_SCREEN_PROBES, SupportedRenderingMethods::FORWARD_PLUS,
 			TTRC("Requires SDFGI to be enabled in Environment to have a visible effect."));
 	display_submenu->add_separator();
 	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("Scene Luminance"), VIEW_DISPLAY_DEBUG_SCENE_LUMINANCE, SupportedRenderingMethods::FORWARD_PLUS_MOBILE,

@@ -157,6 +157,7 @@ private:
 	float sdfgi_energy = 1.0;
 	float sdfgi_normal_bias = 1.1;
 	float sdfgi_probe_bias = 1.1;
+	bool sdfgi_use_screen_probes = false;
 	void _update_sdfgi();
 
 	// Glow
@@ -341,6 +342,8 @@ public:
 	float get_sdfgi_normal_bias() const;
 	void set_sdfgi_probe_bias(float p_bias);
 	float get_sdfgi_probe_bias() const;
+	void set_sdfgi_use_screen_probes(bool p_enabled);
+	bool is_sdfgi_using_screen_probes() const;
 
 	// Glow
 	void set_glow_enabled(bool p_enabled);

@@ -649,8 +649,8 @@ float RendererSceneRender::environment_get_ssil_normal_rejection(RID p_env) cons
 
 // SDFGI
 
-void RendererSceneRender::environment_set_sdfgi(RID p_env, bool p_enable, int p_cascades, float p_min_cell_size, RS::EnvironmentSDFGIYScale p_y_scale, bool p_use_occlusion, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_probe_bias) {
-	environment_storage.environment_set_sdfgi(p_env, p_enable, p_cascades, p_min_cell_size, p_y_scale, p_use_occlusion, p_bounce_feedback, p_read_sky, p_energy, p_normal_bias, p_probe_bias);
+void RendererSceneRender::environment_set_sdfgi(RID p_env, bool p_enable, int p_cascades, float p_min_cell_size, RS::EnvironmentSDFGIYScale p_y_scale, bool p_use_occlusion, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_probe_bias, bool p_use_screen_probes) {
+	environment_storage.environment_set_sdfgi(p_env, p_enable, p_cascades, p_min_cell_size, p_y_scale, p_use_occlusion, p_bounce_feedback, p_read_sky, p_energy, p_normal_bias, p_probe_bias, p_use_screen_probes);
 }
 
 bool RendererSceneRender::environment_get_sdfgi_enabled(RID p_env) const {
@@ -687,6 +687,10 @@ float RendererSceneRender::environment_get_sdfgi_normal_bias(RID p_env) const {
 
 float RendererSceneRender::environment_get_sdfgi_probe_bias(RID p_env) const {
 	return environment_storage.environment_get_sdfgi_probe_bias(p_env);
+}
+
+bool RendererSceneRender::environment_get_sdfgi_use_screen_probes(RID p_env) const {
+	return environment_storage.environment_get_sdfgi_use_screen_probes(p_env);
 }
 
 RS::EnvironmentSDFGIYScale RendererSceneRender::environment_get_sdfgi_y_scale(RID p_env) const {

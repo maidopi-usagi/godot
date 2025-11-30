@@ -447,6 +447,8 @@ layout(set = 1, binding = 35) uniform texture2D ssr_buffer;
 layout(set = 1, binding = 36) uniform texture2D ssr_mip_level_buffer;
 #endif // USE_MULTIVIEW
 
+layout(set = 1, binding = 37) uniform texture2D sdfgi_screen_probes_texture;
+
 #endif
 
 vec4 normal_roughness_compatibility(vec4 p_normal_roughness) {

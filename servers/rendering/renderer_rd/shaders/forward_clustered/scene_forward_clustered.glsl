@@ -1844,6 +1844,10 @@ void fragment_shader(in SceneData scene_data) {
 			vec3 diffuse, specular;
 			sdfgi_process(cascade, cascade_pos, cam_pos, cam_normal, cam_reflection, use_specular, roughness, diffuse, specular, blend);
 
+			// Add screen space probes
+			vec3 screen_probe_light = texture(sampler2D(sdfgi_screen_probes_texture, SAMPLER_LINEAR_CLAMP), screen_uv).rgb;
+			diffuse += screen_probe_light;
+
 			if (blend > 0.0) {
 				//blend
 				if (cascade == sdfgi.max_cascades - 1) {

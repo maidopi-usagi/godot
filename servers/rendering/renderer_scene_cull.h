@@ -1342,7 +1342,7 @@ public:
 
 	// SDFGI
 
-	PASS11(environment_set_sdfgi, RID, bool, int, float, RS::EnvironmentSDFGIYScale, bool, float, bool, float, float, float)
+	PASS12(environment_set_sdfgi, RID, bool, int, float, RS::EnvironmentSDFGIYScale, bool, float, bool, float, float, float, bool)
 
 	PASS1RC(bool, environment_get_sdfgi_enabled, RID)
 	PASS1RC(int, environment_get_sdfgi_cascades, RID)
@@ -1353,6 +1353,7 @@ public:
 	PASS1RC(float, environment_get_sdfgi_energy, RID)
 	PASS1RC(float, environment_get_sdfgi_normal_bias, RID)
 	PASS1RC(float, environment_get_sdfgi_probe_bias, RID)
+	PASS1RC(bool, environment_get_sdfgi_use_screen_probes, RID)
 	PASS1RC(RS::EnvironmentSDFGIYScale, environment_get_sdfgi_y_scale, RID)
 
 	PASS1(environment_set_sdfgi_ray_count, RS::EnvironmentSDFGIRayCount)

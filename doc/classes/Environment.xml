@@ -242,6 +242,9 @@
 		<member name="sdfgi_use_occlusion" type="bool" setter="set_sdfgi_use_occlusion" getter="is_sdfgi_using_occlusion" default="false">
 			If [code]true[/code], SDFGI uses an occlusion detection approach to reduce light leaking. Occlusion may however introduce dark blotches in certain spots, which may be undesired in mostly outdoor scenes. [member sdfgi_use_occlusion] has a performance impact and should only be enabled when needed.
 		</member>
+		<member name="sdfgi_use_screen_probes" type="bool" setter="set_sdfgi_use_screen_probes" getter="is_sdfgi_using_screen_probes" default="false">
+			If [code]true[/code], SDFGI will use screen probes to sample the environment. This can improve the quality of the GI in some cases, but has a performance cost.
+		</member>
 		<member name="sdfgi_y_scale" type="int" setter="set_sdfgi_y_scale" getter="get_sdfgi_y_scale" enum="Environment.SDFGIYScale" default="1">
 			The Y scale to use for SDFGI cells. Lower values will result in SDFGI cells being packed together more closely on the Y axis. This is used to balance between quality and covering a lot of vertical ground. [member sdfgi_y_scale] should be set depending on how vertical your scene is (and how fast your camera may move on the Y axis).
 		</member>

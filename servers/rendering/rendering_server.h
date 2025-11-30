@@ -1143,6 +1143,7 @@ public:
 		VIEWPORT_DEBUG_DRAW_DECAL_ATLAS,
 		VIEWPORT_DEBUG_DRAW_SDFGI,
 		VIEWPORT_DEBUG_DRAW_SDFGI_PROBES,
+		VIEWPORT_DEBUG_DRAW_SDFGI_SCREEN_PROBES,
 		VIEWPORT_DEBUG_DRAW_GI_BUFFER,
 		VIEWPORT_DEBUG_DRAW_DISABLE_LOD,
 		VIEWPORT_DEBUG_DRAW_CLUSTER_OMNI_LIGHTS,
@@ -1329,7 +1330,7 @@ public:
 		ENV_SDFGI_Y_SCALE_100_PERCENT,
 	};
 
-	virtual void environment_set_sdfgi(RID p_env, bool p_enable, int p_cascades, float p_min_cell_size, EnvironmentSDFGIYScale p_y_scale, bool p_use_occlusion, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_probe_bias) = 0;
+	virtual void environment_set_sdfgi(RID p_env, bool p_enable, int p_cascades, float p_min_cell_size, EnvironmentSDFGIYScale p_y_scale, bool p_use_occlusion, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_probe_bias, bool p_use_screen_probes) = 0;
 
 	enum EnvironmentSDFGIRayCount {
 		ENV_SDFGI_RAY_COUNT_4,

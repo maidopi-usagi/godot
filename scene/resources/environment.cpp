@@ -565,6 +565,15 @@ float Environment::get_sdfgi_probe_bias() const {
 	return sdfgi_probe_bias;
 }
 
+void Environment::set_sdfgi_use_screen_probes(bool p_enabled) {
+	sdfgi_use_screen_probes = p_enabled;
+	_update_sdfgi();
+}
+
+bool Environment::is_sdfgi_using_screen_probes() const {
+	return sdfgi_use_screen_probes;
+}
+
 void Environment::_update_sdfgi() {
 	RS::get_singleton()->environment_set_sdfgi(
 			environment,
@@ -577,7 +586,8 @@ void Environment::_update_sdfgi() {
 			sdfgi_read_sky_light,
 			sdfgi_energy,
 			sdfgi_normal_bias,
-			sdfgi_probe_bias);
+			sdfgi_probe_bias,
+			sdfgi_use_screen_probes);
 }
 
 // Glow
@@ -1354,9 +1364,12 @@ void Environment::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_sdfgi_normal_bias"), &Environment::get_sdfgi_normal_bias);
 	ClassDB::bind_method(D_METHOD("set_sdfgi_probe_bias", "bias"), &Environment::set_sdfgi_probe_bias);
 	ClassDB::bind_method(D_METHOD("get_sdfgi_probe_bias"), &Environment::get_sdfgi_probe_bias);
+	ClassDB::bind_method(D_METHOD("set_sdfgi_use_screen_probes", "enabled"), &Environment::set_sdfgi_use_screen_probes);
+	ClassDB::bind_method(D_METHOD("is_sdfgi_using_screen_probes"), &Environment::is_sdfgi_using_screen_probes);
 
 	ADD_GROUP("SDFGI", "sdfgi_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "sdfgi_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_sdfgi_enabled", "is_sdfgi_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "sdfgi_use_screen_probes"), "set_sdfgi_use_screen_probes", "is_sdfgi_using_screen_probes");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "sdfgi_use_occlusion"), "set_sdfgi_use_occlusion", "is_sdfgi_using_occlusion");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "sdfgi_read_sky_light"), "set_sdfgi_read_sky_light", "is_sdfgi_reading_sky_light");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sdfgi_bounce_feedback", PROPERTY_HINT_RANGE, "0,1.99,0.01"), "set_sdfgi_bounce_feedback", "get_sdfgi_bounce_feedback");

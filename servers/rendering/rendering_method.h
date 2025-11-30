@@ -291,7 +291,7 @@ public:
 	virtual void environment_set_ssil_quality(RS::EnvironmentSSILQuality p_quality, bool p_half_size, float p_adaptive_target, int p_blur_passes, float p_fadeout_from, float p_fadeout_to) = 0;
 
 	// SDFGI
-	virtual void environment_set_sdfgi(RID p_env, bool p_enable, int p_cascades, float p_min_cell_size, RS::EnvironmentSDFGIYScale p_y_scale, bool p_use_occlusion, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_probe_bias) = 0;
+	virtual void environment_set_sdfgi(RID p_env, bool p_enable, int p_cascades, float p_min_cell_size, RS::EnvironmentSDFGIYScale p_y_scale, bool p_use_occlusion, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_probe_bias, bool p_use_screen_probes) = 0;
 
 	virtual bool environment_get_sdfgi_enabled(RID p_env) const = 0;
 	virtual int environment_get_sdfgi_cascades(RID p_env) const = 0;
@@ -302,6 +302,7 @@ public:
 	virtual float environment_get_sdfgi_energy(RID p_env) const = 0;
 	virtual float environment_get_sdfgi_normal_bias(RID p_env) const = 0;
 	virtual float environment_get_sdfgi_probe_bias(RID p_env) const = 0;
+	virtual bool environment_get_sdfgi_use_screen_probes(RID p_env) const = 0;
 	virtual RS::EnvironmentSDFGIYScale environment_get_sdfgi_y_scale(RID p_env) const = 0;
 
 	virtual void environment_set_sdfgi_ray_count(RS::EnvironmentSDFGIRayCount p_ray_count) = 0;

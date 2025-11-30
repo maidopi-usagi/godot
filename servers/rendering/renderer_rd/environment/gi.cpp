@@ -409,6 +409,39 @@ static RID create_clear_texture(const RD::TextureFormat &p_format, const String 
 	return texture;
 }
 
+void GI::SDFGI::configure(RenderSceneBuffersRD *p_render_buffers) {
+	if (p_render_buffers == nullptr) {
+		return;
+	}
+
+	Size2i internal_size = p_render_buffers->get_internal_size();
+	// Use 1/8 resolution for probes (8x8 pixels per probe)
+	internal_size.x = MAX(1, internal_size.x / 8);
+	internal_size.y = MAX(1, internal_size.y / 8);
+
+	if (screen_probes_texture.is_valid()) {
+		RD::TextureFormat tf = RD::get_singleton()->texture_get_format(screen_probes_texture);
+		if (tf.width != uint32_t(internal_size.x) || tf.height != uint32_t(internal_size.y) || !use_screen_probes) {
+			RD::get_singleton()->free_rid(screen_probes_texture);
+			screen_probes_texture = RID();
+			if (RD::get_singleton()->uniform_set_is_valid(screen_probes_uniform_set)) {
+				RD::get_singleton()->free_rid(screen_probes_uniform_set);
+				screen_probes_uniform_set = RID();
+			}
+		}
+	}
+
+	if (screen_probes_texture.is_null() && use_screen_probes) {
+		RD::TextureFormat tf;
+		tf.format = RD::DATA_FORMAT_R16G16B16A16_SFLOAT;
+		tf.width = internal_size.x;
+		tf.height = internal_size.y;
+		tf.usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;
+
+		screen_probes_texture = RD::get_singleton()->texture_create(tf, RD::TextureView());
+	}
+}
+
 void GI::SDFGI::create(RID p_env, const Vector3 &p_world_position, uint32_t p_requested_history_size, GI *p_gi) {
 	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
 	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
@@ -1121,7 +1154,18 @@ void GI::SDFGI::create(RID p_env, const Vector3 &p_world_position, uint32_t p_re
 }
 
 void GI::SDFGI::free_data() {
-	// we don't free things here, we handle SDFGI differently at the moment destructing the object when it needs to change.
+	if (screen_probes_texture.is_valid()) {
+		RD::get_singleton()->free_rid(screen_probes_texture);
+		screen_probes_texture = RID();
+	}
+	if (RD::get_singleton()->uniform_set_is_valid(screen_probes_uniform_set)) {
+		RD::get_singleton()->free_rid(screen_probes_uniform_set);
+		screen_probes_uniform_set = RID();
+	}
+	if (screen_probes_scene_data_ubo.is_valid()) {
+		RD::get_singleton()->free_rid(screen_probes_scene_data_ubo);
+		screen_probes_scene_data_ubo = RID();
+	}
 }
 
 GI::SDFGI::~SDFGI() {
@@ -1186,6 +1230,7 @@ void GI::SDFGI::update(RID p_env, const Vector3 &p_world_position) {
 	normal_bias = RendererSceneRenderRD::get_singleton()->environment_get_sdfgi_normal_bias(p_env);
 	probe_bias = RendererSceneRenderRD::get_singleton()->environment_get_sdfgi_probe_bias(p_env);
 	reads_sky = RendererSceneRenderRD::get_singleton()->environment_get_sdfgi_read_sky_light(p_env);
+	use_screen_probes = RendererSceneRenderRD::get_singleton()->environment_get_sdfgi_use_screen_probes(p_env);
 
 	int32_t drag_margin = (cascade_size / SDFGI::PROBE_DIVISOR) / 2;
 
@@ -1384,6 +1429,155 @@ void GI::SDFGI::update_probes(RID p_env, SkyRD::Sky *p_sky) {
 	}
 
 	RD::get_singleton()->compute_list_end();
+	RD::get_singleton()->draw_command_end_label();
+}
+
+void GI::SDFGI::update_screen_probes(RID p_depth_texture, RID p_normal_texture, const Projection &p_projection, const Transform3D &p_transform) {
+	if (screen_probes_texture.is_null()) {
+		return;
+	}
+
+	RD::get_singleton()->draw_command_begin_label("SDFGI Update Screen Probes");
+
+	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
+	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
+
+	if (screen_probes_scene_data_ubo.is_null()) {
+		screen_probes_scene_data_ubo = RD::get_singleton()->uniform_buffer_create(sizeof(SDFGIShader::ScreenProbesSceneData));
+	}
+
+	SDFGIShader::ScreenProbesSceneData scene_data;
+	RendererRD::MaterialStorage::store_camera(p_projection, scene_data.projection);
+	RendererRD::MaterialStorage::store_camera(p_projection.inverse(), scene_data.inv_projection);
+	RendererRD::MaterialStorage::store_transform(p_transform, scene_data.transform);
+	RD::get_singleton()->buffer_update(screen_probes_scene_data_ubo, 0, sizeof(SDFGIShader::ScreenProbesSceneData), &scene_data);
+
+	if (!RD::get_singleton()->uniform_set_is_valid(screen_probes_uniform_set)) {
+		Vector<RD::Uniform> uniforms;
+		{
+			RD::Uniform u;
+			u.binding = 1;
+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			for (uint32_t j = 0; j < SDFGI::MAX_CASCADES; j++) {
+				if (j < cascades.size()) {
+					u.append_id(cascades[j].sdf_tex);
+				} else {
+					u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_3D_WHITE));
+				}
+			}
+			uniforms.push_back(u);
+		}
+		{
+			RD::Uniform u;
+			u.binding = 2;
+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			for (uint32_t j = 0; j < SDFGI::MAX_CASCADES; j++) {
+				if (j < cascades.size()) {
+					u.append_id(cascades[j].light_tex);
+				} else {
+					u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_3D_WHITE));
+				}
+			}
+			uniforms.push_back(u);
+		}
+		{
+			RD::Uniform u;
+			u.binding = 3;
+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			for (uint32_t j = 0; j < SDFGI::MAX_CASCADES; j++) {
+				if (j < cascades.size()) {
+					u.append_id(cascades[j].light_aniso_0_tex);
+				} else {
+					u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_3D_WHITE));
+				}
+			}
+			uniforms.push_back(u);
+		}
+		{
+			RD::Uniform u;
+			u.binding = 4;
+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			for (uint32_t j = 0; j < SDFGI::MAX_CASCADES; j++) {
+				if (j < cascades.size()) {
+					u.append_id(cascades[j].light_aniso_1_tex);
+				} else {
+					u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_3D_WHITE));
+				}
+			}
+			uniforms.push_back(u);
+		}
+		{
+			RD::Uniform u;
+			u.binding = 5;
+			u.uniform_type = RD::UNIFORM_TYPE_SAMPLER;
+			u.append_id(material_storage->sampler_rd_get_default(RS::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RS::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED));
+			uniforms.push_back(u);
+		}
+		{
+			RD::Uniform u;
+			u.binding = 6;
+			u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+			u.append_id(cascades_ubo);
+			uniforms.push_back(u);
+		}
+		{
+			RD::Uniform u;
+			u.binding = 7;
+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			u.append_id(p_depth_texture);
+			uniforms.push_back(u);
+		}
+		{
+			RD::Uniform u;
+			u.binding = 8;
+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			u.append_id(p_normal_texture);
+			uniforms.push_back(u);
+		}
+		{
+			RD::Uniform u;
+			u.binding = 9;
+			u.uniform_type = RD::UNIFORM_TYPE_SAMPLER;
+			u.append_id(material_storage->sampler_rd_get_default(RS::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RS::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED));
+			uniforms.push_back(u);
+		}
+		{
+			RD::Uniform u;
+			u.binding = 10;
+			u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+			u.append_id(screen_probes_texture);
+			uniforms.push_back(u);
+		}
+		{
+			RD::Uniform u;
+			u.binding = 11;
+			u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+			u.append_id(screen_probes_scene_data_ubo);
+			uniforms.push_back(u);
+		}
+
+		screen_probes_uniform_set = RD::get_singleton()->uniform_set_create(uniforms, gi->sdfgi_shader.screen_probes.version_get_shader(gi->sdfgi_shader.screen_probes_shader, 0), 0);
+	}
+
+	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
+	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.screen_probes_pipeline.get_rid());
+	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, screen_probes_uniform_set, 0);
+
+	SDFGIShader::ScreenProbesPushConstant push_constant;
+	push_constant.grid_size[0] = cascade_size;
+	push_constant.grid_size[1] = cascade_size;
+	push_constant.grid_size[2] = cascade_size;
+	push_constant.max_cascades = cascades.size();
+
+	RD::TextureFormat tf = RD::get_singleton()->texture_get_format(screen_probes_texture);
+	push_constant.screen_size[0] = tf.width;
+	push_constant.screen_size[1] = tf.height;
+	push_constant.y_mult = y_mult;
+
+	RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::ScreenProbesPushConstant));
+	RD::get_singleton()->compute_list_dispatch_threads(compute_list, tf.width, tf.height, 1);
+	RD::get_singleton()->compute_list_end();
+
 	RD::get_singleton()->draw_command_end_label();
 }
 
@@ -3409,6 +3603,9 @@ GI::~GI() {
 	if (sdfgi_shader.debug_probes_shader.is_valid()) {
 		sdfgi_shader.debug_probes.version_free(sdfgi_shader.debug_probes_shader);
 	}
+	if (sdfgi_shader.screen_probes_shader.is_valid()) {
+		sdfgi_shader.screen_probes.version_free(sdfgi_shader.screen_probes_shader);
+	}
 	if (sdfgi_shader.debug_shader.is_valid()) {
 		sdfgi_shader.debug.version_free(sdfgi_shader.debug_shader);
 	}
@@ -3660,6 +3857,13 @@ void GI::init(SkyRD *p_sky) {
 				sdfgi_shader.debug_probes_pipeline[i].setup(debug_probes_shader_version, RD::RENDER_PRIMITIVE_TRIANGLE_STRIPS, rs, RD::PipelineMultisampleState(), ds, RD::PipelineColorBlendState::create_disabled(), 0);
 			}
 		}
+	}
+	{
+		Vector<String> versions;
+		versions.push_back("");
+		sdfgi_shader.screen_probes.initialize(versions, "");
+		sdfgi_shader.screen_probes_shader = sdfgi_shader.screen_probes.version_create();
+		sdfgi_shader.screen_probes_pipeline.create_compute_pipeline(sdfgi_shader.screen_probes.version_get_shader(sdfgi_shader.screen_probes_shader, 0));
 	}
 	default_voxel_gi_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(VoxelGIData) * MAX_VOXEL_GI_INSTANCES);
 	half_resolution = GLOBAL_GET("rendering/global_illumination/gi/use_half_resolution");
