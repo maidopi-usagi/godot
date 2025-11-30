@@ -1475,7 +1475,7 @@ void RenderForwardClustered::_copy_framebuffer_to_ss_effects(Ref<RenderSceneBuff
 	ss_effects->copy_internal_texture_to_last_frame(p_render_buffers, *copy_effects);
 }
 
-void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer) {
+void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_restir_gi, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer) {
 	// Render shadows while GI is rendering, due to how barriers are handled, this should happen at the same time
 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
 	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
@@ -1595,6 +1595,32 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 
 		if (p_use_ssr) {
 			_process_ssr(rb, p_render_data->environment, p_normal_roughness_slices, p_render_data->scene_data->view_projection, p_render_data->scene_data->view_eye_offset, p_render_data->scene_data->cam_transform);
+		}
+	}
+
+	if (rb_data.is_valid() && restir_gi && p_use_restir_gi) {
+		// Ensure ReSTIR GI is initialized
+		if (!restir_gi->is_initialized()) {
+			RendererRD::ReSTIRGI::Settings settings;
+			settings.enabled = true;
+			// Use current screen size
+			restir_gi->initialize(RendererRD::GI::get_singleton(), settings, rb->get_internal_size());
+		}
+
+		RENDER_TIMESTAMP("Process ReSTIR GI");
+		for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+			restir_gi->render_gbuffer_prepass(p_render_data, rb, p_normal_roughness_slices[v], rb->get_depth_texture(v));
+			restir_gi->generate_rays(p_render_data);
+			restir_gi->trace_screen_space(p_render_data, RID()); // Screen color not available yet
+			
+			Ref<RendererRD::GI::SDFGI> sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
+			if (sdfgi.is_valid()) {
+				restir_gi->trace_world_space(p_render_data, sdfgi);
+			}
+			
+			// restir_gi->update_radiance_cache(p_render_data); // Disabled for now
+			// restir_gi->perform_restir_sampling(p_render_data); // Placeholder
+			// restir_gi->temporal_denoise(p_render_data); // Placeholder
 		}
 	}
 
@@ -1792,6 +1818,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	bool using_voxelgi = false;
 	bool reverse_cull = p_render_data->scene_data->cam_transform.basis.determinant() < 0;
 	bool using_ssil = !is_reflection_probe && p_render_data->environment.is_valid() && environment_get_ssil_enabled(p_render_data->environment);
+	bool using_restir_gi = GLOBAL_GET("rendering/global_illumination/restir_gi/enabled");
 	bool using_motion_pass = rb_data.is_valid() && using_upscaling;
 
 	if (is_reflection_probe) {
@@ -1885,6 +1912,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 					using_sdfgi ||
 					environment_get_ssao_enabled(p_render_data->environment) ||
 					using_ssil ||
+					using_restir_gi ||
 					ce_needs_normal_roughness ||
 					get_debug_draw_mode() == RS::VIEWPORT_DEBUG_DRAW_NORMAL_BUFFER ||
 					scene_state.used_normal_texture) {
@@ -2134,7 +2162,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			normal_roughness_views[v] = rb_data->get_normal_roughness(v);
 		}
 	}
-	_pre_opaque_render(p_render_data, using_ssao, using_ssil, using_ssr, using_sdfgi || using_voxelgi, normal_roughness_views, rb_data.is_valid() && rb_data->has_voxelgi() ? rb_data->get_voxelgi() : RID());
+	_pre_opaque_render(p_render_data, using_ssao, using_ssil, using_restir_gi, using_ssr, using_sdfgi || using_voxelgi, normal_roughness_views, rb_data.is_valid() && rb_data->has_voxelgi() ? rb_data->get_voxelgi() : RID());
 
 	RENDER_TIMESTAMP("Render Opaque Pass");
 
@@ -2528,6 +2556,12 @@ void RenderForwardClustered::_render_buffers_debug_draw(const RenderDataRD *p_re
 
 	Ref<RenderBufferDataForwardClustered> rb_data = rb->get_custom_data(RB_SCOPE_FORWARD_CLUSTERED);
 	ERR_FAIL_COND(rb_data.is_null());
+
+	if (restir_gi) {
+		RID render_target = rb->get_render_target();
+		RID texture = texture_storage->render_target_get_rd_texture(render_target);
+		restir_gi->debug_draw(p_render_data, texture, copy_effects);
+	}
 
 	RendererSceneRenderRD::_render_buffers_debug_draw(p_render_data);
 
@@ -5095,6 +5129,11 @@ RenderForwardClustered::RenderForwardClustered() {
 	taa = memnew(RendererRD::TAA);
 	fsr2_effect = memnew(RendererRD::FSR2Effect);
 	ss_effects = memnew(RendererRD::SSEffects);
+	restir_gi = memnew(RendererRD::ReSTIRGI);
+	// Initialize ReSTIR GI with default settings
+	RendererRD::ReSTIRGI::Settings restir_settings;
+	restir_settings.enabled = GLOBAL_GET("rendering/global_illumination/restir_gi/enabled");
+	// We don't have screen size here yet, so we defer initialization to the first frame or configure()
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
 	mfx_temporal_effect = memnew(RendererRD::MFXTemporalEffect);
@@ -5105,6 +5144,11 @@ RenderForwardClustered::~RenderForwardClustered() {
 	if (ss_effects != nullptr) {
 		memdelete(ss_effects);
 		ss_effects = nullptr;
+	}
+
+	if (restir_gi != nullptr) {
+		memdelete(restir_gi);
+		restir_gi = nullptr;
 	}
 
 	if (taa != nullptr) {
