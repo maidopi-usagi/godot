@@ -744,6 +744,7 @@ private:
 
 	/* SDFGI */
 	void _update_sdfgi(RenderDataRD *p_render_data);
+	void _update_sdfgi_probes(RenderDataRD *p_render_data);
 
 	/* Volumetric fog */
 	RID shadow_sampler;

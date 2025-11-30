@@ -442,7 +442,13 @@ private:
 
 			int32_t screen_size[2];
 			float y_mult;
-			uint32_t pad;
+			uint32_t history_index;
+
+			uint32_t sky_flags;
+			float sky_energy;
+			float pad1[2]; // Padding for vec3 alignment
+			float sky_color_or_orientation[3];
+			uint32_t pad2;
 		};
 
 		SdfgiScreenProbesShaderRD screen_probes;
@@ -698,8 +704,10 @@ public:
 		RID integrate_sky_uniform_set;
 
 		RID screen_probes_texture;
+		RID screen_probes_texture_history;
 		RID screen_probes_uniform_set;
 		RID screen_probes_scene_data_ubo;
+		RID screen_probes_sky_uniform_set;
 
 		virtual void configure(RenderSceneBuffersRD *p_render_buffers) override;
 		virtual void free_data() override;
@@ -709,7 +717,7 @@ public:
 		void update(RID p_env, const Vector3 &p_world_position);
 		void update_light();
 		void update_probes(RID p_env, RendererRD::SkyRD::Sky *p_sky);
-		void update_screen_probes(RID p_depth_texture, RID p_normal_texture, const Projection &p_projection, const Transform3D &p_transform);
+		void update_screen_probes(RID p_env, RendererRD::SkyRD::Sky *p_sky, RID p_depth_texture, RID p_normal_texture, RID p_velocity_texture, const Projection &p_projection, const Transform3D &p_transform);
 		void store_probes();
 		int get_pending_region_data(int p_region, Vector3i &r_local_offset, Vector3i &r_local_size, AABB &r_bounds) const;
 		void update_cascades();

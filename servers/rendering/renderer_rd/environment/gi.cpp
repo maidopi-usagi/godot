@@ -424,6 +424,10 @@ void GI::SDFGI::configure(RenderSceneBuffersRD *p_render_buffers) {
 		if (tf.width != uint32_t(internal_size.x) || tf.height != uint32_t(internal_size.y) || !use_screen_probes) {
 			RD::get_singleton()->free_rid(screen_probes_texture);
 			screen_probes_texture = RID();
+			if (screen_probes_texture_history.is_valid()) {
+				RD::get_singleton()->free_rid(screen_probes_texture_history);
+				screen_probes_texture_history = RID();
+			}
 			if (RD::get_singleton()->uniform_set_is_valid(screen_probes_uniform_set)) {
 				RD::get_singleton()->free_rid(screen_probes_uniform_set);
 				screen_probes_uniform_set = RID();
@@ -436,9 +440,12 @@ void GI::SDFGI::configure(RenderSceneBuffersRD *p_render_buffers) {
 		tf.format = RD::DATA_FORMAT_R16G16B16A16_SFLOAT;
 		tf.width = internal_size.x;
 		tf.height = internal_size.y;
-		tf.usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;
+		tf.usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 
 		screen_probes_texture = RD::get_singleton()->texture_create(tf, RD::TextureView());
+		screen_probes_texture_history = RD::get_singleton()->texture_create(tf, RD::TextureView());
+		RD::get_singleton()->texture_clear(screen_probes_texture, Color(0, 0, 0, 1), 0, 1, 0, 1);
+		RD::get_singleton()->texture_clear(screen_probes_texture_history, Color(0, 0, 0, 1), 0, 1, 0, 1);
 	}
 }
 
@@ -450,6 +457,7 @@ void GI::SDFGI::create(RID p_env, const Vector3 &p_world_position, uint32_t p_re
 	num_cascades = RendererSceneRenderRD::get_singleton()->environment_get_sdfgi_cascades(p_env);
 	min_cell_size = RendererSceneRenderRD::get_singleton()->environment_get_sdfgi_min_cell_size(p_env);
 	uses_occlusion = RendererSceneRenderRD::get_singleton()->environment_get_sdfgi_use_occlusion(p_env);
+	use_screen_probes = RendererSceneRenderRD::get_singleton()->environment_get_sdfgi_use_screen_probes(p_env);
 	y_scale_mode = RendererSceneRenderRD::get_singleton()->environment_get_sdfgi_y_scale(p_env);
 	static const float y_scale[3] = { 2.0, 1.5, 1.0 };
 	y_mult = y_scale[y_scale_mode];
@@ -1158,6 +1166,10 @@ void GI::SDFGI::free_data() {
 		RD::get_singleton()->free_rid(screen_probes_texture);
 		screen_probes_texture = RID();
 	}
+	if (screen_probes_texture_history.is_valid()) {
+		RD::get_singleton()->free_rid(screen_probes_texture_history);
+		screen_probes_texture_history = RID();
+	}
 	if (RD::get_singleton()->uniform_set_is_valid(screen_probes_uniform_set)) {
 		RD::get_singleton()->free_rid(screen_probes_uniform_set);
 		screen_probes_uniform_set = RID();
@@ -1432,10 +1444,17 @@ void GI::SDFGI::update_probes(RID p_env, SkyRD::Sky *p_sky) {
 	RD::get_singleton()->draw_command_end_label();
 }
 
-void GI::SDFGI::update_screen_probes(RID p_depth_texture, RID p_normal_texture, const Projection &p_projection, const Transform3D &p_transform) {
+void GI::SDFGI::update_screen_probes(RID p_env, RendererRD::SkyRD::Sky *p_sky, RID p_depth_texture, RID p_normal_texture, RID p_velocity_texture, const Projection &p_projection, const Transform3D &p_transform) {
 	if (screen_probes_texture.is_null()) {
 		return;
 	}
+
+	if (screen_probes_texture.is_valid() && screen_probes_texture_history.is_valid()) {
+		RD::TextureFormat tf = RD::get_singleton()->texture_get_format(screen_probes_texture);
+		RD::get_singleton()->texture_copy(screen_probes_texture, screen_probes_texture_history, Vector3(), Vector3(), Vector3(tf.width, tf.height, 1), 0, 0, 0, 0);
+	}
+
+	SWAP(screen_probes_texture, screen_probes_texture_history);
 
 	RD::get_singleton()->draw_command_begin_label("SDFGI Update Screen Probes");
 
@@ -1451,6 +1470,12 @@ void GI::SDFGI::update_screen_probes(RID p_depth_texture, RID p_normal_texture, 
 	RendererRD::MaterialStorage::store_camera(p_projection.inverse(), scene_data.inv_projection);
 	RendererRD::MaterialStorage::store_transform(p_transform, scene_data.transform);
 	RD::get_singleton()->buffer_update(screen_probes_scene_data_ubo, 0, sizeof(SDFGIShader::ScreenProbesSceneData), &scene_data);
+
+	// Always recreate uniform set as we swap textures
+	if (RD::get_singleton()->uniform_set_is_valid(screen_probes_uniform_set)) {
+		RD::get_singleton()->free_rid(screen_probes_uniform_set);
+		screen_probes_uniform_set = RID();
+	}
 
 	if (!RD::get_singleton()->uniform_set_is_valid(screen_probes_uniform_set)) {
 		Vector<RD::Uniform> uniforms;
@@ -1555,6 +1580,24 @@ void GI::SDFGI::update_screen_probes(RID p_depth_texture, RID p_normal_texture, 
 			u.append_id(screen_probes_scene_data_ubo);
 			uniforms.push_back(u);
 		}
+		{
+			RD::Uniform u;
+			u.binding = 12;
+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			u.append_id(screen_probes_texture_history);
+			uniforms.push_back(u);
+		}
+		{
+			RD::Uniform u;
+			u.binding = 13;
+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			if (p_velocity_texture.is_valid()) {
+				u.append_id(p_velocity_texture);
+			} else {
+				u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK));
+			}
+			uniforms.push_back(u);
+		}
 
 		screen_probes_uniform_set = RD::get_singleton()->uniform_set_create(uniforms, gi->sdfgi_shader.screen_probes.version_get_shader(gi->sdfgi_shader.screen_probes_shader, 0), 0);
 	}
@@ -1573,6 +1616,69 @@ void GI::SDFGI::update_screen_probes(RID p_depth_texture, RID p_normal_texture, 
 	push_constant.screen_size[0] = tf.width;
 	push_constant.screen_size[1] = tf.height;
 	push_constant.y_mult = y_mult;
+	push_constant.history_index = render_pass % history_size;
+
+	RID sky_uniform_set = gi->sdfgi_shader.integrate_default_sky_uniform_set;
+	push_constant.sky_flags = 0;
+	push_constant.sky_energy = 1.0;
+	push_constant.sky_color_or_orientation[0] = 0;
+	push_constant.sky_color_or_orientation[1] = 0;
+	push_constant.sky_color_or_orientation[2] = 0;
+
+	if (reads_sky && p_env.is_valid()) {
+		push_constant.sky_energy = RendererSceneRenderRD::get_singleton()->environment_get_bg_energy_multiplier(p_env);
+
+		if (RendererSceneRenderRD::get_singleton()->environment_get_background(p_env) == RS::ENV_BG_CLEAR_COLOR) {
+			push_constant.sky_flags |= SDFGIShader::IntegratePushConstant::SKY_FLAGS_MODE_COLOR;
+			Color c = RSG::texture_storage->get_default_clear_color().srgb_to_linear();
+			push_constant.sky_color_or_orientation[0] = c.r;
+			push_constant.sky_color_or_orientation[1] = c.g;
+			push_constant.sky_color_or_orientation[2] = c.b;
+		} else if (RendererSceneRenderRD::get_singleton()->environment_get_background(p_env) == RS::ENV_BG_COLOR) {
+			push_constant.sky_flags |= SDFGIShader::IntegratePushConstant::SKY_FLAGS_MODE_COLOR;
+			Color c = RendererSceneRenderRD::get_singleton()->environment_get_bg_color(p_env);
+			push_constant.sky_color_or_orientation[0] = c.r;
+			push_constant.sky_color_or_orientation[1] = c.g;
+			push_constant.sky_color_or_orientation[2] = c.b;
+
+		} else if (RendererSceneRenderRD::get_singleton()->environment_get_background(p_env) == RS::ENV_BG_SKY) {
+			if (p_sky && p_sky->radiance.is_valid()) {
+				if (screen_probes_sky_uniform_set.is_null() || !RD::get_singleton()->uniform_set_is_valid(screen_probes_sky_uniform_set)) {
+					Vector<RD::Uniform> uniforms;
+
+					{
+						RD::Uniform u;
+						u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+						u.binding = 0;
+						u.append_id(p_sky->radiance);
+						uniforms.push_back(u);
+					}
+
+					{
+						RD::Uniform u;
+						u.uniform_type = RD::UNIFORM_TYPE_SAMPLER;
+						u.binding = 1;
+						u.append_id(material_storage->sampler_rd_get_default(RS::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS, RS::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED));
+						uniforms.push_back(u);
+					}
+
+					screen_probes_sky_uniform_set = RD::get_singleton()->uniform_set_create(uniforms, gi->sdfgi_shader.screen_probes.version_get_shader(gi->sdfgi_shader.screen_probes_shader, 0), 1);
+				}
+				sky_uniform_set = screen_probes_sky_uniform_set;
+				push_constant.sky_flags |= SDFGIShader::IntegratePushConstant::SKY_FLAGS_MODE_SKY;
+
+				Basis sky_transform = RendererSceneRenderRD::get_singleton()->environment_get_sky_orientation(p_env);
+				sky_transform.invert();
+				Vector3 orientation = sky_transform.get_euler();
+
+				push_constant.sky_color_or_orientation[0] = orientation.x;
+				push_constant.sky_color_or_orientation[1] = orientation.y;
+				push_constant.sky_color_or_orientation[2] = orientation.z;
+			}
+		}
+	}
+
+	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, sky_uniform_set, 1);
 
 	RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::ScreenProbesPushConstant));
 	RD::get_singleton()->compute_list_dispatch_threads(compute_list, tf.width, tf.height, 1);

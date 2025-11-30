@@ -1311,10 +1311,14 @@ void RendererSceneRenderRD::_update_sdfgi_probes(RenderDataRD *p_render_data) {
 		Ref<RendererRD::GI::SDFGI> sdfgi = p_render_data->render_buffers->get_custom_data(RB_SCOPE_SDFGI);
 		RID depth_texture = p_render_data->render_buffers->get_depth_texture();
 		RID normal_texture = _render_buffers_get_normal_texture(p_render_data->render_buffers);
+		RID velocity_texture = _render_buffers_get_velocity_texture(p_render_data->render_buffers);
 
 		if (sdfgi->use_screen_probes && depth_texture.is_valid() && normal_texture.is_valid()) {
+			if (velocity_texture.is_null()) {
+				velocity_texture = RendererRD::TextureStorage::get_singleton()->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
+			}
 			sdfgi->configure(p_render_data->render_buffers.ptr());
-			sdfgi->update_screen_probes(depth_texture, normal_texture, p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform);
+			sdfgi->update_screen_probes(p_render_data->environment, sky.sky_owner.get_or_null(environment_get_sky(p_render_data->environment)), depth_texture, normal_texture, velocity_texture, p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform);
 		}
 	}
 }

@@ -144,7 +144,7 @@ private:
 		float sdfgi_energy = 1.0;
 		float sdfgi_normal_bias = 1.1;
 		float sdfgi_probe_bias = 1.1;
-		bool sdfgi_use_screen_probes = false;
+		bool sdfgi_use_screen_probes = true;
 		RS::EnvironmentSDFGIYScale sdfgi_y_scale = RS::ENV_SDFGI_Y_SCALE_75_PERCENT;
 
 		// Adjustments
