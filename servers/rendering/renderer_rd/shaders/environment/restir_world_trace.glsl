@@ -74,9 +74,14 @@ vec3 decode_octahedral_normal(vec2 e) {
 
 // Reconstruct world position from depth
 vec3 reconstruct_world_pos(vec2 uv, float depth) {
-	vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
+	// Match gi.glsl reconstruction logic
+	// Remap depth to -1..1 for projection matrix
+	float z = depth * 2.0 - 1.0;
+	vec4 ndc = vec4(uv * 2.0 - 1.0, z, 1.0);
+	
 	vec4 view_pos = params.inv_projection_matrix * ndc;
 	view_pos /= view_pos.w;
+	
 	vec4 world_pos = params.inv_view_matrix * view_pos;
 	return world_pos.xyz;
 }
@@ -244,14 +249,17 @@ void main() {
 	if (ray_length <= 0.0001) return;
 	
 	// Reconstruct world position of the probe (ray origin)
-	vec4 gbuffer_data = texture(u_gbuffer_normal_depth, uv);
+	// Use texelFetch to avoid linear filtering artifacts which cause instability
+	vec4 gbuffer_data = texelFetch(u_gbuffer_normal_depth, probe_pos, 0);
 	float depth = gbuffer_data.w;
 	
 	vec3 ray_origin_ws = reconstruct_world_pos(uv, depth);
 	
 	// Apply normal bias
 	// GBuffer stores View Space normals in XYZ (decoded in prepass)
-	vec3 normal_ws = normalize(mat3(params.inv_view_matrix) * gbuffer_data.xyz); 
+	vec3 view_normal = gbuffer_data.xyz;
+	// view_normal.y = -view_normal.y; // Revert Y-flip as it didn't help
+	vec3 normal_ws = normalize(mat3(params.inv_view_matrix) * view_normal); 
 		
 	// Bias should be proportional to cell size to escape the voxel
 	// params.normal_bias is usually ~1.1 (ratio)
@@ -280,13 +288,20 @@ void main() {
 		// float occlusion = texture(occlusion_texture, uvw).r;
 		// vec3 final_light = modulated_light + vec3(params.sky_energy) * occlusion;
 		
+		// DEBUG: Visualize World Space Grid to check stability
+		// If this grid slides when rotating camera, reconstruct_world_pos is wrong.
+		vec3 grid = fract(ray_origin_ws);
+		imageStore(hit_radiance, probe_pos, vec4(grid, 1.0));
+		
+		/*
 		// DEBUG: Boost brightness significantly to see if data exists
 		// Split screen: Left = Modulated, Right = Raw Light
 		if (uv.x < 0.5) {
-			imageStore(hit_radiance, probe_pos, vec4(modulated_light * 1.0, 1.0));
+			imageStore(hit_radiance, probe_pos, vec4(modulated_light * 5.0, 1.0));
 		} else {
-			imageStore(hit_radiance, probe_pos, vec4(light * 1.0, 1.0));
+			imageStore(hit_radiance, probe_pos, vec4(light * 5.0, 1.0));
 		}
+		*/
 		
 		imageStore(hit_distance, probe_pos, vec4(hit_t));
 	} else {
