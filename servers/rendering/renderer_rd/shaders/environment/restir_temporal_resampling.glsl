@@ -100,38 +100,46 @@ void main() {
 	r.sample_radiance = vec4(0.0);
 	r.sample_dir_dist = vec4(0.0);
 	
-	// Add initial sample
-	// Source PDF (q) is assumed to be proportional to p_hat for now (or 1.0 if we don't know)
-	// If we use importance sampling in ray gen, q is closer to p.
-	// For simplicity, let's assume w = p_hat (RIS weight)
+	// 1. Initial Candidate from current frame trace
 	update_reservoir(r, trace_radiance, sample_dir_dist, p_hat, seed);
 	
 	// 2. Temporal Resampling
-	vec2 motion = texelFetch(u_gbuffer_motion, pixel_pos, 0).xy;
+	// Reproject to previous frame
+	vec2 motion = texture(u_gbuffer_motion, vec2(pixel_pos) / vec2(params.screen_size)).xy;
 	vec2 prev_uv = (vec2(pixel_pos) + 0.5) / vec2(params.screen_size) - motion;
 	ivec2 prev_pos = ivec2(prev_uv * vec2(params.screen_size));
 	
-	if (prev_pos.x >= 0 && prev_pos.x < params.screen_size.x && prev_pos.y >= 0 && prev_pos.y < params.screen_size.y) {
+	if (prev_pos.x >= 0 && prev_pos.y >= 0 && prev_pos.x < params.screen_size.x && prev_pos.y < params.screen_size.y) {
 		uint prev_index = prev_pos.y * params.screen_size.x + prev_pos.x;
 		Reservoir prev_r = prev_reservoirs.data[prev_index];
 		
-		// Clamp history
-		prev_r.M = min(prev_r.M, params.max_history_length);
+		// TODO: Geometric similarity check (Depth & Normal)
+		// We need previous frame's GBuffer to do this robustly.
+		// For now, we skip it or use a very loose check if possible.
+		// Since we don't have prev_gbuffer, we assume it's valid if M > 0.
 		
-		// TODO: Geometric similarity check (Depth/Normal)
-		// For now, just merge
-		
-		// We need to evaluate p_hat for the previous sample in the CURRENT context
-		// But since we don't have the full path, we assume the radiance stored in the reservoir is still valid
-		// or at least a good approximation.
-		float prev_p_hat = luminance(prev_r.sample_radiance.rgb);
-		
-		merge_reservoir(r, prev_r, prev_p_hat, seed);
+		if (prev_r.M > 0) {
+			// Clamp M to max history length
+			if (prev_r.M > params.max_history_length) {
+				prev_r.M = params.max_history_length;
+			}
+			
+			// Merge
+			// p_hat of the previous sample in the CURRENT context
+			// We should evaluate the target function (luminance) of the previous sample's radiance
+			// But strictly we should re-evaluate the lighting for the previous sample at the current shading point.
+			// For ReSTIR GI, we often just use the stored radiance (approximate).
+			float prev_p_hat = luminance(prev_r.sample_radiance.rgb);
+			
+			merge_reservoir(r, prev_r, prev_p_hat, seed);
+		}
 	}
 	
-	// Finalize W
-	if (r.M > 0) {
-		r.W = r.w_sum / (float(r.M) * max(0.001, p_hat));
+	// 3. Finalize
+	// W = w_sum / (M * p_hat)
+	float target_p = luminance(r.sample_radiance.rgb);
+	if (target_p > 0.0) {
+		r.W = r.w_sum / (float(r.M) * target_p);
 	} else {
 		r.W = 0.0;
 	}

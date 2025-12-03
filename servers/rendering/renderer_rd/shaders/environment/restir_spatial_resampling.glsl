@@ -98,46 +98,59 @@ void main() {
 	// Read center GBuffer
 	vec4 center_nd = texelFetch(u_gbuffer_normal_depth, pixel_pos, 0);
 	vec3 center_normal = center_nd.xyz; // GBuffer prepass stores decoded normal in XYZ
-	float center_depth = center_nd.w;   // And depth in W
+	float center_depth = center_nd.w;
 	
-	float p_hat = luminance(r.sample_radiance.rgb);
+	// Initial reservoir is the temporal output (input_reservoirs)
+	// We copy it to a local reservoir
+	Reservoir state = r;
 	
-	// Spatial loop
+	// Spatial reuse loop
 	for (uint i = 0; i < params.neighbor_count; i++) {
 		// Random neighbor
-		float r1 = random(seed);
-		float r2 = random(seed);
-		float radius = params.spatial_radius * sqrt(r1);
-		float angle = 2.0 * 3.14159 * r2;
+		float angle = random(seed) * 6.28318530718;
+		float radius = sqrt(random(seed)) * params.spatial_radius;
+		vec2 offset = vec2(cos(angle), sin(angle)) * radius;
 		
-		ivec2 offset = ivec2(cos(angle) * radius, sin(angle) * radius);
-		ivec2 neighbor_pos = pixel_pos + offset;
+		ivec2 neighbor_pos = pixel_pos + ivec2(offset);
 		
-		if (neighbor_pos.x >= 0 && neighbor_pos.x < params.screen_size.x && 
-			neighbor_pos.y >= 0 && neighbor_pos.y < params.screen_size.y) {
-			
-			// Check geometric similarity
-			vec4 neighbor_nd = texelFetch(u_gbuffer_normal_depth, neighbor_pos, 0);
-			vec3 neighbor_normal = neighbor_nd.xyz;
-			float neighbor_depth = neighbor_nd.w;
-			
-			if (dot(center_normal, neighbor_normal) < params.normal_threshold) continue;
-			if (abs(center_depth - neighbor_depth) / (center_depth + 1e-6) > params.depth_threshold) continue;
-			
-			uint neighbor_index = neighbor_pos.y * params.screen_size.x + neighbor_pos.x;
-			Reservoir neighbor_r = input_reservoirs.data[neighbor_index];
-			
-			float neighbor_p_hat = luminance(neighbor_r.sample_radiance.rgb);
-			merge_reservoir(r, neighbor_r, neighbor_p_hat, seed);
+		// Clamp to screen
+		neighbor_pos = clamp(neighbor_pos, ivec2(0), params.screen_size - ivec2(1));
+		
+		if (neighbor_pos == pixel_pos) {
+			continue;
 		}
+		
+		uint neighbor_index = neighbor_pos.y * params.screen_size.x + neighbor_pos.x;
+		
+		// Geometric similarity check
+		vec4 neighbor_nd = texelFetch(u_gbuffer_normal_depth, neighbor_pos, 0);
+		vec3 neighbor_normal = neighbor_nd.xyz;
+		float neighbor_depth = neighbor_nd.w;
+		
+		// Check normal
+		if (dot(center_normal, neighbor_normal) < params.normal_threshold) {
+			continue;
+		}
+		
+		// Check depth (relative difference)
+		if (abs(center_depth - neighbor_depth) / (center_depth + 1e-6) > params.depth_threshold) {
+			continue;
+		}
+		
+		// Merge
+		Reservoir neighbor_r = input_reservoirs.data[neighbor_index];
+		float neighbor_p_hat = luminance(neighbor_r.sample_radiance.rgb);
+		
+		merge_reservoir(state, neighbor_r, neighbor_p_hat, seed);
 	}
 	
-	// Finalize W
-	if (r.M > 0) {
-		r.W = r.w_sum / (float(r.M) * max(0.001, p_hat));
+	// Finalize
+	float target_p = luminance(state.sample_radiance.rgb);
+	if (target_p > 0.0) {
+		state.W = state.w_sum / (float(state.M) * target_p);
 	} else {
-		r.W = 0.0;
+		state.W = 0.0;
 	}
 	
-	output_reservoirs.data[pixel_index] = r;
+	output_reservoirs.data[pixel_index] = state;
 }

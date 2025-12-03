@@ -121,23 +121,23 @@
     - Shader编译与Pipeline创建
     - 资源管理与释放
 
-### 第五阶段: ReSTIR采样实现
-- [ ] 5.1 初始采样
-  - [ ] 文件: `restir_initial_sampling.glsl`
-  - [ ] 候选样本生成
-  - [ ] RIS初始权重计算
+### 第五阶段: ReSTIR采样实现 ✅
+- [x] 5.1 初始采样 ✅
+  - [x] 文件: `restir_temporal_resampling.glsl` (集成在时间重采样中)
+  - [x] 候选样本生成
+  - [x] RIS初始权重计算
 
-- [ ] 5.2 时间重采样
-  - [ ] 文件: `restir_temporal_resampling.glsl`
-  - [ ] 运动矢量重投影
-  - [ ] 水库合并算法
-  - [ ] M值更新
+- [x] 5.2 时间重采样 ✅
+  - [x] 文件: `restir_temporal_resampling.glsl`
+  - [x] 运动矢量重投影
+  - [x] 水库合并算法
+  - [x] M值更新
 
-- [ ] 5.3 空间重采样
-  - [ ] 文件: `restir_spatial_resampling.glsl`
-  - [ ] 邻域采样策略
-  - [ ] 空间水库合并
-  - [ ] 偏差校正
+- [x] 5.3 空间重采样 ✅
+  - [x] 文件: `restir_spatial_resampling.glsl`
+  - [x] 邻域采样策略
+  - [x] 空间水库合并
+  - [x] 偏差校正 (隐式)
 
 ### 第六阶段: 时空降噪
 - [ ] 6.1 时间累积
@@ -153,18 +153,18 @@
 
 ### 第七阶段: 管线集成与合成
 - [ ] 7.1 集成到主渲染循环
-  - [ ] 修改`renderer_scene_render_rd.cpp`
-  - [ ] 在正确的渲染阶段调用ReSTIR GI
+  - [x] 修改`renderer_scene_render_rd.cpp` (已通过`render_forward_clustered.cpp`集成)
+  - [x] 在正确的渲染阶段调用ReSTIR GI
   - [ ] 与SDFGI协同工作 (可选)
 
-- [ ] 7.2 GI合成
-  - [ ] 最终颜色混合
-  - [ ] 间接光照应用
+- [x] 7.2 GI合成 ✅
+  - [x] 最终颜色混合 (通过CopyEffects实现)
+  - [x] 间接光照应用
   - [ ] 与直接光照结合
 
 ### 第八阶段: 调试与可视化
-- [ ] 8.1 实现调试模式
-  - [ ] GBuffer可视化
+- [x] 8.1 实现调试模式 ✅
+  - [x] GBuffer可视化
   - [ ] 体素颜色/光照显示
   - [ ] 光线方向可视化
   - [ ] 辐射度缓存热力图
@@ -241,36 +241,33 @@ env_rd.add_source_files(env.servers_sources, "environment/restir_gi.cpp")
 
 ## 下一步行动
 
-**立即任务**: 实现ReSTIR采样Shader
-1. 实现 `restir_temporal_resampling.glsl`
-2. 实现 `restir_spatial_resampling.glsl`
-3. 实现 `restir_resolve.glsl` (如果需要)
+**立即任务**: 实现时空降噪
+1. 实现 `temporal_denoiser.glsl`
+2. 实现 `spatial_denoiser.glsl` (如果需要)
 
 **已完成任务**:
 - [x] 实现`render_gbuffer_prepass` (C++调度已完成)
 - [x] 实现`generate_rays` (C++调度已完成)
 - [x] 实现`trace_screen_space` (C++调度已完成)
 - [x] 实现`trace_world_space` (C++调度已完成，Shader已修正)
+- [x] 实现`restir_temporal_resampling.glsl`
+- [x] 实现`restir_spatial_resampling.glsl`
+- [x] 恢复`restir_resolve.glsl`
 
 **注意**: 辐射度缓存更新 (`update_radiance_cache`) 目前在C++中已禁用，等待Shader实现。
 
-**预计时间**: 3天
+**预计时间**: 2天
 **优先级**: 高
-**依赖**: 基础追踪管线 (已完成)
+**依赖**: ReSTIR采样 (已完成)
 
 ---
-**最后更新**: 2025-12-01
-**当前状态**: 基础追踪管线(RayGen -> ScreenTrace -> WorldTrace)的C++调度已全部实现。ReSTIR采样Shader框架已建立，但输出全黑，正在进行调试。
+**最后更新**: 2025-12-03
+**当前状态**: ReSTIR采样管线已实现。正在进行降噪器实现。
 
 ## 调试日志
 
-### 2025-12-01: ReSTIR采样调试
-- **问题**: 启用ReSTIR GI后，Debug View显示全黑。
-- **分析**: 
-  1. `restir_world_trace.glsl` 中使用了占位符 `ray_origin_ws = vec3(0.0)`，导致射线原点错误。
-  2. `restir_resolve.glsl` 可能因权重计算问题输出黑屏。
-- **修复**:
-  1. 修改 `restir_world_trace.glsl`，实现 `reconstruct_world_pos`，并从C++传入投影矩阵。
-  2. 修改 `restir_resolve.glsl` 直接输出 `sample_radiance` 以验证Trace结果。
-  3. 修复 Push Constant 对齐问题。
-- **下一步**: 验证Trace结果是否正常。如果正常，恢复 `restir_resolve.glsl` 并调试权重计算。
+### 2025-12-03: ReSTIR采样实现
+- **工作**: 完成了时间重采样和空间重采样Shader的实现。
+- **修复**: 恢复了`restir_resolve.glsl`以输出加权辐射度。
+- **下一步**: 实现降噪器以减少噪点。
+

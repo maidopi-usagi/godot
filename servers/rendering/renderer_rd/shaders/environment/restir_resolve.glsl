@@ -36,7 +36,9 @@ void main() {
 	Reservoir r = reservoirs.data[pixel_index];
 	
 	// DEBUG: Output raw sample radiance to verify trace
-	vec3 final_radiance = r.sample_radiance.rgb; // * r.W;
+	// vec3 final_radiance = r.sample_radiance.rgb; // * r.W;
+	
+	vec3 final_radiance = r.sample_radiance.rgb * r.W;
 	
 	imageStore(output_image, pixel_pos, vec4(final_radiance, 1.0));
 }
