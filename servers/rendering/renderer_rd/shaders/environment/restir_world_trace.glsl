@@ -18,6 +18,8 @@ layout(r16f, set = 0, binding = 3) uniform restrict image2D hit_distance;
 layout(set = 0, binding = 4) uniform sampler3D sdf_cascades[MAX_CASCADES];
 layout(set = 0, binding = 5) uniform sampler3D light_cascades[MAX_CASCADES]; // Diffuse light
 layout(set = 0, binding = 6) uniform sampler3D occlusion_texture; // Occlusion/Sky (Single texture for all cascades?)
+layout(set = 0, binding = 8) uniform sampler3D aniso0_cascades[MAX_CASCADES];
+layout(set = 0, binding = 9) uniform sampler3D aniso1_cascades[MAX_CASCADES];
 
 struct CascadeData {
 	vec3 offset; // World space offset of the cascade origin (0,0,0 in local)
@@ -52,7 +54,7 @@ vec3 world_to_cascade_uvw(vec3 world_pos, uint cascade_idx) {
 	// The cell_pos is in units of cells. We need 0-1 UVW.
 	// Assuming 128^3 resolution for now (standard in Godot SDFGI)
 	const float INV_SIZE = 1.0 / 128.0;
-	return cell_pos * INV_SIZE + 0.5; // +0.5 to center? Need to verify coordinate system
+	return cell_pos * INV_SIZE;
 }
 
 vec3 decode_octahedral_normal(vec2 e) {
@@ -65,7 +67,7 @@ vec3 decode_octahedral_normal(vec2 e) {
 
 // Reconstruct world position from depth
 vec3 reconstruct_world_pos(vec2 uv, float depth) {
-	vec4 ndc = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0, 1.0);
+	vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
 	vec4 view_pos = params.inv_projection_matrix * ndc;
 	view_pos /= view_pos.w;
 	vec4 world_pos = params.inv_view_matrix * view_pos;
@@ -89,7 +91,7 @@ float sample_sdf(vec3 world_pos, out uint used_cascade) {
 			// 0 means solid (dist < 0)
 			// >0 means distance in cells
 			float raw_val = texture(sdf_cascades[i], uvw).r;
-			float dist_cells = raw_val * 255.0 - 1.0;
+			float dist_cells = raw_val * 255.0 - 1.7;
 			
 			// Convert to world space distance
 			// to_cell is (1.0 / cell_size_ws)
@@ -107,15 +109,20 @@ vec3 sample_lighting(vec3 world_pos, uint cascade_idx, vec3 normal) {
 	vec3 uvw = world_to_cascade_uvw(world_pos, cascade_idx);
 	
 	// Sample light texture
-	// Note: Godot SDFGI stores SH or Aniso data. For simplicity, we assume a resolved light texture here
-	// or we might need to decode SH/Aniso.
-	// For this implementation, we assume binding 5 is a pre-integrated light texture or we sample the main light texture.
-	
 	vec3 light = texture(light_cascades[cascade_idx], uvw).rgb;
+	
+	// Apply Anisotropic Spherical Gaussians (ASG)
+	vec4 aniso0 = texture(aniso0_cascades[cascade_idx], uvw);
+	vec3 hit_aniso0 = aniso0.rgb;
+	vec3 hit_aniso1 = vec3(aniso0.a, texture(aniso1_cascades[cascade_idx], uvw).rg);
+
+	// Modulate light by normal and anisotropy
+	// This matches Godot's sdfgi_debug.glsl logic
+	light *= (dot(max(vec3(0.0), (normal * hit_aniso0)), vec3(1.0)) + dot(max(vec3(0.0), (-normal * hit_aniso1)), vec3(1.0)));
+
 	float occlusion = texture(occlusion_texture, uvw).r;
 	
 	// Apply sky energy if occlusion allows
-	// This is a simplification. Real SDFGI has more complex light integration.
 	return light + vec3(params.sky_energy) * occlusion;
 }
 
@@ -159,6 +166,17 @@ bool trace_sdf(vec3 ray_origin, vec3 ray_dir, float max_dist, out float hit_t, o
 	return false;
 }
 
+vec3 calculate_sdf_normal(vec3 world_pos, uint cascade_idx) {
+	vec3 uvw = world_to_cascade_uvw(world_pos, cascade_idx);
+	const float EPSILON = 0.001;
+	
+	float dx = texture(sdf_cascades[cascade_idx], uvw + vec3(EPSILON, 0.0, 0.0)).r - texture(sdf_cascades[cascade_idx], uvw - vec3(EPSILON, 0.0, 0.0)).r;
+	float dy = texture(sdf_cascades[cascade_idx], uvw + vec3(0.0, EPSILON, 0.0)).r - texture(sdf_cascades[cascade_idx], uvw - vec3(0.0, EPSILON, 0.0)).r;
+	float dz = texture(sdf_cascades[cascade_idx], uvw + vec3(0.0, 0.0, EPSILON)).r - texture(sdf_cascades[cascade_idx], uvw - vec3(0.0, 0.0, EPSILON)).r;
+	
+	return normalize(vec3(dx, dy, dz));
+}
+
 void main() {
 	ivec2 probe_pos = ivec2(gl_GlobalInvocationID.xy);
 	
@@ -189,20 +207,30 @@ void main() {
 	// Apply normal bias
 	// GBuffer stores View Space normals in XYZ (decoded in prepass)
 	vec3 normal_ws = normalize(mat3(params.inv_view_matrix) * gbuffer_data.xyz); 
-	ray_origin_ws += normal_ws * params.normal_bias;
+		
+	// Bias should be proportional to cell size to escape the voxel
+	// params.normal_bias is usually ~1.1 (ratio)
+	// We use the finest cascade (0) cell size for bias
+	float cell_size = 1.0 / params.cascades[0].to_cell;
+	// ray_origin_ws += normal_ws * (cell_size * params.normal_bias);
 	
 	float hit_t;
 	uint hit_cascade;
 	
 	if (trace_sdf(ray_origin_ws, ray_dir_ws, ray_length, hit_t, hit_cascade)) {
 		vec3 hit_pos = ray_origin_ws + ray_dir_ws * hit_t;
-		vec3 radiance = sample_lighting(hit_pos, hit_cascade, -ray_dir_ws);
+		vec3 hit_normal = calculate_sdf_normal(hit_pos, hit_cascade);
+		vec3 radiance = sample_lighting(hit_pos, hit_cascade, hit_normal);
 		
 		imageStore(hit_radiance, probe_pos, vec4(radiance, 1.0));
 		imageStore(hit_distance, probe_pos, vec4(hit_t));
 	} else {
 		// Sky miss
-		vec3 sky_color = vec3(0.05, 0.05, 0.1) * params.sky_energy; // Simple placeholder sky
+		// Simple procedural sky gradient for debugging
+		float t = 0.5 * (ray_dir_ws.y + 1.0);
+		vec3 sky_gradient = mix(vec3(0.0, 0.0, 0.0), vec3(0.2, 0.4, 0.8), t); // White horizon to Blue zenith
+		vec3 sky_color = sky_gradient; 
+		
 		imageStore(hit_radiance, probe_pos, vec4(sky_color, 1.0));
 		imageStore(hit_distance, probe_pos, vec4(ray_length)); // Store max dist
 	}

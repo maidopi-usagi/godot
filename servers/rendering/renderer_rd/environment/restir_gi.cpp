@@ -994,6 +994,30 @@ void ReSTIRGI::trace_world_space(RenderDataRD *p_render_data, Ref<GI::SDFGI> p_s
 			textures.push_back(p_sdfgi->occlusion_texture);
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 6, textures));
 		}
+		{
+			Vector<RID> textures;
+			for(int i=0; i<p_sdfgi->cascades.size(); i++) {
+				textures.push_back(linear_sampler);
+				textures.push_back(p_sdfgi->cascades[i].light_aniso_0_tex);
+			}
+			for(int i=p_sdfgi->cascades.size(); i<8; i++) {
+				textures.push_back(linear_sampler);
+				textures.push_back(p_sdfgi->cascades[0].light_aniso_0_tex);
+			}
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 8, textures));
+		}
+		{
+			Vector<RID> textures;
+			for(int i=0; i<p_sdfgi->cascades.size(); i++) {
+				textures.push_back(linear_sampler);
+				textures.push_back(p_sdfgi->cascades[i].light_aniso_1_tex);
+			}
+			for(int i=p_sdfgi->cascades.size(); i<8; i++) {
+				textures.push_back(linear_sampler);
+				textures.push_back(p_sdfgi->cascades[0].light_aniso_1_tex);
+			}
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 9, textures));
+		}
 	} else {
 		// Bind placeholders if SDFGI is not valid
 		RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
@@ -1020,6 +1044,22 @@ void ReSTIRGI::trace_world_space(RenderDataRD *p_render_data, Ref<GI::SDFGI> p_s
 			textures.push_back(linear_sampler);
 			textures.push_back(default_3d);
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 6, textures));
+		}
+		{
+			Vector<RID> textures;
+			for(int i=0; i<8; i++) {
+				textures.push_back(linear_sampler);
+				textures.push_back(default_3d);
+			}
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 8, textures));
+		}
+		{
+			Vector<RID> textures;
+			for(int i=0; i<8; i++) {
+				textures.push_back(linear_sampler);
+				textures.push_back(default_3d);
+			}
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 9, textures));
 		}
 	}
 
@@ -1048,28 +1088,37 @@ void ReSTIRGI::trace_world_space(RenderDataRD *p_render_data, Ref<GI::SDFGI> p_s
 		float sky_energy;
 	} params;
 
-	params.cascade_count = p_sdfgi->cascades.size();
-	params.min_cell_size = p_sdfgi->min_cell_size;
-	params.normal_bias = p_sdfgi->normal_bias;
-	params.probe_bias = p_sdfgi->probe_bias;
-	params.sky_energy = p_sdfgi->energy;
-	
-	for(int i=0; i<8; i++) {
-		if (i < (int)p_sdfgi->cascades.size()) {
-			Vector3 pos = Vector3(p_sdfgi->cascades[i].position) * p_sdfgi->cascades[i].cell_size;
-			params.cascades[i].offset[0] = pos.x;
-			params.cascades[i].offset[1] = pos.y;
-			params.cascades[i].offset[2] = pos.z;
-			params.cascades[i].to_cell = 1.0f / p_sdfgi->cascades[i].cell_size;
-			
-			params.cascades[i].probe_world_offset[0] = 0;
-			params.cascades[i].probe_world_offset[1] = 0;
-			params.cascades[i].probe_world_offset[2] = 0;
-			
-			params.cascades[i].pad = 0;
-		} else {
-			memset(&params.cascades[i], 0, sizeof(CascadeData));
+	if (p_sdfgi.is_valid()) {
+		params.cascade_count = p_sdfgi->cascades.size();
+		params.min_cell_size = p_sdfgi->min_cell_size;
+		params.normal_bias = p_sdfgi->normal_bias;
+		params.probe_bias = p_sdfgi->probe_bias;
+		params.sky_energy = p_sdfgi->energy;
+		
+		for(int i=0; i<8; i++) {
+			if (i < (int)p_sdfgi->cascades.size()) {
+				Vector3 pos = Vector3(p_sdfgi->cascades[i].position) * p_sdfgi->cascades[i].cell_size;
+				params.cascades[i].offset[0] = pos.x;
+				params.cascades[i].offset[1] = pos.y;
+				params.cascades[i].offset[2] = pos.z;
+				params.cascades[i].to_cell = 1.0f / p_sdfgi->cascades[i].cell_size;
+				
+				params.cascades[i].probe_world_offset[0] = 0;
+				params.cascades[i].probe_world_offset[1] = 0;
+				params.cascades[i].probe_world_offset[2] = 0;
+				
+				params.cascades[i].pad = 0;
+			} else {
+				memset(&params.cascades[i], 0, sizeof(CascadeData));
+			}
 		}
+	} else {
+		params.cascade_count = 0;
+		params.min_cell_size = 0.0f;
+		params.normal_bias = 0.0f;
+		params.probe_bias = 0.0f;
+		params.sky_energy = 1.0f;
+		memset(params.cascades, 0, sizeof(params.cascades));
 	}
 
 	// View matrix

@@ -56,7 +56,10 @@ void main() {
 			vec2 sample_uv = uv_center + offset;
 			
 			vec4 normal_roughness = texture(u_source_normal_roughness, sample_uv);
-			// Godot uses Octahedral compression in RG channels
+			// Godot uses Octahedral compression in RG channels.
+			// The input texture is likely UNORM (0..1) even if it's a float buffer, 
+			// because Godot's internal renderer writes 0..1 encoded values.
+			// We MUST convert to -1..1 for decoding.
 			vec3 normal = decode_octahedral_normal(normal_roughness.xy * 2.0 - 1.0);
 			float depth = texture(u_source_depth, sample_uv).r;
 			

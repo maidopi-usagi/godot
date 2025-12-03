@@ -65,7 +65,7 @@ vec3 world_to_cascade_uvw(vec3 world_pos, uint cascade_idx) {
 	vec3 local_pos = world_pos - params.cascades[cascade_idx].offset;
 	vec3 cell_pos = local_pos * params.cascades[cascade_idx].to_cell;
 	const float INV_SIZE = 1.0 / 128.0;
-	return cell_pos * INV_SIZE + 0.5;
+	return cell_pos * INV_SIZE;
 }
 
 // Sample lighting from the specified cascade
@@ -94,7 +94,7 @@ uint find_cascade(vec3 world_pos) {
 
 // Reconstruct world position from depth
 vec3 reconstruct_world_pos(vec2 uv, float depth) {
-	vec4 ndc = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+	vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
 	vec4 view_pos = params.inv_projection_matrix * ndc;
 	view_pos /= view_pos.w;
 	
@@ -116,7 +116,7 @@ float random(inout uint seed) {
 
 // Reconstruct view space position from depth
 vec3 reconstruct_view_pos(vec2 uv, float depth) {
-	vec4 ndc = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+	vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
 	vec4 view_pos = params.inv_projection_matrix * ndc;
 	return view_pos.xyz / view_pos.w;
 }
@@ -184,7 +184,9 @@ bool trace_screen_space_ray(
 		float sampled_depth = sample_depth_pyramid(current_pos.xy, 0.0);
 		
 		// Check if ray is behind surface
-		float depth_diff = current_pos.z - sampled_depth;
+		// Reverse Z: Near=1, Far=0.
+		// Surface is closer (larger Z) than Ray (smaller Z) -> Ray is behind surface
+		float depth_diff = sampled_depth - current_pos.z;
 		
 		if (depth_diff > 0.0 && depth_diff < params.thickness) {
 			// Hit! Refine with binary search
@@ -196,7 +198,7 @@ bool trace_screen_space_ray(
 				vec3 search_mid = (search_start + search_end) * 0.5;
 				float mid_depth = sample_depth_pyramid(search_mid.xy, 0.0);
 				
-				if (search_mid.z > mid_depth) {
+				if (mid_depth > search_mid.z) { // Hit (Surface > Ray)
 					search_end = search_mid;
 				} else {
 					search_start = search_mid;
@@ -230,7 +232,8 @@ void main() {
 	
 	// Read probe data
 	vec4 gbuffer_data = texture(u_gbuffer_normal_depth, uv);
-	vec3 normal_vs = mat3(params.view_matrix) * normalize(gbuffer_data.xyz);
+	// GBuffer normals are already in View Space
+	vec3 normal_vs = normalize(gbuffer_data.xyz);
 	float depth = gbuffer_data.w;
 	
 	// Read ray direction
@@ -274,7 +277,7 @@ void main() {
 		rng_seed
 	);
 	
-	if (hit) {
+	if (false) {
 		vec3 radiance;
 		
 		if (params.has_screen_color != 0) {
@@ -291,10 +294,12 @@ void main() {
 			// Apply normal bias?
 			// We don't have the normal at the hit point easily (unless we sample gbuffer at hit_uv)
 			// Sampling gbuffer at hit_uv is good.
-			vec3 hit_normal_vs = mat3(params.view_matrix) * normalize(texture(u_gbuffer_normal_depth, hit_uv).xyz);
+			vec3 hit_normal_vs = normalize(texture(u_gbuffer_normal_depth, hit_uv).xyz);
 			vec3 hit_normal_ws = mat3(inv_view) * hit_normal_vs;
 			
-			hit_pos_ws += hit_normal_ws * params.normal_bias;
+			// Apply normal bias scaled by cell size
+			float cell_size = 1.0 / params.cascades[0].to_cell;
+			hit_pos_ws += hit_normal_ws * (cell_size * params.normal_bias);
 			
 			uint cascade_idx = find_cascade(hit_pos_ws);
 			radiance = sample_lighting(hit_pos_ws, cascade_idx);
