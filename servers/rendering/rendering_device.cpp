@@ -49,6 +49,10 @@
 #include "modules/glslang/shader_compile.h"
 #endif
 
+#ifdef STREAMLINE_ENABLED
+#include "drivers/streamline/streamline_context.h"
+#endif
+
 #define FORCE_SEPARATE_PRESENT_QUEUE 0
 #define PRINT_FRAMEBUFFER_FORMAT 0
 
@@ -299,7 +303,9 @@ RID RenderingDevice::blas_create(RID p_vertex_array, RID p_index_array, BitField
 	if (index_array && index_array->draw_tracker) {
 		acceleration_structure.draw_trackers.push_back(index_array->draw_tracker);
 	}
-	_check_transfer_worker_index_array(index_array);
+	if (index_array) {
+		_check_transfer_worker_index_array(index_array);
+	}
 
 	RID id = acceleration_structure_owner.make_rid(acceleration_structure);
 #ifdef DEV_ENABLED
@@ -336,13 +342,12 @@ BitField<RDD::BufferUsageBits> RenderingDevice::_creation_to_usage_bits(BitField
 
 RID RenderingDevice::tlas_instances_buffer_create(uint32_t p_instance_count, BitField<BufferCreationBits> p_creation_bits) {
 	ERR_FAIL_COND_V_MSG(!has_feature(SUPPORTS_RAYTRACING_PIPELINE) && !has_feature(SUPPORTS_RAY_QUERY), RID(), "The current rendering device has neither raytracing pipeline nor ray query support.");
-	ERR_FAIL_COND_V(p_instance_count == 0, RID());
 
 	uint32_t instances_buffer_size_bytes = driver->tlas_instances_buffer_get_size_bytes(p_instance_count);
 
 	InstancesBuffer instances_buffer;
 	instances_buffer.instance_count = p_instance_count;
-	instances_buffer.buffer.size = instances_buffer_size_bytes;
+	instances_buffer.buffer.size = MAX(64u, instances_buffer_size_bytes); // Ensure minimum size of 64 bytes so that buffer can always be created correctly
 	instances_buffer.buffer.usage = _creation_to_usage_bits(p_creation_bits) | RDD::BUFFER_USAGE_TRANSFER_FROM_BIT | RDD::BUFFER_USAGE_DEVICE_ADDRESS_BIT | RDD::BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT;
 	instances_buffer.buffer.driver_id = driver->buffer_create(instances_buffer.buffer.size, instances_buffer.buffer.usage, RDD::MEMORY_ALLOCATION_TYPE_CPU, frames_drawn);
 	ERR_FAIL_COND_V_MSG(!instances_buffer.buffer.driver_id, RID(), "Failed to create instances buffer.");
@@ -358,7 +363,7 @@ RID RenderingDevice::tlas_instances_buffer_create(uint32_t p_instance_count, Bit
 	return id;
 }
 
-void RenderingDevice::tlas_instances_buffer_fill(RID p_instances_buffer, const Vector<RID> &p_blases, VectorView<Transform3D> p_transforms) {
+void RenderingDevice::tlas_instances_buffer_fill(RID p_instances_buffer, const Vector<RID> &p_blases, VectorView<Transform3D> p_transforms, VectorView<uint32_t> p_instance_flags, VectorView<uint32_t> p_sbt_offsets) {
 	ERR_FAIL_COND_MSG(!has_feature(SUPPORTS_RAYTRACING_PIPELINE) && !has_feature(SUPPORTS_RAY_QUERY), "The current rendering device has neither raytracing pipeline nor ray query support.");
 
 	InstancesBuffer *instances_buffer = instances_buffer_owner.get_or_null(p_instances_buffer);
@@ -367,6 +372,8 @@ void RenderingDevice::tlas_instances_buffer_fill(RID p_instances_buffer, const V
 	uint32_t blases_count = p_blases.size();
 	ERR_FAIL_COND_MSG(blases_count != instances_buffer->instance_count, "The number of blases is not equal to the instance count of the instances buffer.");
 	ERR_FAIL_COND_MSG(blases_count != p_transforms.size(), "Blases and transforms vectors must have the same size.");
+	ERR_FAIL_COND_MSG(p_instance_flags.size() != 0 && p_instance_flags.size() != blases_count, "Instance flags must be empty or match the BLAS count.");
+	ERR_FAIL_COND_MSG(p_sbt_offsets.size() != 0 && p_sbt_offsets.size() != blases_count, "SBT offsets must be empty or match the BLAS count.");
 
 	thread_local LocalVector<RDD::AccelerationStructureID> blases;
 	blases.resize(blases_count);
@@ -380,7 +387,7 @@ void RenderingDevice::tlas_instances_buffer_fill(RID p_instances_buffer, const V
 
 	instances_buffer->blases = p_blases;
 
-	driver->tlas_instances_buffer_fill(instances_buffer->buffer.driver_id, blases, p_transforms);
+	driver->tlas_instances_buffer_fill(instances_buffer->buffer.driver_id, blases, p_transforms, p_instance_flags, p_sbt_offsets);
 }
 
 RID RenderingDevice::tlas_create(RID p_instances_buffer) {
@@ -391,7 +398,7 @@ RID RenderingDevice::tlas_create(RID p_instances_buffer) {
 
 	AccelerationStructure acceleration_structure;
 	acceleration_structure.type = RDD::ACCELERATION_STRUCTURE_TYPE_TLAS;
-	acceleration_structure.driver_id = driver->tlas_create(instances_buffer->buffer.driver_id);
+	acceleration_structure.driver_id = driver->tlas_create(instances_buffer->buffer.driver_id, instances_buffer->instance_count);
 	ERR_FAIL_COND_V_MSG(!acceleration_structure.driver_id, RID(), "Failed to create TLAS.");
 	acceleration_structure.instances_buffer = p_instances_buffer;
 
@@ -4026,7 +4033,8 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 
 		switch (uniform.uniform_type) {
 			case UNIFORM_TYPE_SAMPLER: {
-				if (uniform.get_id_count() != (uint32_t)set_uniform.length) {
+				// Skip count validation for unbounded arrays (bindless).
+				if (!set_uniform.unbounded && uniform.get_id_count() != (uint32_t)set_uniform.length) {
 					if (set_uniform.length > 1) {
 						ERR_FAIL_V_MSG(RID(), "Sampler (binding: " + itos(uniform.binding) + ") is an array of (" + itos(set_uniform.length) + ") sampler elements, so it should be provided equal number of sampler IDs to satisfy it (IDs provided: " + itos(uniform.get_id_count()) + ").");
 					} else {
@@ -4042,7 +4050,8 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 				}
 			} break;
 			case UNIFORM_TYPE_SAMPLER_WITH_TEXTURE: {
-				if (uniform.get_id_count() != (uint32_t)set_uniform.length * 2) {
+				// Skip count validation for unbounded arrays (bindless).
+				if (!set_uniform.unbounded && uniform.get_id_count() != (uint32_t)set_uniform.length * 2) {
 					if (set_uniform.length > 1) {
 						ERR_FAIL_V_MSG(RID(), "SamplerTexture (binding: " + itos(uniform.binding) + ") is an array of (" + itos(set_uniform.length) + ") sampler&texture elements, so it should provided twice the amount of IDs (sampler,texture pairs) to satisfy it (IDs provided: " + itos(uniform.get_id_count()) + ").");
 					} else {
@@ -4095,7 +4104,8 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 				}
 			} break;
 			case UNIFORM_TYPE_TEXTURE: {
-				if (uniform.get_id_count() != (uint32_t)set_uniform.length) {
+				// Skip count validation for unbounded arrays (bindless).
+				if (!set_uniform.unbounded && uniform.get_id_count() != (uint32_t)set_uniform.length) {
 					if (set_uniform.length > 1) {
 						ERR_FAIL_V_MSG(RID(), "Texture (binding: " + itos(uniform.binding) + ") is an array of (" + itos(set_uniform.length) + ") textures, so it should be provided equal number of texture IDs to satisfy it (IDs provided: " + itos(uniform.get_id_count()) + ").");
 					} else {
@@ -4675,7 +4685,7 @@ bool RenderingDevice::compute_pipeline_is_valid(RID p_pipeline) {
 	return compute_pipeline_owner.owns(p_pipeline);
 }
 
-RID RenderingDevice::raytracing_pipeline_create(RID p_shader, const Vector<PipelineSpecializationConstant> &p_specialization_constants) {
+RID RenderingDevice::raytracing_pipeline_create(RID p_shader, const Vector<PipelineSpecializationConstant> &p_specialization_constants, const RDD::RaytracingPipelineSettings &p_settings) {
 	_THREAD_SAFE_METHOD_
 
 	// Needs a shader.
@@ -4697,7 +4707,7 @@ RID RenderingDevice::raytracing_pipeline_create(RID p_shader, const Vector<Pipel
 	}
 
 	RaytracingPipeline pipeline;
-	pipeline.driver_id = driver->raytracing_pipeline_create(shader->driver_id, p_specialization_constants);
+	pipeline.driver_id = driver->raytracing_pipeline_create(shader->driver_id, p_specialization_constants, p_settings);
 	ERR_FAIL_COND_V(!pipeline.driver_id, RID());
 
 	if (pipeline_cache_enabled) {
@@ -7648,12 +7658,18 @@ Error RenderingDevice::initialize(RenderingContextDriver *p_context, DisplayServ
 		String rendering_method;
 		if (OS::get_singleton()->get_current_rendering_method() == "mobile") {
 			rendering_method = "Forward Mobile";
-		} else {
+		} else if (OS::get_singleton()->get_current_rendering_method() == "forward_plus") {
 			rendering_method = "Forward+";
+		} else {
+			rendering_method = "Unknown";
 		}
 
 		// Output our device version.
-		Engine::get_singleton()->print_header(vformat("%s %s - %s - Using Device #%d: %s - %s", get_device_api_name(), get_device_api_version(), rendering_method, device_index, _get_device_vendor_name(device), device.name));
+		String streamline_enabled = "";
+#ifdef STREAMLINE_ENABLED
+		streamline_enabled = (StreamlineContext::get().slInit != nullptr ? " - Streamline" : "");
+#endif
+		Engine::get_singleton()->print_header(vformat("%s %s - %s%s - Using Device #%d: %s - %s", get_device_api_name(), get_device_api_version(), rendering_method, streamline_enabled, device_index, _get_device_vendor_name(device), device.name));
 	}
 
 	// Pick the main queue family. It is worth noting we explicitly do not request the transfer bit, as apparently the specification defines
@@ -7996,7 +8012,9 @@ uint64_t RenderingDevice::get_driver_resource(DriverResource p_resource, RID p_r
 			break;
 		case DRIVER_RESOURCE_TEXTURE:
 		case DRIVER_RESOURCE_TEXTURE_VIEW:
-		case DRIVER_RESOURCE_TEXTURE_DATA_FORMAT: {
+		case DRIVER_RESOURCE_TEXTURE_DATA_FORMAT:
+		case DRIVER_RESOURCE_TEXTURE_DEVICE_MEMORY:
+		case DRIVER_RESOURCE_TEXTURE_USAGE_FLAGS: {
 			Texture *tex = texture_owner.get_or_null(p_rid);
 			ERR_FAIL_NULL_V(tex, 0);
 
@@ -8392,7 +8410,7 @@ void RenderingDevice::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("compute_pipeline_create", "shader", "specialization_constants"), &RenderingDevice::_compute_pipeline_create, DEFVAL(TypedArray<RDPipelineSpecializationConstant>()));
 	ClassDB::bind_method(D_METHOD("compute_pipeline_is_valid", "compute_pipeline"), &RenderingDevice::compute_pipeline_is_valid);
 
-	ClassDB::bind_method(D_METHOD("raytracing_pipeline_create", "shader", "specialization_constants"), &RenderingDevice::_raytracing_pipeline_create, DEFVAL(TypedArray<RDPipelineSpecializationConstant>()));
+	ClassDB::bind_method(D_METHOD("raytracing_pipeline_create", "shader", "specialization_constants", "max_recursion_depth", "max_payload_size_bytes", "max_hit_attribute_size_bytes"), &RenderingDevice::_raytracing_pipeline_create, DEFVAL(TypedArray<RDPipelineSpecializationConstant>()), DEFVAL(1), DEFVAL(32), DEFVAL(8));
 	ClassDB::bind_method(D_METHOD("raytracing_pipeline_is_valid", "raytracing_pipeline"), &RenderingDevice::raytracing_pipeline_is_valid);
 
 	ClassDB::bind_method(D_METHOD("blas_create", "vertex_array", "index_array", "geometry_bits", "position_attribute_location"), &RenderingDevice::blas_create, DEFVAL(0), DEFVAL(0));
@@ -8516,6 +8534,8 @@ void RenderingDevice::_bind_methods() {
 	BIND_ENUM_CONSTANT(DRIVER_RESOURCE_TEXTURE);
 	BIND_ENUM_CONSTANT(DRIVER_RESOURCE_TEXTURE_VIEW);
 	BIND_ENUM_CONSTANT(DRIVER_RESOURCE_TEXTURE_DATA_FORMAT);
+	BIND_ENUM_CONSTANT(DRIVER_RESOURCE_TEXTURE_DEVICE_MEMORY);
+	BIND_ENUM_CONSTANT(DRIVER_RESOURCE_TEXTURE_USAGE_FLAGS);
 	BIND_ENUM_CONSTANT(DRIVER_RESOURCE_SAMPLER);
 	BIND_ENUM_CONSTANT(DRIVER_RESOURCE_UNIFORM_SET);
 	BIND_ENUM_CONSTANT(DRIVER_RESOURCE_BUFFER);
@@ -9410,8 +9430,12 @@ RID RenderingDevice::_compute_pipeline_create(RID p_shader, const TypedArray<RDP
 	return compute_pipeline_create(p_shader, _get_spec_constants(p_specialization_constants));
 }
 
-RID RenderingDevice::_raytracing_pipeline_create(RID p_shader, const TypedArray<RDPipelineSpecializationConstant> &p_specialization_constants = TypedArray<RDPipelineSpecializationConstant>()) {
-	return raytracing_pipeline_create(p_shader, _get_spec_constants(p_specialization_constants));
+RID RenderingDevice::_raytracing_pipeline_create(RID p_shader, const TypedArray<RDPipelineSpecializationConstant> &p_specialization_constants, uint32_t p_max_recursion_depth, uint32_t p_max_payload_size_bytes, uint32_t p_max_hit_attribute_size_bytes) {
+	RDD::RaytracingPipelineSettings settings;
+	settings.max_recursion_depth = p_max_recursion_depth;
+	settings.max_payload_size_bytes = p_max_payload_size_bytes;
+	settings.max_hit_attribute_size_bytes = p_max_hit_attribute_size_bytes;
+	return raytracing_pipeline_create(p_shader, _get_spec_constants(p_specialization_constants), settings);
 }
 
 #ifndef DISABLE_DEPRECATED

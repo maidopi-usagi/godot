@@ -33,10 +33,12 @@
 #include "core/templates/paged_allocator.h"
 #include "servers/rendering/multi_uma_buffer.h"
 #include "servers/rendering/renderer_rd/cluster_builder_rd.h"
+#include "servers/rendering/renderer_rd/effects/dlss.h"
 #include "servers/rendering/renderer_rd/effects/fsr2.h"
 #include "servers/rendering/renderer_rd/effects/motion_vectors_store.h"
 #include "servers/rendering/renderer_rd/effects/ss_effects.h"
 #include "servers/rendering/renderer_rd/effects/taa.h"
+#include "servers/rendering/renderer_rd/forward_clustered/render_raytracing.h"
 #include "servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.h"
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/best_fit_normal.glsl.gen.h"
@@ -54,11 +56,12 @@
 #define RB_TEX_NORMAL_ROUGHNESS_MSAA SNAME("normal_roughness_msaa")
 #define RB_TEX_VOXEL_GI SNAME("voxel_gi")
 #define RB_TEX_VOXEL_GI_MSAA SNAME("voxel_gi_msaa")
-
 namespace RendererSceneRenderImplementation {
 
 class RenderForwardClustered : public RendererSceneRenderRD {
 	friend SceneShaderForwardClustered;
+	friend SceneShaderRaytracing;
+	friend class RenderRaytracing;
 
 	enum {
 		SCENE_UNIFORM_SET = 0,
@@ -87,6 +90,10 @@ class RenderForwardClustered : public RendererSceneRenderRD {
 
 	SceneShaderForwardClustered scene_shader;
 
+	/* Raytracing */
+
+	RenderRaytracing *raytracing = nullptr;
+
 public:
 	/* Framebuffer */
 
@@ -96,6 +103,7 @@ public:
 	private:
 		RenderSceneBuffersRD *render_buffers = nullptr;
 		RendererRD::FSR2Context *fsr2_context = nullptr;
+		RendererRD::DLSSContext *dlss_context = nullptr;
 #ifdef METAL_MFXTEMPORAL_ENABLED
 		RendererRD::MFXTemporalContext *mfx_temporal_context = nullptr;
 #endif
@@ -142,13 +150,32 @@ public:
 		RID get_voxelgi(uint32_t p_layer) { return render_buffers->get_texture_slice(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_VOXEL_GI, p_layer, 0); }
 		RID get_voxelgi_msaa(uint32_t p_layer) { return render_buffers->get_texture_slice(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_VOXEL_GI_MSAA, p_layer, 0); }
 
-		void ensure_fsr2(RendererRD::FSR2Effect *p_effect);
+		void ensure_fsr2(RendererRD::FSR2Effect *effect);
 		RendererRD::FSR2Context *get_fsr2_context() const { return fsr2_context; }
+
+		void ensure_dlss(RendererRD::DLSSEffect *effect);
+		RendererRD::DLSSContext *get_dlss_context() const { return dlss_context; }
 
 #ifdef METAL_MFXTEMPORAL_ENABLED
 		bool ensure_mfx_temporal(RendererRD::MFXTemporalEffect *p_effect);
 		RendererRD::MFXTemporalContext *get_mfx_temporal_context() const { return mfx_temporal_context; }
 #endif
+
+		// Raytracing support
+		void rt_ensure_textures();
+		bool rt_has_texture() const { return render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_RAYTRACING); }
+		RID rt_get_texture() const { return render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_RAYTRACING); }
+		bool rt_has_depth_texture() const { return render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_RT_DEPTH); }
+		RID rt_get_depth_texture() const { return render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_RT_DEPTH); }
+
+		// DLSS Ray Reconstruction output buffers
+		void dlss_rr_ensure_buffers();
+		void dlss_rr_free_buffers();
+		bool dlss_rr_has_buffers() const { return render_buffers->has_texture(RB_SCOPE_DLSS_RR, RB_TEX_DLSS_RR_DIFFUSE_ALBEDO); }
+		RID dlss_rr_get_diffuse_albedo() const { return render_buffers->get_texture(RB_SCOPE_DLSS_RR, RB_TEX_DLSS_RR_DIFFUSE_ALBEDO); }
+		RID dlss_rr_get_specular_albedo() const { return render_buffers->get_texture(RB_SCOPE_DLSS_RR, RB_TEX_DLSS_RR_SPECULAR_ALBEDO); }
+		RID dlss_rr_get_normal_roughness() const { return render_buffers->get_texture(RB_SCOPE_DLSS_RR, RB_TEX_DLSS_RR_NORMAL_ROUGHNESS); }
+		RID dlss_rr_get_specular_hit_dist() const { return render_buffers->get_texture(RB_SCOPE_DLSS_RR, RB_TEX_DLSS_RR_SPECULAR_HIT_DIST); }
 
 		RID get_color_only_fb();
 		RID get_color_pass_fb(uint32_t p_color_pass_flags);
@@ -172,11 +199,16 @@ private:
 
 	RID render_base_uniform_set;
 
+	bool rt_enabled = false;
+
 	uint64_t lightmap_texture_array_version = 0xFFFFFFFF;
 
 	void _update_render_base_uniform_set();
 	RID _setup_sdfgi_render_pass_uniform_set(RID p_albedo_texture, RID p_emission_texture, RID p_emission_aniso_texture, RID p_geom_facing_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index);
 	RID _setup_render_pass_uniform_set(RenderListType p_render_list, const RenderDataRD *p_render_data, RID p_radiance_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index, bool p_use_directional_shadow_atlas = false);
+
+	struct RenderListParameters;
+	struct GeometryInstanceSurfaceDataCache;
 
 	struct BestFitNormal {
 		BestFitNormalShaderRD shader;
@@ -211,7 +243,6 @@ private:
 		COLOR_PASS_FLAG_MOTION_VECTORS = 1 << 3,
 	};
 
-	struct GeometryInstanceSurfaceDataCache;
 	struct RenderElementInfo;
 
 	struct RenderListParameters {
@@ -284,6 +315,28 @@ private:
 		INSTANCE_DATA_FLAGS_PARTICLE_TRAIL_MASK = 0xFF,
 		INSTANCE_DATA_FLAGS_FADE_SHIFT = 24,
 		INSTANCE_DATA_FLAGS_FADE_MASK = 0xFFUL << INSTANCE_DATA_FLAGS_FADE_SHIFT
+	};
+
+	enum SceneFeature : uint32_t {
+		SCENE_FEATURE_SDFGI = (1 << 0),
+		SCENE_FEATURE_SSIL = (1 << 1),
+		SCENE_FEATURE_SSR = (1 << 2),
+		SCENE_FEATURE_SSAO = (1 << 3),
+		SCENE_FEATURE_VOXELGI = (1 << 4),
+		SCENE_FEATURE_DEPTH_PREPASS = (1 << 5),
+	};
+
+	// Features that are fully disabled when raytracing is active.
+	constexpr static uint32_t RT_DISABLED_FEATURES =
+			SCENE_FEATURE_SDFGI | SCENE_FEATURE_SSIL | SCENE_FEATURE_SSR | SCENE_FEATURE_SSAO | SCENE_FEATURE_DEPTH_PREPASS;
+
+	struct SceneFeatures {
+		uint32_t raw = 0;
+		bool rt = false;
+
+		void set(uint32_t p_feature) { raw |= p_feature; }
+		uint32_t get() const { return rt ? (raw & ~RT_DISABLED_FEATURES) : raw; }
+		bool has(uint32_t p_feature) const { return (get() & p_feature) != 0; }
 	};
 
 	struct SceneState {
@@ -470,7 +523,7 @@ private:
 	void _render_list_with_draw_list(RenderListParameters *p_params, RID p_framebuffer, BitField<RD::DrawFlags> p_draw_flags = RD::DRAW_DEFAULT_ALL, const Vector<Color> &p_clear_color_values = Vector<Color>(), float p_clear_depth_value = 0.0, uint32_t p_clear_stencil_value = 0, const Rect2 &p_region = Rect2());
 
 	void _fill_instance_data(RenderListType p_render_list, int *p_render_info = nullptr, uint32_t p_offset = 0, int32_t p_max_elements = -1, bool p_update_buffer = true);
-	void _fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi = false, bool p_using_opaque_gi = false, bool p_using_motion_pass = false, bool p_append = false);
+	void _fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi = false, bool p_using_opaque_gi = false, bool p_using_motion_pass = false, bool p_append = false, bool p_motion_alpha_only = false);
 
 	HashMap<Size2i, RID> sdfgi_framebuffer_size_cache;
 
@@ -739,6 +792,7 @@ private:
 
 	RendererRD::TAA *taa = nullptr;
 	RendererRD::FSR2Effect *fsr2_effect = nullptr;
+	RendererRD::DLSSEffect *dlss_effect = nullptr;
 	RendererRD::SSEffects *ss_effects = nullptr;
 
 #ifdef METAL_MFXTEMPORAL_ENABLED
@@ -834,6 +888,11 @@ public:
 
 	virtual void mesh_generate_pipelines(RID p_mesh, bool p_background_compilation) override;
 	virtual uint32_t get_pipeline_compilations(RSE::PipelineSource p_source) override;
+
+	/* RAYTRACING */
+
+	void rt_set_enabled(bool p_enabled);
+	bool rt_is_enabled() const { return rt_enabled; }
 
 	/* SHADER LIBRARY */
 

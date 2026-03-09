@@ -1,0 +1,1690 @@
+/**************************************************************************/
+/*  render_raytracing.cpp                                                 */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#include "render_forward_clustered.h"
+
+#include "servers/rendering/renderer_rd/environment/sky.h"
+#include "servers/rendering/renderer_rd/forward_clustered/scene_shader_raytracing.h"
+#include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
+#include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
+#include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
+#include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
+#include "servers/rendering/renderer_rd/storage_rd/particles_storage.h"
+#include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
+#include "servers/rendering/rendering_server_globals.h"
+#include "servers/rendering/storage/environment_storage.h"
+
+using namespace RendererSceneRenderImplementation;
+
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+void RenderRaytracing::initialize(RenderForwardClustered *p_owner) {
+	owner = p_owner;
+	bindless_block = memnew(BindlessBlock);
+}
+
+RenderRaytracing::~RenderRaytracing() {
+	if (uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(uniform_set)) {
+		RD::get_singleton()->free_rid(uniform_set);
+	}
+
+	cleanup_caches();
+
+	if (tlas_instances_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(tlas_instances_buffer);
+	}
+	if (tlas.is_valid()) {
+		RD::get_singleton()->free_rid(tlas);
+	}
+	if (geometry_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(geometry_buffer);
+	}
+	if (material_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(material_buffer);
+	}
+	if (light_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(light_buffer);
+	}
+	if (params_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(params_buffer);
+	}
+
+	if (bindless_block) {
+		memdelete(bindless_block);
+		bindless_block = nullptr;
+	}
+	if (shader) {
+		memdelete(shader);
+		shader = nullptr;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cache management
+// ---------------------------------------------------------------------------
+
+void RenderRaytracing::cleanup_caches() {
+	// Free all cached surface BLAS and data
+	for (uint32_t i = 0; i < surface_chunks.size(); i++) {
+		if (surface_chunks[i]) {
+			for (uint32_t j = 0; j < RT_CACHE_CHUNK_SIZE; j++) {
+				RTCacheEntry *entry = &surface_chunks[i][j];
+				if (entry->ptr) {
+					if (entry->ptr->blas.is_valid()) {
+						RD::get_singleton()->free_rid(entry->ptr->blas);
+					}
+					memdelete(entry->ptr);
+					entry->ptr = nullptr;
+				}
+			}
+			memdelete_arr(surface_chunks[i]);
+		}
+	}
+	surface_chunks.clear();
+
+	// Free all cached material data
+	for (uint32_t i = 0; i < material_chunks.size(); i++) {
+		if (material_chunks[i]) {
+			for (uint32_t j = 0; j < RT_CACHE_CHUNK_SIZE; j++) {
+				RTMaterialCacheEntry *entry = &material_chunks[i][j];
+				if (entry->ptr) {
+					if (entry->ptr->uniform_buffer.is_valid()) {
+						RD::get_singleton()->free_rid(entry->ptr->uniform_buffer);
+					}
+					memdelete(entry->ptr);
+					entry->ptr = nullptr;
+				}
+			}
+			memdelete_arr(material_chunks[i]);
+		}
+	}
+	material_chunks.clear();
+
+	// Reset counters
+	material_free_slots.clear();
+	next_material_slot = 0;
+	vram_used = 0;
+	cache_hits = 0;
+	cache_misses = 0;
+}
+
+// ---------------------------------------------------------------------------
+// RID helpers
+// ---------------------------------------------------------------------------
+
+uint32_t RenderRaytracing::get_rid_index(RID p_rid) {
+	return static_cast<uint32_t>(p_rid.get_id() & 0xFFFFFFFFULL);
+}
+
+uint32_t RenderRaytracing::get_rid_version(RID p_rid) {
+	return static_cast<uint32_t>(p_rid.get_id() >> 32);
+}
+
+RTCacheEntry *RenderRaytracing::get_surface_cache_entry(uint32_t p_index) {
+	uint32_t chunk_idx = p_index >> RT_CACHE_CHUNK_SHIFT;
+	uint32_t entry_idx = p_index & RT_CACHE_CHUNK_MASK;
+
+	// Grow vector if needed, initializing new slots to nullptr
+	while (chunk_idx >= surface_chunks.size()) {
+		surface_chunks.push_back(nullptr);
+	}
+
+	if (!surface_chunks[chunk_idx]) {
+		surface_chunks.set(chunk_idx, memnew_arr(RTCacheEntry, RT_CACHE_CHUNK_SIZE));
+		for (uint32_t i = 0; i < RT_CACHE_CHUNK_SIZE; i++) {
+			surface_chunks[chunk_idx][i] = RTCacheEntry();
+		}
+	}
+
+	return &surface_chunks[chunk_idx][entry_idx];
+}
+
+RTMaterialCacheEntry *RenderRaytracing::get_material_cache_entry(uint32_t p_index) {
+	uint32_t chunk_idx = p_index >> RT_CACHE_CHUNK_SHIFT;
+	uint32_t entry_idx = p_index & RT_CACHE_CHUNK_MASK;
+
+	// Grow vector if needed, initializing new slots to nullptr
+	while (chunk_idx >= material_chunks.size()) {
+		material_chunks.push_back(nullptr);
+	}
+
+	if (!material_chunks[chunk_idx]) {
+		material_chunks.set(chunk_idx, memnew_arr(RTMaterialCacheEntry, RT_CACHE_CHUNK_SIZE));
+		for (uint32_t i = 0; i < RT_CACHE_CHUNK_SIZE; i++) {
+			material_chunks[chunk_idx][i] = RTMaterialCacheEntry();
+		}
+	}
+
+	return &material_chunks[chunk_idx][entry_idx];
+}
+
+uint32_t RenderRaytracing::allocate_material_slot() {
+	if (!material_free_slots.is_empty()) {
+		uint32_t slot = material_free_slots[material_free_slots.size() - 1];
+		material_free_slots.resize(material_free_slots.size() - 1);
+		return slot;
+	}
+	return next_material_slot++;
+}
+
+// ---------------------------------------------------------------------------
+// Per-frame preparation
+// ---------------------------------------------------------------------------
+
+void RenderRaytracing::prepare_frame() {
+	// Don't free BLAS or materials - they're cached now!
+	// Just clear the per-frame lists
+	blass.clear();
+	blas_transforms.clear();
+	instance_flags.clear();
+	sbt_offsets.clear();
+	geometry_data.clear();
+	material_data.clear();
+
+	SceneShaderRaytracing::get_singleton()->begin_custom_shader_frame();
+
+	// Free per-frame resources
+	if (tlas_instances_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(tlas_instances_buffer);
+		tlas_instances_buffer = RID();
+	}
+	if (tlas.is_valid()) {
+		RD::get_singleton()->free_rid(tlas);
+		tlas = RID();
+	}
+	if (geometry_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(geometry_buffer);
+		geometry_buffer = RID();
+	}
+	if (material_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(material_buffer);
+		material_buffer = RID();
+	}
+
+	// Reset per-frame metrics
+	cache_hits = 0;
+	cache_misses = 0;
+
+	if (!bindless_block->is_initialized()) {
+		bindless_block->initialize(RD::get_singleton());
+	}
+	bindless_block->begin_frame();
+}
+
+// ---------------------------------------------------------------------------
+// Surface processing
+// ---------------------------------------------------------------------------
+
+RTSurfaceData *RenderRaytracing::process_surface(
+		const void *p_surf,
+		void *p_mesh_surface,
+		uint16_t p_surface_invalidation_counter,
+		const Transform3D &p_transform,
+		LocalVector<RID> &r_dirty_blas_list) {
+	const RenderForwardClustered::GeometryInstanceSurfaceDataCache *surf =
+			static_cast<const RenderForwardClustered::GeometryInstanceSurfaceDataCache *>(p_surf);
+
+	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
+
+	// Cache key: mesh RID + surface index
+	RID mesh_rid = surf->owner->data->base;
+	uint32_t cache_key = (mesh_rid.get_local_index() << 8) | (surf->surface_index & 0xFF);
+	uint32_t mesh_version = get_rid_version(mesh_rid);
+
+	// Cache lookup
+	RTCacheEntry *entry = get_surface_cache_entry(cache_key);
+
+	// Check if we can reuse cached BLAS
+	bool needs_refresh = !entry->ptr ||
+			entry->cached_rid_version != mesh_version ||
+			entry->cached_counter != p_surface_invalidation_counter;
+
+	if (!needs_refresh && entry->ptr->blas.is_valid()) {
+		// Cache hit - reuse existing BLAS
+		cache_hits++;
+
+		// Compute transform for this instance
+		uint64_t surface_format = mesh_storage->mesh_surface_get_format(p_mesh_surface);
+		Transform3D final_transform = p_transform;
+		if (surface_format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES) {
+			final_transform = p_transform * entry->ptr->aabb_transform;
+		}
+		blas_transforms.push_back(final_transform);
+
+		return entry->ptr;
+	}
+
+	// Cache miss - need to create new BLAS
+	cache_misses++;
+
+	// Allocate or reuse entry
+	if (!entry->ptr) {
+		entry->ptr = memnew(RTSurfaceData);
+	} else if (entry->ptr->blas.is_valid()) {
+		// Free old BLAS before creating new one
+		RD::get_singleton()->free_rid(entry->ptr->blas);
+		entry->ptr->blas = RID();
+	}
+
+	RTSurfaceData *surf_data = entry->ptr;
+
+	// Get vertex/index arrays for BLAS creation
+	SceneShaderForwardClustered::ShaderData *shader_data = surf->shader;
+	bool emulate_point_size = shader_data->uses_point_size && owner->scene_shader.emulate_point_size;
+
+	SceneShaderForwardClustered::ShaderData::PipelineKey pipeline_key;
+	pipeline_key.primitive_type = surf->primitive;
+	pipeline_key.version = SceneShaderForwardClustered::PIPELINE_VERSION_COLOR_PASS;
+	pipeline_key.color_pass_flags = 0;
+	pipeline_key.wireframe = false;
+	pipeline_key.ubershader = 0;
+
+	RD::VertexFormatID vertex_format = -1;
+	RID vertex_array_rd;
+	RID index_array_rd;
+
+	bool pipeline_motion_vectors = false;
+	uint64_t input_mask = shader_data->get_vertex_input_mask(
+			pipeline_key.version,
+			pipeline_key.color_pass_flags,
+			pipeline_key.ubershader);
+
+	if (surf->owner->mesh_instance.is_valid()) {
+		mesh_storage->mesh_instance_surface_get_vertex_arrays_and_format(
+				surf->owner->mesh_instance,
+				surf->surface_index,
+				input_mask,
+				pipeline_motion_vectors,
+				emulate_point_size,
+				vertex_array_rd,
+				vertex_format);
+	} else {
+		mesh_storage->mesh_surface_get_vertex_arrays_and_format(
+				p_mesh_surface,
+				input_mask,
+				pipeline_motion_vectors,
+				emulate_point_size,
+				vertex_array_rd,
+				vertex_format);
+	}
+
+	index_array_rd = mesh_storage->mesh_surface_get_index_array(p_mesh_surface, 0);
+
+	// Create BLAS
+	surf_data->blas = RD::get_singleton()->blas_create(vertex_array_rd, index_array_rd);
+	if (!surf_data->blas.is_valid()) {
+		return surf_data; // Return with invalid BLAS
+	}
+	r_dirty_blas_list.push_back(surf_data->blas);
+
+	// Build geometry data
+	uint64_t surface_format = mesh_storage->mesh_surface_get_format(p_mesh_surface);
+	bool compressed = surface_format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES;
+	bool is_2d = surface_format & RSE::ARRAY_FLAG_USE_2D_VERTICES;
+
+	surf_data->is_compressed = compressed;
+
+	// Compute AABB transform for compressed meshes
+	if (compressed) {
+		AABB surface_aabb = mesh_storage->mesh_surface_get_aabb(p_mesh_surface);
+		surf_data->aabb_transform.basis = Basis::from_scale(surface_aabb.size);
+		surf_data->aabb_transform.origin = surface_aabb.position;
+	} else {
+		surf_data->aabb_transform = Transform3D();
+	}
+
+	// Compute final transform for TLAS
+	Transform3D final_transform = p_transform;
+	if (compressed) {
+		final_transform = p_transform * surf_data->aabb_transform;
+	}
+	blas_transforms.push_back(final_transform);
+
+	// Populate geometry data
+	RT_GeometryData &geom = surf_data->geometry;
+	memset(&geom, 0, sizeof(geom));
+
+	RID vertex_buffer = mesh_storage->mesh_surface_get_vertex_buffer(p_mesh_surface);
+	RID attribute_buffer = mesh_storage->mesh_surface_get_attribute_buffer(p_mesh_surface);
+	RID index_buffer = mesh_storage->mesh_surface_get_index_buffer(p_mesh_surface, 0);
+
+	if (vertex_buffer.is_valid()) {
+		geom.vertex_buffer_address = RD::get_singleton()->buffer_get_device_address(vertex_buffer);
+	}
+	if (attribute_buffer.is_valid()) {
+		geom.attribute_buffer_address = RD::get_singleton()->buffer_get_device_address(attribute_buffer);
+	}
+
+	uint32_t vertex_count = mesh_storage->mesh_surface_get_vertex_count(p_mesh_surface);
+	uint32_t index_count = mesh_storage->mesh_surface_get_index_count(p_mesh_surface, 0);
+
+	geom.vertex_count = vertex_count;
+
+	// Position stride
+	uint32_t position_stride;
+	if (is_2d) {
+		position_stride = sizeof(float) * 2;
+	} else if (compressed) {
+		position_stride = sizeof(uint16_t) * 4;
+	} else {
+		position_stride = sizeof(float) * 3;
+	}
+	geom.position_stride = position_stride;
+
+	// Normal/tangent layout
+	uint32_t normal_stride;
+	uint32_t tangent_stride = 0;
+	geom.normal_byte_offset = RT_OFFSET_NONE;
+	geom.tangent_byte_offset = RT_OFFSET_NONE;
+	uint32_t current_offset = position_stride * vertex_count;
+
+	bool has_normal = surface_format & RSE::ARRAY_FORMAT_NORMAL;
+	bool has_tangent = surface_format & RSE::ARRAY_FORMAT_TANGENT;
+
+	if (compressed) {
+		normal_stride = sizeof(uint16_t) * 2;
+		if (has_normal) {
+			geom.normal_byte_offset = current_offset;
+			current_offset += normal_stride * vertex_count;
+		}
+	} else {
+		if (has_normal && has_tangent) {
+			normal_stride = sizeof(uint16_t) * 4;
+			tangent_stride = sizeof(uint16_t) * 4;
+			geom.normal_byte_offset = current_offset;
+			geom.tangent_byte_offset = current_offset;
+			current_offset += normal_stride * vertex_count;
+		} else if (has_normal) {
+			normal_stride = sizeof(uint16_t) * 2;
+			geom.normal_byte_offset = current_offset;
+			current_offset += normal_stride * vertex_count;
+		} else {
+			normal_stride = 0;
+		}
+	}
+	geom.normal_stride = normal_stride;
+	geom.tangent_stride = tangent_stride;
+	geom.flags = compressed ? RT_GEOM_FLAG_COMPRESSED : 0;
+
+	// AABB for compressed meshes
+	if (compressed) {
+		AABB surface_aabb = mesh_storage->mesh_surface_get_aabb(p_mesh_surface);
+		geom.aabb_size_x = surface_aabb.size.x;
+		geom.aabb_size_y = surface_aabb.size.y;
+		geom.aabb_size_z = surface_aabb.size.z;
+	} else {
+		geom.aabb_size_x = 1.0f;
+		geom.aabb_size_y = 1.0f;
+		geom.aabb_size_z = 1.0f;
+	}
+
+	// Attribute buffer layout
+	uint32_t attrib_offset = 0;
+	geom.uv_byte_offset = RT_OFFSET_NONE;
+
+	if (surface_format & RSE::ARRAY_FORMAT_COLOR) {
+		attrib_offset += sizeof(uint32_t);
+	}
+	if (surface_format & RSE::ARRAY_FORMAT_TEX_UV) {
+		geom.uv_byte_offset = attrib_offset;
+		attrib_offset += compressed ? sizeof(uint16_t) * 2 : sizeof(float) * 2;
+	}
+	if (surface_format & RSE::ARRAY_FORMAT_TEX_UV2) {
+		attrib_offset += compressed ? sizeof(uint16_t) * 2 : sizeof(float) * 2;
+	}
+	for (int ci = 0; ci < RSE::ARRAY_CUSTOM_COUNT; ci++) {
+		const uint32_t fmt_shift[RSE::ARRAY_CUSTOM_COUNT] = { RSE::ARRAY_FORMAT_CUSTOM0_SHIFT, RSE::ARRAY_FORMAT_CUSTOM1_SHIFT, RSE::ARRAY_FORMAT_CUSTOM2_SHIFT, RSE::ARRAY_FORMAT_CUSTOM3_SHIFT };
+		if (surface_format & (1ULL << (RSE::ARRAY_CUSTOM0 + ci))) {
+			uint32_t fmt = (surface_format >> fmt_shift[ci]) & RSE::ARRAY_FORMAT_CUSTOM_MASK;
+			const uint32_t fmtsize[RSE::ARRAY_CUSTOM_MAX] = { 4, 4, 4, 8, 4, 8, 12, 16 };
+			attrib_offset += fmtsize[fmt];
+		}
+	}
+	geom.attribute_stride = attrib_offset;
+
+	// UV scale
+	Vector4 uv_scale = mesh_storage->mesh_surface_get_uv_scale(p_mesh_surface);
+	geom.uv_scale_x = uv_scale.x;
+	geom.uv_scale_y = uv_scale.y;
+
+	// Index format
+	if (index_buffer.is_valid() && index_count > 0) {
+		geom.index_buffer_address = RD::get_singleton()->buffer_get_device_address(index_buffer);
+		bool is_16bit = vertex_count <= 65536 && vertex_count > 0;
+		geom.index_format = is_16bit ? RT_INDEX_FORMAT_UINT16 : RT_INDEX_FORMAT_UINT32;
+		geom.primitive_count = index_count / 3;
+	} else {
+		geom.index_buffer_address = 0;
+		geom.index_format = RT_INDEX_FORMAT_NONE;
+		geom.primitive_count = vertex_count / 3;
+	}
+
+	// Update cache entry
+	entry->cached_counter = p_surface_invalidation_counter;
+	entry->cached_rid_version = mesh_version;
+	entry->last_used_frame = RSG::rasterizer->get_frame_number();
+
+	return surf_data;
+}
+
+// ---------------------------------------------------------------------------
+// Uniform packing (file-local helpers)
+// ---------------------------------------------------------------------------
+
+static float _def_real(const ShaderLanguage::ShaderNode::Uniform &u, int idx) {
+	return (int)u.default_value.size() > idx ? u.default_value[idx].real : 0.0f;
+}
+
+static int32_t _def_sint(const ShaderLanguage::ShaderNode::Uniform &u, int idx) {
+	return (int)u.default_value.size() > idx ? u.default_value[idx].sint : 0;
+}
+
+static uint32_t _def_uint(const ShaderLanguage::ShaderNode::Uniform &u, int idx) {
+	return (int)u.default_value.size() > idx ? u.default_value[idx].uint : 0u;
+}
+
+static uint32_t _def_bool(const ShaderLanguage::ShaderNode::Uniform &u, int idx) {
+	return (int)u.default_value.size() > idx ? (uint32_t)u.default_value[idx].boolean : 0u;
+}
+
+static void pack_uniform(const ShaderLanguage::ShaderNode::Uniform &u, const Variant &val, uint8_t *dst) {
+	using SL = ShaderLanguage;
+
+	switch (u.type) {
+		case SL::TYPE_FLOAT: {
+			float v = val.get_type() == Variant::FLOAT ? (float)(double)val : _def_real(u, 0);
+			memcpy(dst, &v, 4);
+		} break;
+		case SL::TYPE_INT: {
+			int32_t v = val.get_type() == Variant::INT ? (int32_t)(int64_t)val : _def_sint(u, 0);
+			memcpy(dst, &v, 4);
+		} break;
+		case SL::TYPE_UINT: {
+			uint32_t v = val.get_type() == Variant::INT ? (uint32_t)(int64_t)val : _def_uint(u, 0);
+			memcpy(dst, &v, 4);
+		} break;
+		case SL::TYPE_BOOL: {
+			uint32_t v = val.get_type() == Variant::BOOL ? (uint32_t)(bool)val : _def_bool(u, 0);
+			memcpy(dst, &v, 4);
+		} break;
+		case SL::TYPE_VEC2: {
+			float fv[2];
+			if (val.get_type() == Variant::VECTOR2) {
+				Vector2 v = val;
+				fv[0] = (float)v.x;
+				fv[1] = (float)v.y;
+			} else {
+				fv[0] = _def_real(u, 0);
+				fv[1] = _def_real(u, 1);
+			}
+			memcpy(dst, fv, 8);
+		} break;
+		case SL::TYPE_VEC3: {
+			float fv[3] = {};
+			if (val.get_type() == Variant::VECTOR3) {
+				Vector3 v = val;
+				fv[0] = (float)v.x;
+				fv[1] = (float)v.y;
+				fv[2] = (float)v.z;
+			} else if (val.get_type() == Variant::COLOR) {
+				Color c = val;
+				if (u.hint == SL::ShaderNode::Uniform::HINT_SOURCE_COLOR) {
+					c = c.srgb_to_linear();
+				}
+				fv[0] = c.r;
+				fv[1] = c.g;
+				fv[2] = c.b;
+			} else {
+				fv[0] = _def_real(u, 0);
+				fv[1] = _def_real(u, 1);
+				fv[2] = _def_real(u, 2);
+			}
+			memcpy(dst, fv, 12);
+		} break;
+		case SL::TYPE_VEC4: {
+			float fv[4] = {};
+			if (val.get_type() == Variant::COLOR) {
+				Color c = val;
+				if (u.hint == SL::ShaderNode::Uniform::HINT_SOURCE_COLOR) {
+					c = c.srgb_to_linear();
+				}
+				fv[0] = c.r;
+				fv[1] = c.g;
+				fv[2] = c.b;
+				fv[3] = c.a;
+			} else if (val.get_type() == Variant::VECTOR4) {
+				Vector4 v = val;
+				fv[0] = (float)v.x;
+				fv[1] = (float)v.y;
+				fv[2] = (float)v.z;
+				fv[3] = (float)v.w;
+			} else {
+				for (int i = 0; i < 4; i++) {
+					fv[i] = _def_real(u, i);
+				}
+			}
+			memcpy(dst, fv, 16);
+		} break;
+		case SL::TYPE_IVEC2: {
+			int32_t iv[2];
+			if (val.get_type() == Variant::VECTOR2I) {
+				Vector2i v = val;
+				iv[0] = v.x;
+				iv[1] = v.y;
+			} else {
+				iv[0] = _def_sint(u, 0);
+				iv[1] = _def_sint(u, 1);
+			}
+			memcpy(dst, iv, 8);
+		} break;
+		case SL::TYPE_IVEC3: {
+			int32_t iv[3] = {};
+			if (val.get_type() == Variant::VECTOR3I) {
+				Vector3i v = val;
+				iv[0] = v.x;
+				iv[1] = v.y;
+				iv[2] = v.z;
+			} else {
+				for (int i = 0; i < 3; i++) {
+					iv[i] = _def_sint(u, i);
+				}
+			}
+			memcpy(dst, iv, 12);
+		} break;
+		case SL::TYPE_IVEC4: {
+			int32_t iv[4] = {};
+			if (val.get_type() == Variant::VECTOR4I) {
+				Vector4i v = val;
+				iv[0] = v.x;
+				iv[1] = v.y;
+				iv[2] = v.z;
+				iv[3] = v.w;
+			} else {
+				for (int i = 0; i < 4; i++) {
+					iv[i] = _def_sint(u, i);
+				}
+			}
+			memcpy(dst, iv, 16);
+		} break;
+		case SL::TYPE_UVEC2: {
+			uint32_t uv[2];
+			if (val.get_type() == Variant::VECTOR2I) {
+				Vector2i v = val;
+				uv[0] = (uint32_t)v.x;
+				uv[1] = (uint32_t)v.y;
+			} else {
+				uv[0] = _def_uint(u, 0);
+				uv[1] = _def_uint(u, 1);
+			}
+			memcpy(dst, uv, 8);
+		} break;
+		case SL::TYPE_UVEC3: {
+			uint32_t uv[3] = {};
+			if (val.get_type() == Variant::VECTOR3I) {
+				Vector3i v = val;
+				uv[0] = (uint32_t)v.x;
+				uv[1] = (uint32_t)v.y;
+				uv[2] = (uint32_t)v.z;
+			} else {
+				for (int i = 0; i < 3; i++) {
+					uv[i] = _def_uint(u, i);
+				}
+			}
+			memcpy(dst, uv, 12);
+		} break;
+		case SL::TYPE_UVEC4: {
+			uint32_t uv[4] = {};
+			if (val.get_type() == Variant::VECTOR4I) {
+				Vector4i v = val;
+				uv[0] = (uint32_t)v.x;
+				uv[1] = (uint32_t)v.y;
+				uv[2] = (uint32_t)v.z;
+				uv[3] = (uint32_t)v.w;
+			} else {
+				for (int i = 0; i < 4; i++) {
+					uv[i] = _def_uint(u, i);
+				}
+			}
+			memcpy(dst, uv, 16);
+		} break;
+		case SL::TYPE_BVEC2: {
+			uint32_t bv[2] = { _def_bool(u, 0), _def_bool(u, 1) };
+			memcpy(dst, bv, 8);
+		} break;
+		case SL::TYPE_BVEC3: {
+			uint32_t bv[3] = { _def_bool(u, 0), _def_bool(u, 1), _def_bool(u, 2) };
+			memcpy(dst, bv, 12);
+		} break;
+		case SL::TYPE_BVEC4: {
+			uint32_t bv[4] = { _def_bool(u, 0), _def_bool(u, 1), _def_bool(u, 2), _def_bool(u, 3) };
+			memcpy(dst, bv, 16);
+		} break;
+		case SL::TYPE_MAT2: {
+			// std140: mat2 = 2 column vec2s, each padded to vec4 (2x16 = 32 bytes).
+			float m[8] = {};
+			if (val.get_type() == Variant::TRANSFORM2D) {
+				Transform2D t = val;
+				m[0] = (float)t[0].x;
+				m[1] = (float)t[0].y;
+				m[4] = (float)t[1].x;
+				m[5] = (float)t[1].y;
+			} else {
+				for (int i = 0; i < 4; i++) {
+					m[(i / 2) * 4 + (i % 2)] = _def_real(u, i);
+				}
+			}
+			memcpy(dst, m, 32);
+		} break;
+		case SL::TYPE_MAT3: {
+			// std140: mat3 = 3 column vec3s, each padded to vec4 (3x16 = 48 bytes).
+			float m[12] = {};
+			if (val.get_type() == Variant::BASIS) {
+				Basis b = val;
+				for (int col = 0; col < 3; col++) {
+					Vector3 c = b.get_column(col);
+					m[col * 4 + 0] = (float)c.x;
+					m[col * 4 + 1] = (float)c.y;
+					m[col * 4 + 2] = (float)c.z;
+				}
+			} else {
+				for (int i = 0; i < 9; i++) {
+					m[(i / 3) * 4 + (i % 3)] = _def_real(u, i);
+				}
+			}
+			memcpy(dst, m, 48);
+		} break;
+		case SL::TYPE_MAT4: {
+			// std140: mat4 = 4 column vec4s (4x16 = 64 bytes).
+			float m[16] = {};
+			if (val.get_type() == Variant::PROJECTION) {
+				Projection p = val;
+				for (int col = 0; col < 4; col++) {
+					m[col * 4 + 0] = (float)p.columns[col].x;
+					m[col * 4 + 1] = (float)p.columns[col].y;
+					m[col * 4 + 2] = (float)p.columns[col].z;
+					m[col * 4 + 3] = (float)p.columns[col].w;
+				}
+			} else if (val.get_type() == Variant::TRANSFORM3D) {
+				Transform3D t = val;
+				Projection p(t);
+				for (int col = 0; col < 4; col++) {
+					m[col * 4 + 0] = (float)p.columns[col].x;
+					m[col * 4 + 1] = (float)p.columns[col].y;
+					m[col * 4 + 2] = (float)p.columns[col].z;
+					m[col * 4 + 3] = (float)p.columns[col].w;
+				}
+			} else {
+				for (int i = 0; i < 16; i++) {
+					m[i] = _def_real(u, i);
+				}
+			}
+			memcpy(dst, m, 64);
+		} break;
+		default:
+			break;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Material processing
+// ---------------------------------------------------------------------------
+
+RTMaterialData *RenderRaytracing::process_material(RID p_material_rid, uint16_t p_material_invalidation_counter) {
+	// Static default material for invalid/null materials
+	static RTMaterialData s_default_mat;
+	static bool s_default_mat_initialized = false;
+	if (!s_default_mat_initialized) {
+		s_default_mat.data.albedo_color[0] = 1.0f;
+		s_default_mat.data.albedo_color[1] = 1.0f;
+		s_default_mat.data.albedo_color[2] = 1.0f;
+		s_default_mat.data.albedo_color[3] = 1.0f;
+		s_default_mat.data.emission_color[0] = 0.0f;
+		s_default_mat.data.emission_color[1] = 0.0f;
+		s_default_mat.data.emission_color[2] = 0.0f;
+		s_default_mat.data.emission_strength = 0.0f;
+		s_default_mat.data.roughness = 1.0f;
+		s_default_mat.data.ao_strength = 1.0f;
+		s_default_mat.data.uv1_scale[0] = 1.0f;
+		s_default_mat.data.uv1_scale[1] = 1.0f;
+		s_default_mat.data.uv1_offset[0] = 0.0f;
+		s_default_mat.data.uv1_offset[1] = 0.0f;
+		s_default_mat_initialized = true;
+	}
+
+	if (!p_material_rid.is_valid()) {
+		return &s_default_mat;
+	}
+
+	// Cache lookup
+	uint32_t mat_idx = get_rid_index(p_material_rid);
+	uint32_t mat_version = get_rid_version(p_material_rid);
+	RTMaterialCacheEntry *entry = get_material_cache_entry(mat_idx);
+
+	// Check if we can reuse cached material
+	bool needs_refresh = !entry->ptr ||
+			entry->cached_rid_version != mat_version ||
+			entry->cached_counter != p_material_invalidation_counter;
+
+	if (!needs_refresh) {
+		entry->last_used_frame = RSG::rasterizer->get_frame_number();
+		if (entry->ptr->is_custom_shader) {
+			uint32_t shader_id = RendererRD::MaterialStorage::get_singleton()->material_get_shader_id(p_material_rid);
+			uint32_t old_sbt = entry->ptr->rt_sbt_offset;
+			uint32_t new_sbt = SceneShaderRaytracing::get_singleton()->register_custom_shader(shader_id, p_material_rid);
+			entry->ptr->rt_sbt_offset = new_sbt;
+			if (old_sbt == 0 && new_sbt > 0) {
+				needs_refresh = true;
+			}
+		}
+		if (!needs_refresh) {
+			return entry->ptr;
+		}
+	}
+
+	// Cache miss - need to rebuild material
+	if (!entry->ptr) {
+		entry->ptr = memnew(RTMaterialData);
+	}
+
+	RTMaterialData *mat_data = entry->ptr;
+	RT_MaterialData &mat = mat_data->data;
+
+	// Initialize defaults
+	mat.albedo_color[0] = 1.0f;
+	mat.albedo_color[1] = 1.0f;
+	mat.albedo_color[2] = 1.0f;
+	mat.albedo_color[3] = 1.0f;
+	mat.emission_color[0] = 0.0f;
+	mat.emission_color[1] = 0.0f;
+	mat.emission_color[2] = 0.0f;
+	mat.emission_strength = 0.0f;
+	mat.metallic = 0.0f;
+	mat.roughness = 1.0f;
+	mat.ao_strength = 1.0f;
+	mat.flags = 0;
+	mat.albedo_texture_idx = 0;
+	mat.normal_texture_idx = 0;
+	mat.orm_texture_idx = 0;
+	mat.emission_texture_idx = 0;
+	mat.uv1_scale[0] = 1.0f;
+	mat.uv1_scale[1] = 1.0f;
+	mat.uv1_offset[0] = 0.0f;
+	mat.uv1_offset[1] = 0.0f;
+	mat.normal_map_depth = 1.0f;
+	mat.uniform_address = 0;
+
+	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
+	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
+
+	// Helper lambda to get texture from material parameter
+	// p_srgb should be true for color textures (albedo, emission) that need sRGB->linear conversion
+	auto get_material_texture = [&](const StringName &p_param, bool p_srgb = false) -> RID {
+		Variant tex_var = material_storage->material_get_param(p_material_rid, p_param);
+		if (tex_var.get_type() == Variant::OBJECT || tex_var.get_type() == Variant::RID) {
+			RID tex_rid = tex_var;
+			if (tex_rid.is_valid()) {
+				return texture_storage->texture_get_rd_texture(tex_rid, p_srgb);
+			}
+		}
+		return RID();
+	};
+
+	// Textures
+	// Albedo is a color texture - needs sRGB->linear conversion
+	RID albedo_rd = get_material_texture("texture_albedo", true);
+	if (albedo_rd.is_valid()) {
+		mat.albedo_texture_idx = bindless_block->add_texture(albedo_rd);
+	}
+
+	RID normal_rd = get_material_texture("texture_normal");
+	if (normal_rd.is_valid()) {
+		mat.normal_texture_idx = bindless_block->add_texture(normal_rd);
+		mat.flags |= RT_MAT_FLAG_HAS_NORMAL_MAP;
+
+		Variant normal_scale_var = material_storage->material_get_param(p_material_rid, "normal_scale");
+		if (normal_scale_var.get_type() == Variant::FLOAT) {
+			mat.normal_map_depth = normal_scale_var;
+		}
+	}
+
+	RID orm_rd = get_material_texture("texture_orm");
+	if (orm_rd.is_valid()) {
+		mat.orm_texture_idx = bindless_block->add_texture(orm_rd);
+	} else {
+		RID roughness_rd = get_material_texture("texture_roughness");
+		if (roughness_rd.is_valid()) {
+			mat.orm_texture_idx = bindless_block->add_texture(roughness_rd);
+		}
+	}
+
+	// Emission is a color texture - needs sRGB->linear conversion
+	RID emission_rd = get_material_texture("texture_emission", true);
+	if (emission_rd.is_valid()) {
+		mat.emission_texture_idx = bindless_block->add_texture(emission_rd);
+		mat.flags |= RT_MAT_FLAG_HAS_EMISSION_TEX;
+		// Set sensible defaults for emission when texture is present
+		mat.emission_color[0] = 1.0f;
+		mat.emission_color[1] = 1.0f;
+		mat.emission_color[2] = 1.0f;
+		mat.emission_strength = 1.0f;
+	}
+
+	// Material properties
+	// Colors declared with source_color in Godot shaders are stored in sRGB;
+	// material_get_param returns the raw sRGB value, so we convert to linear here.
+	Variant albedo_var = material_storage->material_get_param(p_material_rid, "albedo");
+	if (albedo_var.get_type() == Variant::COLOR) {
+		Color c = ((Color)albedo_var).srgb_to_linear();
+		mat.albedo_color[0] = c.r;
+		mat.albedo_color[1] = c.g;
+		mat.albedo_color[2] = c.b;
+		mat.albedo_color[3] = c.a;
+		mat_data->rt_sbt_offset = 0;
+		mat_data->is_custom_shader = false;
+	} else {
+		mat_data->is_custom_shader = true;
+		uint32_t shader_id = material_storage->material_get_shader_id(p_material_rid);
+		mat_data->rt_sbt_offset = SceneShaderRaytracing::get_singleton()->register_custom_shader(shader_id, p_material_rid);
+
+		const SceneShaderRaytracing::CustomShaderEntry *cse =
+				SceneShaderRaytracing::get_singleton()->get_custom_shader_entry(mat_data->rt_sbt_offset);
+		if (cse && cse->uniform_total_size > 0) {
+			Vector<uint8_t> ubo_data;
+			ubo_data.resize(cse->uniform_total_size);
+			memset(ubo_data.ptrw(), 0, cse->uniform_total_size);
+
+			for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &kv : cse->uniforms) {
+				const ShaderLanguage::ShaderNode::Uniform &u = kv.value;
+				if (ShaderLanguage::is_sampler_type(u.type)) {
+					continue;
+				}
+				if (u.order < 0 || u.order >= (int)cse->uniform_offsets.size()) {
+					continue;
+				}
+
+				uint32_t offset = cse->uniform_offsets[u.order];
+				uint32_t size = ShaderLanguage::get_datatype_size(u.type);
+				if (offset + size > cse->uniform_total_size) {
+					continue;
+				}
+
+				Variant val = material_storage->material_get_param(p_material_rid, kv.key);
+				uint8_t *dst = ubo_data.ptrw() + offset;
+
+				pack_uniform(u, val, dst);
+			}
+
+			RendererRD::TextureStorage *ts = RendererRD::TextureStorage::get_singleton();
+			for (int ti = 0; ti < cse->texture_uniforms.size(); ti++) {
+				const SceneShaderRaytracing::TextureUniformInfo &tui = cse->texture_uniforms[ti];
+				uint32_t bindless_idx = 0;
+
+				Variant tex_var = material_storage->material_get_param(p_material_rid, tui.name);
+				if (tex_var.get_type() == Variant::OBJECT || tex_var.get_type() == Variant::RID) {
+					RID tex_rid = tex_var;
+					if (tex_rid.is_valid()) {
+						RID rd_tex = ts->texture_get_rd_texture(tex_rid, tui.use_color);
+						if (rd_tex.is_valid()) {
+							bindless_idx = bindless_block->add_texture(rd_tex);
+						}
+					}
+				}
+
+				if (bindless_idx == 0 && tui.hint != ShaderLanguage::ShaderNode::Uniform::HINT_NONE) {
+					using Hint = ShaderLanguage::ShaderNode::Uniform::Hint;
+					RID default_tex;
+					switch (tui.hint) {
+						case Hint::HINT_DEFAULT_BLACK:
+							default_tex = ts->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
+							break;
+						case Hint::HINT_DEFAULT_TRANSPARENT:
+							default_tex = ts->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_TRANSPARENT);
+							break;
+						case Hint::HINT_NORMAL:
+							default_tex = ts->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_NORMAL);
+							break;
+						case Hint::HINT_ANISOTROPY:
+							default_tex = ts->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_ANISO);
+							break;
+						default:
+							default_tex = ts->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_WHITE);
+							break;
+					}
+					if (default_tex.is_valid()) {
+						bindless_idx = bindless_block->add_texture(default_tex);
+					}
+				}
+
+				if (tui.buffer_offset + 4 <= cse->uniform_total_size) {
+					memcpy(ubo_data.ptrw() + tui.buffer_offset, &bindless_idx, 4);
+				}
+			}
+
+			if (mat_data->uniform_buffer.is_valid()) {
+				RD::get_singleton()->free_rid(mat_data->uniform_buffer);
+			}
+			mat_data->uniform_buffer = RD::get_singleton()->storage_buffer_create(cse->uniform_total_size, ubo_data, 0, RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
+			mat.uniform_address = RD::get_singleton()->buffer_get_device_address(mat_data->uniform_buffer);
+		}
+	}
+
+	Variant metallic_var = material_storage->material_get_param(p_material_rid, "metallic");
+	if (metallic_var.get_type() == Variant::FLOAT) {
+		mat.metallic = metallic_var;
+	}
+
+	Variant roughness_var = material_storage->material_get_param(p_material_rid, "roughness");
+	if (roughness_var.get_type() == Variant::FLOAT) {
+		mat.roughness = roughness_var;
+	}
+
+	Variant emission_var = material_storage->material_get_param(p_material_rid, "emission");
+	if (emission_var.get_type() == Variant::COLOR) {
+		Color c = ((Color)emission_var).srgb_to_linear();
+		mat.emission_color[0] = c.r;
+		mat.emission_color[1] = c.g;
+		mat.emission_color[2] = c.b;
+	}
+
+	Variant emission_energy_var = material_storage->material_get_param(p_material_rid, "emission_energy");
+	if (emission_energy_var.get_type() == Variant::FLOAT) {
+		mat.emission_strength = emission_energy_var;
+	}
+
+	// UV1 scale and offset (vec3 in Godot, we only use xy).
+	Variant uv1_scale_var = material_storage->material_get_param(p_material_rid, "uv1_scale");
+	if (uv1_scale_var.get_type() == Variant::VECTOR3) {
+		Vector3 s = uv1_scale_var;
+		mat.uv1_scale[0] = s.x;
+		mat.uv1_scale[1] = s.y;
+	}
+
+	Variant uv1_offset_var = material_storage->material_get_param(p_material_rid, "uv1_offset");
+	if (uv1_offset_var.get_type() == Variant::VECTOR3) {
+		Vector3 o = uv1_offset_var;
+		mat.uv1_offset[0] = o.x;
+		mat.uv1_offset[1] = o.y;
+	}
+
+	// Point filtering: check if material requests nearest filtering (e.g. pixel art).
+	// BaseMaterial3D exposes this as "texture_filter" int param (0=nearest, 1=linear, etc.).
+	Variant filter_var = material_storage->material_get_param(p_material_rid, "texture_filter");
+	if (filter_var.get_type() == Variant::INT) {
+		int filter_mode = filter_var;
+		// 0 = TEXTURE_FILTER_NEAREST, 2 = TEXTURE_FILTER_NEAREST_WITH_MIPMAPS,
+		// 4 = TEXTURE_FILTER_NEAREST_WITH_MIPMAPS_ANISOTROPIC
+		if (filter_mode == 0 || filter_mode == 2 || filter_mode == 4) {
+			mat.flags |= RT_MAT_FLAG_POINT_FILTER;
+		}
+	}
+
+	// Update cache entry
+	entry->cached_counter = p_material_invalidation_counter;
+	entry->cached_rid_version = mat_version;
+	entry->last_used_frame = RSG::rasterizer->get_frame_number();
+
+	return mat_data;
+}
+
+// ---------------------------------------------------------------------------
+// Acceleration structure building
+// ---------------------------------------------------------------------------
+
+void RenderRaytracing::build_acceleration_structures(const LocalVector<RID> &p_dirty_blas_list) {
+	// Build all dirty BLAS
+	for (const RID &blas_rid : p_dirty_blas_list) {
+		if (blas_rid.is_valid()) {
+			RD::get_singleton()->acceleration_structure_build(blas_rid);
+		}
+	}
+
+	// Create TLAS from all BLAS instances
+	if (blass.size() > 0) {
+		tlas_instances_buffer = RD::get_singleton()->tlas_instances_buffer_create(blass.size());
+
+		Vector<RID> blas_vector;
+		blas_vector.resize(blass.size());
+		for (uint32_t i = 0; i < blass.size(); i++) {
+			blas_vector.write[i] = blass[i];
+		}
+
+		RD::get_singleton()->tlas_instances_buffer_fill(
+				tlas_instances_buffer,
+				blas_vector,
+				VectorView<Transform3D>(blas_transforms.ptr(), blass.size()),
+				VectorView<uint32_t>(instance_flags.ptr(), instance_flags.size()),
+				VectorView<uint32_t>(sbt_offsets.ptr(), sbt_offsets.size()));
+
+		tlas = RD::get_singleton()->tlas_create(tlas_instances_buffer);
+	} else {
+		tlas_instances_buffer = RD::get_singleton()->tlas_instances_buffer_create(0);
+		tlas = RD::get_singleton()->tlas_create(tlas_instances_buffer);
+	}
+}
+
+void RenderRaytracing::finalize_buffers() {
+	// Create geometry data buffer
+	if (geometry_data.size() > 0) {
+		uint32_t buffer_size = geometry_data.size() * sizeof(RT_GeometryData);
+		Vector<uint8_t> buffer_data;
+		buffer_data.resize(buffer_size);
+		memcpy(buffer_data.ptrw(), geometry_data.ptr(), buffer_size);
+		geometry_buffer = RD::get_singleton()->storage_buffer_create(buffer_size, buffer_data);
+	}
+
+	// Create material data buffer
+	if (material_data.size() > 0) {
+		uint32_t buffer_size = material_data.size() * sizeof(RT_MaterialData);
+		Vector<uint8_t> buffer_data;
+		buffer_data.resize(buffer_size);
+		memcpy(buffer_data.ptrw(), material_data.ptr(), buffer_size);
+		material_buffer = RD::get_singleton()->storage_buffer_create(buffer_size, buffer_data);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TLAS creation (main entry point per frame)
+// ---------------------------------------------------------------------------
+
+_FORCE_INLINE_ static uint32_t _rt_indices_to_primitives(RSE::PrimitiveType p_primitive, uint32_t p_indices) {
+	static const uint32_t divisor[RSE::PRIMITIVE_MAX] = { 1, 2, 1, 3, 1 };
+	static const uint32_t subtractor[RSE::PRIMITIVE_MAX] = { 0, 0, 1, 0, 2 };
+	return (p_indices - subtractor[p_primitive]) / divisor[p_primitive];
+}
+
+void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data) {
+	if (!owner->rt_enabled || !p_render_data || !p_render_data->rt_instances) {
+		return;
+	}
+
+	prepare_frame();
+
+	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
+	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
+	LocalVector<RID> dirty_blas_list;
+
+#ifdef TOOLS_ENABLED
+	uint32_t tlas_instance_count = 0;
+	uint32_t tlas_primitive_count = 0;
+	const bool collect_render_info = (p_render_data->render_info != nullptr);
+#endif
+
+	// Process all AABB-culled geometry instances (superset of frustum).
+	const PagedArray<RenderGeometryInstance *> &rt_instances = *p_render_data->rt_instances;
+	for (uint32_t i = 0; i < (uint32_t)rt_instances.size(); i++) {
+		const RenderForwardClustered::GeometryInstanceForwardClustered *inst =
+				static_cast<const RenderForwardClustered::GeometryInstanceForwardClustered *>(rt_instances[i]);
+		if (!inst || !inst->data) {
+			continue;
+		}
+		const Transform3D &instance_transform = inst->transform;
+
+		// Walk the surface cache linked list.
+		const RenderForwardClustered::GeometryInstanceSurfaceDataCache *surf = inst->surface_caches;
+		while (surf) {
+			void *mesh_surface = surf->surface;
+			uint16_t surface_counter = mesh_storage->mesh_surface_get_rt_invalidation_counter(mesh_surface);
+
+			RTSurfaceData *surf_data = process_surface(surf, mesh_surface, surface_counter, instance_transform, dirty_blas_list);
+			if (!surf_data || !surf_data->blas.is_valid()) {
+				surf = surf->next;
+				continue;
+			}
+
+			blass.push_back(surf_data->blas);
+			geometry_data.push_back(surf_data->geometry);
+
+#ifdef TOOLS_ENABLED
+			if (collect_render_info) {
+				tlas_instance_count++;
+				uint32_t vertices = mesh_storage->mesh_surface_get_vertices_drawn_count(mesh_surface);
+				tlas_primitive_count += _rt_indices_to_primitives(surf->primitive, vertices);
+			}
+#endif
+
+			// Process material first (needed for FORCE_OPAQUE decision on custom shaders).
+			// Priority: material_override > surface_materials > mesh surface material.
+			RID material_rid;
+			if (surf->owner->data->material_override.is_valid()) {
+				material_rid = surf->owner->data->material_override;
+			} else if (surf->surface_index < surf->owner->data->surface_materials.size() &&
+					surf->owner->data->surface_materials[surf->surface_index].is_valid()) {
+				material_rid = surf->owner->data->surface_materials[surf->surface_index];
+			} else {
+				RID mesh_rid = surf->owner->data->base;
+				if (mesh_rid.is_valid() && mesh_storage->owns_mesh(mesh_rid)) {
+					material_rid = mesh_storage->mesh_surface_get_material(mesh_rid, surf->surface_index);
+				}
+			}
+
+			uint16_t material_counter = material_storage->material_get_rt_invalidation_counter(material_rid);
+
+			RTMaterialData *mat_data = process_material(material_rid, material_counter);
+			sbt_offsets.push_back(mat_data->rt_sbt_offset);
+			material_data.push_back(mat_data->data);
+
+			// Determine per-instance TLAS flags from material properties.
+			uint32_t inst_flags = 0;
+			if (surf->shader) {
+				switch (surf->shader->cull_mode) {
+					case RSE::CULL_MODE_DISABLED:
+						inst_flags |= RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE;
+						inst_flags |= RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FLIP_FACING;
+						break;
+					case RSE::CULL_MODE_FRONT:
+						break;
+					case RSE::CULL_MODE_BACK:
+					default:
+						inst_flags |= RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FLIP_FACING;
+						break;
+				}
+			} else {
+				inst_flags |= RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FLIP_FACING;
+			}
+
+			if (mat_data->rt_sbt_offset > 0) {
+				// Custom shader: only enable any-hit if the shader uses alpha clip.
+				const SceneShaderRaytracing::CustomShaderEntry *cse =
+						SceneShaderRaytracing::get_singleton()->get_custom_shader_entry(mat_data->rt_sbt_offset);
+				if (!cse || !cse->uses_alpha_clip) {
+					inst_flags |= RD::ACCELERATION_STRUCTURE_INSTANCE_FORCE_OPAQUE;
+				}
+			} else {
+				// Standard material: FORCE_OPAQUE if no alpha usage.
+				bool is_alpha = surf->shader && (surf->shader->uses_alpha_clip || surf->shader->uses_blend_alpha || surf->shader->uses_alpha);
+				if (!is_alpha) {
+					inst_flags |= RD::ACCELERATION_STRUCTURE_INSTANCE_FORCE_OPAQUE;
+				}
+			}
+			instance_flags.push_back(inst_flags);
+
+			surf = surf->next;
+		}
+	}
+
+#ifdef TOOLS_ENABLED
+	if (collect_render_info) {
+		p_render_data->render_info->info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE][RSE::VIEWPORT_RENDER_INFO_OBJECTS_IN_FRAME] += tlas_instance_count;
+		p_render_data->render_info->info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE][RSE::VIEWPORT_RENDER_INFO_PRIMITIVES_IN_FRAME] += tlas_primitive_count;
+	}
+#endif
+
+	SceneShaderRaytracing::get_singleton()->finalize_custom_shaders();
+
+	// Build acceleration structures
+	build_acceleration_structures(dirty_blas_list);
+
+	// Create GPU buffers
+	finalize_buffers();
+}
+
+// ---------------------------------------------------------------------------
+// Light gathering
+// ---------------------------------------------------------------------------
+
+uint32_t RenderRaytracing::gather_lights(const RenderDataRD *p_render_data, RT_LightData *r_light_data, uint32_t p_max_lights) {
+	uint32_t rt_light_count = 0;
+
+	if (!p_render_data || !p_render_data->lights) {
+		return rt_light_count;
+	}
+
+	RendererRD::LightStorage *ls = RendererRD::LightStorage::get_singleton();
+	const Transform3D &cam_xform = p_render_data->scene_data->cam_transform;
+	const Vector3 cam_pos = cam_xform.origin;
+
+	// Compute light energy matching rasterizer conventions (light_storage.cpp).
+	// Applies PI multiplier (or physical-unit intensity), exposure, and negative sign.
+	auto compute_light_energy = [&](RID p_base, RSE::LightType p_type) -> float {
+		float sign = ls->light_is_negative(p_base) ? -1.0f : 1.0f;
+		float e = sign * ls->light_get_param(p_base, RSE::LIGHT_PARAM_ENERGY);
+		if (owner->is_using_physical_light_units()) {
+			e *= ls->light_get_param(p_base, RSE::LIGHT_PARAM_INTENSITY);
+			if (p_type == RSE::LIGHT_OMNI) {
+				e *= 1.0f / (Math::PI * 4.0f);
+			} else if (p_type == RSE::LIGHT_SPOT) {
+				e *= 1.0f / Math::PI;
+			}
+		} else {
+			e *= Math::PI;
+		}
+		if (p_render_data->camera_attributes.is_valid()) {
+			e *= RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes);
+		}
+		return e;
+	};
+
+	// Scoring helper: approximate power/solid-angle contribution.
+	struct LightScore {
+		RID light_instance;
+		float score;
+	};
+
+	LocalVector<LightScore> positional_lights;
+
+	// Helper: score a positional light and add to candidates.
+	auto score_positional_light = [&](RID light_instance) {
+		RID base = ls->light_instance_get_base_light(light_instance);
+		Transform3D xform = ls->light_instance_get_base_transform(light_instance);
+		Vector3 light_pos = xform.origin;
+		float dist_sq = cam_pos.distance_squared_to(light_pos);
+		Color color = ls->light_get_color(base);
+		float energy = ls->light_get_param(base, RSE::LIGHT_PARAM_ENERGY);
+		float lum = color.r * 0.2126f + color.g * 0.7152f + color.b * 0.0722f;
+		float score = (energy * lum) / MAX(dist_sq, 0.01f);
+
+		LightScore ls_entry = {};
+		ls_entry.light_instance = light_instance;
+		ls_entry.score = score;
+		positional_lights.push_back(ls_entry);
+	};
+
+	// Directional lights from the frustum-culled list (they're global, always included).
+	const PagedArray<RID> &lights = *p_render_data->lights;
+	for (uint32_t li = 0; li < (uint32_t)lights.size(); li++) {
+		RID light_instance = lights[li];
+		RID base = ls->light_instance_get_base_light(light_instance);
+		RSE::LightType type = ls->light_get_type(base);
+
+		if (type != RSE::LIGHT_DIRECTIONAL) {
+			continue;
+		}
+		if (rt_light_count >= p_max_lights) {
+			break;
+		}
+		RT_LightData &ld = r_light_data[rt_light_count];
+		Transform3D xform = ls->light_instance_get_base_transform(light_instance);
+		Vector3 dir = -xform.basis.get_column(2).normalized();
+		ld.position[0] = dir.x;
+		ld.position[1] = dir.y;
+		ld.position[2] = dir.z;
+		ld.type = RT_LIGHT_TYPE_DIRECTIONAL;
+		Color linear_col = ls->light_get_color(base).srgb_to_linear();
+		float energy = compute_light_energy(base, RSE::LIGHT_DIRECTIONAL);
+		ld.emission[0] = linear_col.r * energy;
+		ld.emission[1] = linear_col.g * energy;
+		ld.emission[2] = linear_col.b * energy;
+		ld.radius = Math::deg_to_rad(ls->light_get_param(base, RSE::LIGHT_PARAM_SIZE) * 0.5f); // Half-angle in radians.
+		ld.attenuation = 0.0f; // No distance attenuation.
+		ld.inv_max_range = -1.0f; // Infinite range.
+		ld.max_range_squared = 0.0f;
+		ld.specular_amount = ls->light_get_param(base, RSE::LIGHT_PARAM_SPECULAR);
+		ld.indirect_energy = ls->light_get_param(base, RSE::LIGHT_PARAM_INDIRECT_ENERGY);
+		ld.inv_spot_attenuation = 0.0f;
+		ld.cos_spot_angle = 0.0f;
+		ld.spot_direction[0] = 0.0f;
+		ld.spot_direction[1] = 0.0f;
+		ld.spot_direction[2] = 0.0f;
+		rt_light_count++;
+	}
+
+	// Positional lights from the AABB-culled RT list (superset of frustum).
+	if (p_render_data->rt_lights) {
+		const PagedArray<RID> &rt_lights = *p_render_data->rt_lights;
+		for (uint32_t li = 0; li < (uint32_t)rt_lights.size(); li++) {
+			score_positional_light(rt_lights[li]);
+		}
+	}
+
+	// Sort all positional lights by score descending.
+	struct LightScoreComparator {
+		bool operator()(const LightScore &a, const LightScore &b) const {
+			return a.score > b.score;
+		}
+	};
+	positional_lights.sort_custom<LightScoreComparator>();
+
+	// Fill remaining slots with top positional lights.
+	for (uint32_t i = 0; i < positional_lights.size() && rt_light_count < p_max_lights; i++) {
+		RID light_instance = positional_lights[i].light_instance;
+		RID base = ls->light_instance_get_base_light(light_instance);
+		RSE::LightType type = ls->light_get_type(base);
+
+		RT_LightData &ld = r_light_data[rt_light_count];
+		Transform3D xform = ls->light_instance_get_base_transform(light_instance);
+		ld.position[0] = xform.origin.x;
+		ld.position[1] = xform.origin.y;
+		ld.position[2] = xform.origin.z;
+		ld.type = (type == RSE::LIGHT_SPOT) ? RT_LIGHT_TYPE_SPOT : RT_LIGHT_TYPE_OMNI;
+
+		Color linear_col = ls->light_get_color(base).srgb_to_linear();
+		float energy = compute_light_energy(base, type);
+		ld.emission[0] = linear_col.r * energy;
+		ld.emission[1] = linear_col.g * energy;
+		ld.emission[2] = linear_col.b * energy;
+		ld.radius = ls->light_get_param(base, RSE::LIGHT_PARAM_SIZE);
+		ld.attenuation = ls->light_get_param(base, RSE::LIGHT_PARAM_ATTENUATION);
+		float range = ls->light_get_param(base, RSE::LIGHT_PARAM_RANGE);
+		if (range > 0.0f) {
+			ld.inv_max_range = 1.0f / range;
+			ld.max_range_squared = range * range;
+		} else {
+			ld.inv_max_range = -1.0f;
+			ld.max_range_squared = 0.0f;
+		}
+		ld.specular_amount = ls->light_get_param(base, RSE::LIGHT_PARAM_SPECULAR) * 2.0f; // Matches rasterizer convention (light_storage.cpp), normalizes 0.5 default to 1.0.
+		ld.indirect_energy = ls->light_get_param(base, RSE::LIGHT_PARAM_INDIRECT_ENERGY);
+
+		if (type == RSE::LIGHT_SPOT) {
+			ld.inv_spot_attenuation = 1.0f / MAX(0.001f, ls->light_get_param(base, RSE::LIGHT_PARAM_SPOT_ATTENUATION));
+			float spot_angle_deg = ls->light_get_param(base, RSE::LIGHT_PARAM_SPOT_ANGLE);
+			ld.cos_spot_angle = Math::cos(Math::deg_to_rad(spot_angle_deg));
+			Vector3 spot_dir = -xform.basis.get_column(2).normalized();
+			ld.spot_direction[0] = spot_dir.x;
+			ld.spot_direction[1] = spot_dir.y;
+			ld.spot_direction[2] = spot_dir.z;
+		} else {
+			ld.inv_spot_attenuation = 0.0f;
+			ld.cos_spot_angle = 0.0f;
+			ld.spot_direction[0] = 0.0f;
+			ld.spot_direction[1] = 0.0f;
+			ld.spot_direction[2] = 0.0f;
+		}
+		rt_light_count++;
+	}
+
+	return rt_light_count;
+}
+
+// ---------------------------------------------------------------------------
+// Uniform set update
+// ---------------------------------------------------------------------------
+
+void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data) {
+	if (!owner->rt_enabled) {
+		return;
+	}
+
+	if (uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(uniform_set)) {
+		RD::get_singleton()->free_rid(uniform_set);
+	}
+
+	// BindlessBlock handles its own uniform set cleanup via clear()
+
+	Ref<RenderForwardClustered::RenderBufferDataForwardClustered> rb_data;
+	if (p_render_data && p_render_data->render_buffers.is_valid()) {
+		if (p_render_data->render_buffers->has_custom_data(RB_SCOPE_FORWARD_CLUSTERED)) {
+			rb_data = p_render_data->render_buffers->get_custom_data(RB_SCOPE_FORWARD_CLUSTERED);
+		}
+	}
+
+	if (rb_data.is_null()) {
+		return;
+	}
+
+	// === SET 0: Core raytracing bindings ===
+	Vector<RD::Uniform> uniforms;
+
+	{
+		RD::Uniform u;
+		u.binding = 0;
+		u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+		rb_data->rt_ensure_textures();
+		u.append_id(rb_data->rt_get_texture());
+		uniforms.push_back(u);
+	}
+
+	{
+		RD::Uniform u;
+		u.binding = 1;
+		u.uniform_type = RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE;
+		ERR_FAIL_COND(tlas == RID());
+		u.append_id(tlas);
+		uniforms.push_back(u);
+	}
+
+	{
+		RD::Uniform u;
+		u.binding = 2;
+		u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+		u.append_id(owner->scene_state.uniform_buffers[0]);
+		uniforms.push_back(u);
+	}
+
+	{
+		RD::Uniform u;
+		u.binding = 3;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		if (geometry_buffer.is_valid()) {
+			u.append_id(geometry_buffer);
+		} else {
+			// Use a default buffer if no geometry
+			u.append_id(RendererRD::MeshStorage::get_singleton()->get_default_rd_storage_buffer());
+		}
+		uniforms.push_back(u);
+	}
+
+	// Binding 5: Material buffer.
+	{
+		RD::Uniform u;
+		u.binding = 5;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		if (material_buffer.is_valid()) {
+			u.append_id(material_buffer);
+		} else {
+			u.append_id(RendererRD::MeshStorage::get_singleton()->get_default_rd_storage_buffer());
+		}
+		uniforms.push_back(u);
+	}
+
+	// Binding 6: Raytracing params (16 floats from environment settings).
+	{
+		// Get params from environment
+		float rt_params_data[16] = { 0 };
+		if (p_render_data && p_render_data->environment.is_valid()) {
+			const float *env_params = RendererEnvironmentStorage::get_singleton()->environment_get_pathtracing_params_ptr(p_render_data->environment);
+			if (env_params) {
+				memcpy(rt_params_data, env_params, sizeof(float) * 16);
+			}
+		}
+
+		// rt_params layout (see RaytracingParamIndex enum):
+		// [0] = VIS_MODE, [1] = SAMPLE_COUNT, [2] = MAX_BOUNCES,
+		// [3] = DLSS_RR_ENABLED, [4] = LIGHT_COUNT, [15] = FRAME_INDEX
+		rt_params_data[SceneShaderRaytracing::RT_PARAM_FRAME_INDEX] = float(frame_counter++);
+
+		// --- Light gathering ---
+		// Collect lights from the render data using LightStorage's pre-built data.
+		// Split budget: directional always, frustum positional, then out-of-frustum positional.
+		uint32_t rt_light_count = 0;
+		RT_LightData rt_light_data[RT_LIGHTS_MAX] = {};
+
+		rt_light_count = gather_lights(p_render_data, rt_light_data, RT_LIGHTS_MAX);
+
+		rt_params_data[SceneShaderRaytracing::RT_PARAM_LIGHT_COUNT] = float(rt_light_count);
+
+		// Upload light buffer.
+		{
+			uint32_t buf_size = RT_LIGHTS_MAX * sizeof(RT_LightData);
+			if (!light_buffer.is_valid()) {
+				light_buffer = RD::get_singleton()->storage_buffer_create(buf_size);
+			}
+			RD::get_singleton()->buffer_update(light_buffer, 0, buf_size, rt_light_data);
+		}
+
+		// Create/update uniform buffer
+		if (!params_buffer.is_valid()) {
+			params_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(float) * 16);
+		}
+		RD::get_singleton()->buffer_update(params_buffer, 0, sizeof(float) * 16, rt_params_data);
+
+		RD::Uniform u;
+		u.binding = 6;
+		u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+		u.append_id(params_buffer);
+		uniforms.push_back(u);
+	}
+
+	// Binding 7: Sky radiance octahedral map (for pathtracing sky sampling).
+	{
+		RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
+		RID radiance_texture;
+
+		// Try to get radiance texture from sky
+		if (p_render_data && p_render_data->environment.is_valid()) {
+			RID sky_rid = owner->environment_get_sky(p_render_data->environment);
+			if (sky_rid.is_valid()) {
+				radiance_texture = owner->sky.sky_get_radiance_texture_rd(sky_rid);
+			}
+		}
+
+		// Fall back to default black texture if no sky
+		if (!radiance_texture.is_valid()) {
+			radiance_texture = texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
+		}
+
+		RD::Uniform u;
+		u.binding = 7;
+		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		u.append_id(radiance_texture);
+		uniforms.push_back(u);
+	}
+
+	// Binding 8: Sampler for radiance texture (linear filtering with mipmaps and clamp).
+	{
+		RD::Uniform u;
+		u.binding = 8;
+		u.uniform_type = RD::UNIFORM_TYPE_SAMPLER;
+		u.append_id(RendererRD::MaterialStorage::get_singleton()->sampler_rd_get_default(
+				RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED));
+		uniforms.push_back(u);
+	}
+
+	// Bindings 9-12: DLSS Ray Reconstruction output buffers (only in DLSS RR shader variant).
+	bool dlss_rr_enabled = rb_data->dlss_rr_has_buffers();
+	if (dlss_rr_enabled) {
+		// Binding 9: DLSS RR Diffuse Albedo
+		{
+			RD::Uniform u;
+			u.binding = 9;
+			u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+			u.append_id(rb_data->dlss_rr_get_diffuse_albedo());
+			uniforms.push_back(u);
+		}
+
+		// Binding 10: DLSS RR Specular Albedo
+		{
+			RD::Uniform u;
+			u.binding = 10;
+			u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+			u.append_id(rb_data->dlss_rr_get_specular_albedo());
+			uniforms.push_back(u);
+		}
+
+		// Binding 11: DLSS RR Normal + Roughness
+		{
+			RD::Uniform u;
+			u.binding = 11;
+			u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+			u.append_id(rb_data->dlss_rr_get_normal_roughness());
+			uniforms.push_back(u);
+		}
+
+		// Binding 12: DLSS RR Specular Hit Distance
+		{
+			RD::Uniform u;
+			u.binding = 12;
+			u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+			u.append_id(rb_data->dlss_rr_get_specular_hit_dist());
+			uniforms.push_back(u);
+		}
+	}
+
+	// Binding 13: Light buffer (SSBO).
+	{
+		RD::Uniform u;
+		u.binding = 13;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		if (light_buffer.is_valid()) {
+			u.append_id(light_buffer);
+		} else {
+			u.append_id(RendererRD::MeshStorage::get_singleton()->get_default_rd_storage_buffer());
+		}
+		uniforms.push_back(u);
+	}
+
+	// Binding 15: RT depth output (R32F storage image for writing depth from closest_hit/miss).
+	{
+		RD::Uniform u;
+		u.binding = 15;
+		u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+		u.append_id(rb_data->rt_get_depth_texture());
+		uniforms.push_back(u);
+	}
+
+	// Bindings 16-27: Material samplers (12 filter/repeat combinations for custom shaders).
+	RendererRD::MaterialStorage::get_singleton()->samplers_rd_get_default().append_uniforms(uniforms, 16);
+
+	// Use the appropriate shader variant (base or DLSS RR) for uniform set creation
+	uint32_t rt_flags = dlss_rr_enabled ? SceneShaderRaytracing::RT_FLAG_DLSS_RR_ENABLED : SceneShaderRaytracing::RT_FLAG_NONE;
+	RID shader_rd = shader ? shader->get_raytracing_shader_rd(rt_flags) : RID();
+
+	if (shader_rd.is_valid()) {
+		uniform_set = RD::get_singleton()->uniform_set_create(
+				uniforms,
+				shader_rd,
+				RenderForwardClustered::SCENE_UNIFORM_SET);
+
+		// === SET 1: Bindless textures ===
+		// BindlessBlock was initialized and populated with material textures in build_tlas
+		// Finalize (or re-finalize if new textures were added) to create the uniform set
+		if (bindless_block && bindless_block->is_initialized()) {
+			bindless_block->finalize(shader_rd, 1);
+			bindless_uniform_set = bindless_block->get_uniform_set();
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Output copy
+// ---------------------------------------------------------------------------
+
+void RenderRaytracing::copy_output_texture(const RenderDataRD *p_render_data) {
+	if (!owner->rt_enabled) {
+		return;
+	}
+
+	Ref<RenderSceneBuffersRD> rb = p_render_data->render_buffers;
+	ERR_FAIL_COND(rb.is_null());
+
+	Ref<RenderForwardClustered::RenderBufferDataForwardClustered> rb_data = rb->get_custom_data(RB_SCOPE_FORWARD_CLUSTERED);
+	if (rb_data.is_null() || !rb_data->rt_has_texture()) {
+		return;
+	}
+
+	// Copy raytracing output to main color buffer
+	for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+		RID src = rb_data->rt_get_texture();
+		RID dst = rb->get_internal_texture(v);
+		owner->copy_effects->copy_to_rect(src, dst, Rect2i(0, 0, rb->get_internal_size().x, rb->get_internal_size().y));
+	}
+}

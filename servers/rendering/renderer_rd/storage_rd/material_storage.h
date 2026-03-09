@@ -301,6 +301,8 @@ private:
 		RID next_pass;
 		SelfList<Material> update_element;
 
+		uint16_t rt_invalidation_counter = 0; ///< Bump on param changes for RT cache invalidation.
+
 		Dependency dependency;
 
 		Material() :
@@ -494,6 +496,9 @@ public:
 	virtual void material_set_shader(RID p_material, RID p_shader) override;
 	ShaderData *material_get_shader_data(RID p_material);
 
+	/// Returns the shader source code for the given material (empty if none).
+	String material_get_shader_code(RID p_material) const;
+
 	virtual void material_set_param(RID p_material, const StringName &p_param, const Variant &p_value) override;
 	virtual Variant material_get_param(RID p_material, const StringName &p_param) const override;
 
@@ -523,6 +528,14 @@ public:
 		} else {
 			return material->data;
 		}
+	}
+
+	_FORCE_INLINE_ uint16_t material_get_rt_invalidation_counter(RID p_material) const {
+		Material *material = material_owner.get_or_null(p_material);
+		if (!material) {
+			return 0;
+		}
+		return material->rt_invalidation_counter;
 	}
 };
 

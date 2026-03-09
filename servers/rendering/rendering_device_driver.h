@@ -752,16 +752,29 @@ public:
 		ACCELERATION_STRUCTURE_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION = 1 << 1,
 	};
 
+	/// Per-instance flags for TLAS instances (maps to VkGeometryInstanceFlagBitsKHR / D3D12_RAYTRACING_INSTANCE_FLAGS).
+	enum AccelerationStructureInstanceBits {
+		ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE = 1 << 0, ///< Disable face culling for this instance (double-sided).
+		ACCELERATION_STRUCTURE_INSTANCE_FORCE_OPAQUE = 1 << 1, ///< Force opaque, skip any-hit shader invocation.
+		ACCELERATION_STRUCTURE_INSTANCE_FORCE_NO_OPAQUE = 1 << 2, ///< Force non-opaque, always invoke any-hit shader.
+		ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FLIP_FACING = 1 << 3, ///< Flip triangle facing (CW <-> CCW).
+	};
+
 	virtual AccelerationStructureID blas_create(BufferID p_vertex_buffer, uint64_t p_vertex_offset, VertexFormatID p_vertex_format, uint32_t p_vertex_count, uint32_t p_position_attribute_location, BufferID p_index_buffer, IndexBufferFormat p_index_format, uint64_t p_index_offset, uint32_t p_index_count, BitField<AccelerationStructureGeometryBits> p_geometry_bits) = 0;
 	virtual uint32_t tlas_instances_buffer_get_size_bytes(uint32_t p_instance_count) = 0;
-	virtual void tlas_instances_buffer_fill(BufferID p_instances_buffer, VectorView<AccelerationStructureID> p_blases, VectorView<Transform3D> p_transforms) = 0;
-	virtual AccelerationStructureID tlas_create(BufferID p_instances_buffer) = 0;
+	virtual void tlas_instances_buffer_fill(BufferID p_instances_buffer, VectorView<AccelerationStructureID> p_blases, VectorView<Transform3D> p_transforms, VectorView<uint32_t> p_instance_flags = VectorView<uint32_t>(), VectorView<uint32_t> p_sbt_offsets = VectorView<uint32_t>()) = 0;
+	virtual AccelerationStructureID tlas_create(BufferID p_instances_buffer, uint32_t p_instance_count) = 0;
 	virtual void acceleration_structure_free(AccelerationStructureID p_acceleration_structure) = 0;
 	virtual uint32_t acceleration_structure_get_scratch_size_bytes(AccelerationStructureID p_acceleration_structure) = 0;
 
 	// ----- PIPELINE -----
 
-	virtual RaytracingPipelineID raytracing_pipeline_create(ShaderID p_shader, VectorView<PipelineSpecializationConstant> p_specialization_constants) = 0;
+	struct RaytracingPipelineSettings {
+		uint32_t max_recursion_depth = 1;
+		uint32_t max_payload_size_bytes = 32;
+		uint32_t max_hit_attribute_size_bytes = 8;
+	};
+	virtual RaytracingPipelineID raytracing_pipeline_create(ShaderID p_shader, VectorView<PipelineSpecializationConstant> p_specialization_constants, const RaytracingPipelineSettings &p_settings) = 0;
 	virtual void raytracing_pipeline_free(RaytracingPipelineID p_pipeline) = 0;
 
 	// ----- COMMANDS -----
@@ -804,6 +817,9 @@ public:
 	/**** DEBUG *****/
 	/****************/
 	virtual void command_insert_breadcrumb(CommandBufferID p_cmd_buffer, uint32_t p_data) = 0;
+
+	/// Returns the underlying native command buffer handle (e.g. ID3D12GraphicsCommandList* or VkCommandBuffer).
+	virtual void *command_buffer_get_native_handle(CommandBufferID p_cmd_buffer) { return nullptr; }
 
 	/********************/
 	/**** SUBMISSION ****/
@@ -864,7 +880,7 @@ public:
 		API_TRAIT_CLEARS_WITH_COPY_ENGINE,
 		API_TRAIT_USE_GENERAL_IN_COPY_QUEUES,
 		API_TRAIT_BUFFERS_REQUIRE_TRANSITIONS,
-		API_TRAIT_TEXTURE_OUTPUTS_REQUIRE_CLEARS,
+		API_TRAIT_TEXTURE_OUTPUTS_REQUIRE_CLEARS
 	};
 
 	enum ShaderChangeInvalidation {

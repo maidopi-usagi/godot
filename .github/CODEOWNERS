@@ -37,6 +37,7 @@
 /drivers/gles3/                               @godotengine/rendering
 /drivers/metal/                               @godotengine/rendering
 /drivers/spirv-reflect/                       @godotengine/rendering
+/drivers/streamline/                          @godotengine/rendering
 /drivers/vulkan/                              @godotengine/rendering
 
 ## OS

@@ -109,6 +109,13 @@ class RenderingDeviceDriverVulkan : public RenderingDeviceDriver {
 		bool validation = false;
 	};
 
+	struct DescriptorIndexingCapabilities {
+		bool shader_sampled_image_array_non_uniform_indexing = false;
+		bool descriptor_binding_partially_bound = false;
+		bool descriptor_binding_variable_descriptor_count = false;
+		bool runtime_descriptor_array = false;
+	};
+
 	struct DeviceFunctions {
 		PFN_vkCreateSwapchainKHR CreateSwapchainKHR = nullptr;
 		PFN_vkDestroySwapchainKHR DestroySwapchainKHR = nullptr;
@@ -160,6 +167,7 @@ class RenderingDeviceDriverVulkan : public RenderingDeviceDriver {
 	AccelerationStructureCapabilities acceleration_structure_capabilities;
 	bool ray_query_support = false;
 	RaytracingCapabilities raytracing_capabilities;
+	DescriptorIndexingCapabilities descriptor_indexing_capabilities;
 	bool pipeline_cache_control_support = false;
 	bool device_fault_support = false;
 	bool framebuffer_depth_resolve = false;
@@ -725,8 +733,8 @@ public:
 
 	virtual AccelerationStructureID blas_create(BufferID p_vertex_buffer, uint64_t p_vertex_offset, VertexFormatID p_vertex_format, uint32_t p_vertex_count, uint32_t p_position_attribute_location, BufferID p_index_buffer, IndexBufferFormat p_index_format, uint64_t p_index_offset_bytes, uint32_t p_index_count, BitField<AccelerationStructureGeometryBits> p_geometry_bits) override final;
 	virtual uint32_t tlas_instances_buffer_get_size_bytes(uint32_t p_instance_count) override final;
-	virtual void tlas_instances_buffer_fill(BufferID p_instances_buffer, VectorView<AccelerationStructureID> p_blases, VectorView<Transform3D> p_transforms) override final;
-	virtual AccelerationStructureID tlas_create(BufferID p_instances_buffer) override final;
+	virtual void tlas_instances_buffer_fill(BufferID p_instances_buffer, VectorView<AccelerationStructureID> p_blases, VectorView<Transform3D> p_transforms, VectorView<uint32_t> p_instance_flags = VectorView<uint32_t>(), VectorView<uint32_t> p_sbt_offsets = VectorView<uint32_t>()) override final;
+	virtual AccelerationStructureID tlas_create(BufferID p_instances_buffer, uint32_t p_instance_count) override final;
 	virtual void acceleration_structure_free(AccelerationStructureID p_acceleration_structure) override final;
 	virtual uint32_t acceleration_structure_get_scratch_size_bytes(AccelerationStructureID p_acceleration_structure) override final;
 
@@ -763,7 +771,7 @@ private:
 	};
 
 public:
-	virtual RaytracingPipelineID raytracing_pipeline_create(ShaderID p_shader, VectorView<PipelineSpecializationConstant> p_specialization_constants) override final;
+	virtual RaytracingPipelineID raytracing_pipeline_create(ShaderID p_shader, VectorView<PipelineSpecializationConstant> p_specialization_constants, const RaytracingPipelineSettings &p_settings) override final;
 	VkResult _raytracing_pipeline_stb_create(RaytracingPipelineID p_pipeline, ShaderID p_shader);
 	virtual void raytracing_pipeline_free(RaytracingPipelineID p_pipeline) override final;
 
@@ -794,6 +802,7 @@ public:
 	/**** DEBUG *****/
 	/****************/
 	virtual void command_insert_breadcrumb(CommandBufferID p_cmd_buffer, uint32_t p_data) override final;
+	virtual void *command_buffer_get_native_handle(CommandBufferID p_cmd_buffer) override final;
 	void print_lost_device_info();
 	void on_device_lost() const;
 	static String get_vulkan_result(VkResult err);

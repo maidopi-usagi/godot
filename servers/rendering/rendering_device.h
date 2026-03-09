@@ -1260,7 +1260,7 @@ public:
 	RID compute_pipeline_create(RID p_shader, const Vector<PipelineSpecializationConstant> &p_specialization_constants = Vector<PipelineSpecializationConstant>());
 	bool compute_pipeline_is_valid(RID p_pipeline);
 
-	RID raytracing_pipeline_create(RID p_shader, const Vector<PipelineSpecializationConstant> &p_specialization_constants = Vector<PipelineSpecializationConstant>());
+	RID raytracing_pipeline_create(RID p_shader, const Vector<PipelineSpecializationConstant> &p_specialization_constants = Vector<PipelineSpecializationConstant>(), const RDD::RaytracingPipelineSettings &p_settings = {});
 	bool raytracing_pipeline_is_valid(RID p_pipeline);
 
 	void update_pipeline_cache(bool p_closing = false);
@@ -1318,9 +1318,17 @@ public:
 		ACCELERATION_STRUCTURE_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION = (1 << 1),
 	};
 
+	/// Per-instance flags for TLAS instances.
+	enum AccelerationStructureInstanceBits {
+		ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE = (1 << 0), ///< Disable face culling for this instance (double-sided).
+		ACCELERATION_STRUCTURE_INSTANCE_FORCE_OPAQUE = (1 << 1), ///< Force opaque, skip any-hit shader invocation.
+		ACCELERATION_STRUCTURE_INSTANCE_FORCE_NO_OPAQUE = (1 << 2), ///< Force non-opaque, always invoke any-hit shader.
+		ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FLIP_FACING = (1 << 3), ///< Flip triangle facing (CW <-> CCW).
+	};
+
 	RID blas_create(RID p_vertex_array, RID p_index_array, BitField<AccelerationStructureGeometryBits> p_geometry_bits = 0, uint32_t p_position_attribute_location = 0);
 	RID tlas_instances_buffer_create(uint32_t p_instance_count, BitField<BufferCreationBits> p_creation_bits = 0);
-	void tlas_instances_buffer_fill(RID p_buffer, const Vector<RID> &p_blases, VectorView<Transform3D> p_transforms);
+	void tlas_instances_buffer_fill(RID p_buffer, const Vector<RID> &p_blases, VectorView<Transform3D> p_transforms, VectorView<uint32_t> p_instance_flags = VectorView<uint32_t>(), VectorView<uint32_t> p_sbt_offsets = VectorView<uint32_t>());
 	RID tlas_create(RID p_instances_buffer);
 	Error acceleration_structure_build(RID p_acceleration_structure);
 
@@ -1905,7 +1913,7 @@ private:
 
 	RID _render_pipeline_create(RID p_shader, FramebufferFormatID p_framebuffer_format, VertexFormatID p_vertex_format, RenderPrimitive p_render_primitive, const Ref<RDPipelineRasterizationState> &p_rasterization_state, const Ref<RDPipelineMultisampleState> &p_multisample_state, const Ref<RDPipelineDepthStencilState> &p_depth_stencil_state, const Ref<RDPipelineColorBlendState> &p_blend_state, BitField<PipelineDynamicStateFlags> p_dynamic_state_flags, uint32_t p_for_render_pass, const TypedArray<RDPipelineSpecializationConstant> &p_specialization_constants);
 	RID _compute_pipeline_create(RID p_shader, const TypedArray<RDPipelineSpecializationConstant> &p_specialization_constants);
-	RID _raytracing_pipeline_create(RID p_shader, const TypedArray<RDPipelineSpecializationConstant> &p_specialization_constants);
+	RID _raytracing_pipeline_create(RID p_shader, const TypedArray<RDPipelineSpecializationConstant> &p_specialization_constants, uint32_t p_max_recursion_depth = 1, uint32_t p_max_payload_size_bytes = 32, uint32_t p_max_hit_attribute_size_bytes = 8);
 
 	void _draw_list_set_push_constant(DrawListID p_list, const Vector<uint8_t> &p_data, uint32_t p_data_size);
 	void _compute_list_set_push_constant(ComputeListID p_list, const Vector<uint8_t> &p_data, uint32_t p_data_size);

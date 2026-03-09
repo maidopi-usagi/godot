@@ -141,6 +141,8 @@ private:
 
 			RID material;
 
+			uint16_t rt_invalidation_counter = 0; // Bump on geometry changes for RT cache invalidation.
+
 			uint32_t render_index = 0;
 			uint64_t render_pass = 0;
 
@@ -477,6 +479,42 @@ public:
 		return s->uv_scale;
 	}
 
+	/// Get the vertex buffer RID for raytracing device address access.
+	_FORCE_INLINE_ RID mesh_surface_get_vertex_buffer(void *p_surface) {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		return s->vertex_buffer;
+	}
+
+	/// Get the attribute buffer RID for raytracing device address access.
+	_FORCE_INLINE_ RID mesh_surface_get_attribute_buffer(void *p_surface) {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		return s->attribute_buffer;
+	}
+
+	/// Get the index buffer RID for raytracing device address access.
+	/// @param p_lod LOD level (0 = base, 1+ = LOD index + 1)
+	_FORCE_INLINE_ RID mesh_surface_get_index_buffer(void *p_surface, uint32_t p_lod = 0) {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		if (p_lod == 0) {
+			return s->index_buffer;
+		} else {
+			ERR_FAIL_UNSIGNED_INDEX_V(p_lod - 1, s->lod_count, RID());
+			return s->lods[p_lod - 1].index_buffer;
+		}
+	}
+
+	/// Get the index count for raytracing.
+	/// @param p_lod LOD level (0 = base, 1+ = LOD index + 1)
+	_FORCE_INLINE_ uint32_t mesh_surface_get_index_count(void *p_surface, uint32_t p_lod = 0) {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		if (p_lod == 0) {
+			return s->index_count;
+		} else {
+			ERR_FAIL_UNSIGNED_INDEX_V(p_lod - 1, s->lod_count, 0);
+			return s->lods[p_lod - 1].index_count;
+		}
+	}
+
 	_FORCE_INLINE_ uint32_t mesh_surface_get_lod(void *p_surface, float p_model_scale, float p_distance_threshold, float p_mesh_lod_threshold, uint32_t &r_index_count) const {
 		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
 
@@ -505,6 +543,11 @@ public:
 		} else {
 			return s->lods[p_lod - 1].index_array;
 		}
+	}
+
+	_FORCE_INLINE_ uint16_t mesh_surface_get_rt_invalidation_counter(void *p_surface) const {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		return s->rt_invalidation_counter;
 	}
 
 	_FORCE_INLINE_ void mesh_surface_get_vertex_arrays_and_format(void *p_surface, uint64_t p_input_mask, bool p_input_motion_vectors, bool p_point_size_emulated, RID &r_vertex_array_rd, RD::VertexFormatID &r_vertex_format) {

@@ -38,6 +38,10 @@
 
 #include "thirdparty/misc/smolv.h"
 
+#if defined(STREAMLINE_ENABLED)
+#include "drivers/streamline/streamline.h"
+#endif
+
 #if defined(SWAPPY_FRAME_PACING_ENABLED)
 #include "platform/android/java_godot_wrapper.h"
 #include "platform/android/os_android.h"
@@ -941,6 +945,11 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 				vulkan_memory_model_support = device_features_vk_1_2.vulkanMemoryModel;
 				vulkan_memory_model_device_scope_support = device_features_vk_1_2.vulkanMemoryModelDeviceScope;
 			}
+			// Descriptor indexing features (core in Vulkan 1.2).
+			descriptor_indexing_capabilities.shader_sampled_image_array_non_uniform_indexing = device_features_vk_1_2.shaderSampledImageArrayNonUniformIndexing;
+			descriptor_indexing_capabilities.descriptor_binding_partially_bound = device_features_vk_1_2.descriptorBindingPartiallyBound;
+			descriptor_indexing_capabilities.descriptor_binding_variable_descriptor_count = device_features_vk_1_2.descriptorBindingVariableDescriptorCount;
+			descriptor_indexing_capabilities.runtime_descriptor_array = device_features_vk_1_2.runtimeDescriptorArray;
 		} else {
 			if (enabled_device_extension_names.has(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)) {
 				shader_capabilities.shader_float16_is_supported = shader_features.shaderFloat16;
@@ -1225,6 +1234,14 @@ Error RenderingDeviceDriverVulkan::_add_queue_create_info(LocalVector<VkDeviceQu
 	const uint32_t max_queue_count_per_family = 1;
 	static const float queue_priorities[max_queue_count_per_family] = {};
 	for (uint32_t i = 0; i < queue_family_count; i++) {
+#ifdef STREAMLINE_ENABLED
+		if (queue_family_properties[i].queueCount == 1 &&
+				(queue_family_properties[i].queueFlags & VK_QUEUE_OPTICAL_FLOW_BIT_NV) != 0 &&
+				(queue_family_properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) {
+			// This queue is required by Streamline. Don't allocate it or Streamline 2.4.10 will fail in combination with DLSS-FG.
+			continue;
+		}
+#endif
 		if ((queue_family_properties[i].queueFlags & queue_flags_mask) == 0) {
 			// We ignore creating queues in families that don't support any of the operations we require.
 			continue;
@@ -1357,11 +1374,27 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 	}
 
 	VkPhysicalDeviceVulkan11Features vulkan_1_1_features = {};
+	VkPhysicalDeviceVulkan12Features vulkan_1_2_features = {};
 	VkPhysicalDevice16BitStorageFeaturesKHR storage_features = {};
 	VkPhysicalDeviceMultiviewFeatures multiview_features = {};
 	const bool enable_1_2_features = physical_device_properties.apiVersion >= VK_API_VERSION_1_2;
 	if (enable_1_2_features) {
 		// In Vulkan 1.2 and newer we use a newer struct to enable various features.
+		// Enable Vulkan 1.2 features (descriptor indexing, buffer device address, etc.).
+		vulkan_1_2_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+		vulkan_1_2_features.pNext = create_info_next;
+		vulkan_1_2_features.bufferDeviceAddress = buffer_device_address_support;
+		vulkan_1_2_features.vulkanMemoryModel = vulkan_memory_model_support;
+		vulkan_1_2_features.vulkanMemoryModelDeviceScope = vulkan_memory_model_device_scope_support;
+		vulkan_1_2_features.shaderFloat16 = shader_capabilities.shader_float16_is_supported;
+		vulkan_1_2_features.shaderInt8 = shader_capabilities.shader_int8_is_supported;
+		// Descriptor indexing features for bindless textures.
+		vulkan_1_2_features.shaderSampledImageArrayNonUniformIndexing = descriptor_indexing_capabilities.shader_sampled_image_array_non_uniform_indexing;
+		vulkan_1_2_features.descriptorBindingPartiallyBound = descriptor_indexing_capabilities.descriptor_binding_partially_bound;
+		vulkan_1_2_features.descriptorBindingVariableDescriptorCount = descriptor_indexing_capabilities.descriptor_binding_variable_descriptor_count;
+		vulkan_1_2_features.runtimeDescriptorArray = descriptor_indexing_capabilities.runtime_descriptor_array;
+		create_info_next = &vulkan_1_2_features;
+
 		vulkan_1_1_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
 		vulkan_1_1_features.pNext = create_info_next;
 		vulkan_1_1_features.storageBuffer16BitAccess = storage_buffer_capabilities.storage_buffer_16_bit_access_is_supported;
@@ -1778,6 +1811,12 @@ Error RenderingDeviceDriverVulkan::initialize(uint32_t p_device_index, uint32_t 
 	err = _check_device_capabilities();
 	ERR_FAIL_COND_V(err != OK, err);
 
+#ifdef STREAMLINE_ENABLED
+	if (Streamline::get_singleton()) {
+		Streamline::get_singleton()->set_internal_parameter("vulkan_physical_device", (void *)physical_device);
+	}
+#endif
+
 	LocalVector<VkDeviceQueueCreateInfo> queue_create_info;
 	err = _add_queue_create_info(queue_create_info);
 	ERR_FAIL_COND_V(err != OK, err);
@@ -1817,6 +1856,12 @@ Error RenderingDeviceDriverVulkan::initialize(uint32_t p_device_index, uint32_t 
 
 	pipeline_statistics.file_access->store_csv_line({ "name", "hash", "stage", "spec", "glslang", "re-spirv", "time" });
 	pipeline_statistics.file_access->flush();
+#endif
+
+#if defined(STREAMLINE_ENABLED)
+	if (Streamline::get_singleton()) {
+		Streamline::get_singleton()->emit_marker(STREAMLINE_MARKER_AFTER_DEVICE_CREATION);
+	}
 #endif
 
 	return OK;
@@ -3218,6 +3263,12 @@ Error RenderingDeviceDriverVulkan::command_queue_execute_and_present(CommandQueu
 		present_info.pImageIndices = image_indices.ptr();
 		present_info.pResults = results.ptr();
 
+#ifdef STREAMLINE_ENABLED
+		if (Streamline::get_singleton()) {
+			Streamline::get_singleton()->emit_marker(STREAMLINE_MARKER_BEGIN_PRESENT);
+		}
+#endif
+
 		device_queue.submit_mutex.lock();
 #if defined(SWAPPY_FRAME_PACING_ENABLED)
 		if (swappy_frame_pacer_enable) {
@@ -3230,6 +3281,10 @@ Error RenderingDeviceDriverVulkan::command_queue_execute_and_present(CommandQueu
 #endif
 
 		device_queue.submit_mutex.unlock();
+
+#ifdef STREAMLINE_ENABLED
+		Streamline::get_singleton()->emit_marker(STREAMLINE_MARKER_END_PRESENT);
+#endif
 
 		// Set the index to an invalid value. If any of the swap chains returned out of date, indicate it should be resized the next time it's acquired.
 		bool any_result_is_out_of_date = false;
@@ -3573,6 +3628,11 @@ Error RenderingDeviceDriverVulkan::swap_chain_resize(CommandQueueID p_cmd_queue,
 
 	CommandQueue *command_queue = (CommandQueue *)(p_cmd_queue.id);
 	SwapChain *swap_chain = (SwapChain *)(p_swap_chain.id);
+
+#ifdef STREAMLINE_ENABLED
+	// Emit streamline event
+	Streamline::get_singleton()->emit_marker(STREAMLINE_MARKER_MODIFY_SWAPCHAIN);
+#endif
 
 	// Release all current contents of the swap chain.
 	_swap_chain_release(swap_chain);
@@ -4092,6 +4152,7 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 	}
 
 	// Set bindings.
+	static constexpr uint32_t VK_UNBOUNDED_DESCRIPTOR_COUNT = 128000;
 	Vector<Vector<VkDescriptorSetLayoutBinding>> vk_set_bindings;
 	vk_set_bindings.resize(shader_refl.uniform_sets.size());
 	for (uint32_t i = 0; i < shader_refl.uniform_sets.size(); i++) {
@@ -4126,11 +4187,12 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 				} break;
 				case UNIFORM_TYPE_SAMPLER_WITH_TEXTURE: {
 					layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-					layout_binding.descriptorCount = uniform.length;
+					// For unbounded arrays (bindless), use a large max count.
+					layout_binding.descriptorCount = uniform.unbounded ? VK_UNBOUNDED_DESCRIPTOR_COUNT : uniform.length;
 				} break;
 				case UNIFORM_TYPE_TEXTURE: {
 					layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-					layout_binding.descriptorCount = uniform.length;
+					layout_binding.descriptorCount = uniform.unbounded ? VK_UNBOUNDED_DESCRIPTOR_COUNT : uniform.length;
 				} break;
 				case UNIFORM_TYPE_IMAGE: {
 					layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -4176,7 +4238,22 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 	Vector<uint8_t> decompressed_code;
 	VkShaderModule vk_module;
 	PackedByteArray decoded_spirv;
-	const bool use_respv = (RESPV_ENABLED == 1) && !shader_container_format.get_debug_info_enabled();
+
+	// Check if any stage is a raytracing stage (RESPV is not compatible with raytracing shaders)
+	bool has_raytracing_stages = false;
+	for (int stage_idx = 0; stage_idx < shader_refl.stages_vector.size(); stage_idx++) {
+		ShaderStage stage = shader_refl.stages_vector[stage_idx];
+		if (stage == ShaderStage::SHADER_STAGE_RAYGEN ||
+				stage == ShaderStage::SHADER_STAGE_ANY_HIT ||
+				stage == ShaderStage::SHADER_STAGE_CLOSEST_HIT ||
+				stage == ShaderStage::SHADER_STAGE_MISS ||
+				stage == ShaderStage::SHADER_STAGE_INTERSECTION) {
+			has_raytracing_stages = true;
+			break;
+		}
+	}
+
+	const bool use_respv = (RESPV_ENABLED == 1) && !shader_container_format.get_debug_info_enabled() && !has_raytracing_stages;
 	const bool store_respv = use_respv && !shader_refl.specialization_constants.is_empty();
 	const int64_t stage_count = shader_refl.stages_vector.size();
 	shader_info.vk_stages_create_info.reserve(stage_count);
@@ -4289,7 +4366,18 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 			shader_info.vk_groups_create_info.push_back(group_info);
 		}
 		if (stage == ShaderStage::SHADER_STAGE_ANY_HIT || stage == ShaderStage::SHADER_STAGE_CLOSEST_HIT) {
-			if (hit_group_index == UINT32_MAX) {
+			// Start a new triangle hit group when there is no current group or
+			// the current group's slot for this stage type is already occupied.
+			bool need_new_group = (hit_group_index == UINT32_MAX);
+			if (!need_new_group) {
+				const VkRayTracingShaderGroupCreateInfoKHR &g = shader_info.vk_groups_create_info[hit_group_index];
+				if (stage == ShaderStage::SHADER_STAGE_ANY_HIT && g.anyHitShader != VK_SHADER_UNUSED_KHR) {
+					need_new_group = true;
+				} else if (stage == ShaderStage::SHADER_STAGE_CLOSEST_HIT && g.closestHitShader != VK_SHADER_UNUSED_KHR) {
+					need_new_group = true;
+				}
+			}
+			if (need_new_group) {
 				VkRayTracingShaderGroupCreateInfoKHR group_info = {};
 				group_info.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
 				group_info.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
@@ -4332,11 +4420,41 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 		placeholder_binding.stageFlags = VK_SHADER_STAGE_ALL;
 
 		for (uint32_t i = 0; i < shader_refl.uniform_sets.size(); i++) {
+			// Check if any binding in this set is unbounded.
+			bool has_unbounded = false;
+			for (uint32_t j = 0; j < shader_refl.uniform_sets[i].size(); j++) {
+				if (shader_refl.uniform_sets[i][j].unbounded) {
+					has_unbounded = true;
+					break;
+				}
+			}
+
+			// Create binding flags for unbounded descriptors.
+			Vector<VkDescriptorBindingFlags> binding_flags;
+			VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags_info = {};
+			if (has_unbounded && descriptor_indexing_capabilities.descriptor_binding_partially_bound) {
+				binding_flags.resize(vk_set_bindings[i].size());
+				for (uint32_t j = 0; j < shader_refl.uniform_sets[i].size(); j++) {
+					if (shader_refl.uniform_sets[i][j].unbounded) {
+						binding_flags.write[j] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+								VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
+					} else {
+						binding_flags.write[j] = 0;
+					}
+				}
+				binding_flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+				binding_flags_info.bindingCount = binding_flags.size();
+				binding_flags_info.pBindingFlags = binding_flags.ptr();
+			}
+
 			// Empty ones are fine if they were not used according to spec (binding count will be 0).
 			VkDescriptorSetLayoutCreateInfo layout_create_info = {};
 			layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 			layout_create_info.bindingCount = vk_set_bindings[i].size();
 			layout_create_info.pBindings = vk_set_bindings[i].ptr();
+			if (has_unbounded && descriptor_indexing_capabilities.descriptor_binding_partially_bound) {
+				layout_create_info.pNext = &binding_flags_info;
+			}
 
 			// ...not so fine on Adreno 5XX.
 			if (adreno_5xx_empty_descriptor_set_layout_workaround && layout_create_info.bindingCount == 0) {
@@ -4397,9 +4515,12 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 				case ShaderStage::SHADER_STAGE_RAYGEN:
 					shader_info.region_count.raygen_count += 1;
 					break;
-				case ShaderStage::SHADER_STAGE_ANY_HIT:
 				case ShaderStage::SHADER_STAGE_CLOSEST_HIT:
+					// Any-hit shares the hit group with closest-hit, so only count closest-hit.
 					shader_info.region_count.hit_count += 1;
+					break;
+				case ShaderStage::SHADER_STAGE_ANY_HIT:
+					// Shares hit group with closest-hit; do not count separately.
 					break;
 				case ShaderStage::SHADER_STAGE_MISS:
 					shader_info.region_count.miss_count += 1;
@@ -4410,7 +4531,8 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 			}
 		}
 
-		shader_info.region_count.group_count = shader_info.region_count.raygen_count + shader_info.region_count.hit_count + shader_info.region_count.miss_count;
+		// Use actual group count from the SBT group creation above.
+		shader_info.region_count.group_count = shader_info.vk_groups_create_info.size();
 	}
 
 	// Bookkeep.
@@ -6204,7 +6326,7 @@ RDD::AccelerationStructureID RenderingDeviceDriverVulkan::blas_create(BufferID p
 	VkDeviceSize buffer_offset = position_attribute->offset;
 
 	VkDeviceAddress vertex_address = buffer_get_device_address(p_vertex_buffer) + buffer_offset;
-	VkDeviceAddress index_address = buffer_get_device_address(p_index_buffer) + p_index_offset_bytes;
+	VkDeviceAddress index_address = p_index_buffer.id != 0ULL ? buffer_get_device_address(p_index_buffer) + p_index_offset_bytes : 0ULL;
 
 	VkDeviceSize vertex_stride = position_binding->stride;
 	VkFormat vertex_format = position_attribute->format;
@@ -6283,11 +6405,13 @@ uint32_t RenderingDeviceDriverVulkan::tlas_instances_buffer_get_size_bytes(uint3
 #endif
 }
 
-void RenderingDeviceDriverVulkan::tlas_instances_buffer_fill(BufferID p_instances_buffer, VectorView<AccelerationStructureID> p_blases, VectorView<Transform3D> p_transforms) {
+void RenderingDeviceDriverVulkan::tlas_instances_buffer_fill(BufferID p_instances_buffer, VectorView<AccelerationStructureID> p_blases, VectorView<Transform3D> p_transforms, VectorView<uint32_t> p_instance_flags, VectorView<uint32_t> p_sbt_offsets) {
 #if VULKAN_RAYTRACING_ENABLED
 	uint32_t blases_count = p_blases.size();
 	ERR_FAIL_COND_MSG(blases_count != p_transforms.size(), "Blases and transforms vectors must have the same size.");
 	ERR_FAIL_COND(blases_count == 0);
+
+	bool has_flags = (p_instance_flags.size() == blases_count);
 
 	LocalVector<VkAccelerationStructureInstanceKHR> instances;
 	instances.resize(blases_count);
@@ -6301,8 +6425,29 @@ void RenderingDeviceDriverVulkan::tlas_instances_buffer_fill(BufferID p_instance
 		instance.instanceCustomIndex = i;
 		instance.mask = 0xFF;
 		instance.accelerationStructureReference = buffer_get_device_address(blas_info->buffer);
-		instance.instanceShaderBindingTableRecordOffset = 0;
-		instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+		instance.instanceShaderBindingTableRecordOffset = (p_sbt_offsets.size() == blases_count) ? p_sbt_offsets[i] : 0;
+
+		// Map per-instance flags to Vulkan flags.
+		VkGeometryInstanceFlagsKHR vk_flags = 0;
+		if (has_flags) {
+			uint32_t f = p_instance_flags[i];
+			if (f & ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE) {
+				vk_flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+			}
+			if (f & ACCELERATION_STRUCTURE_INSTANCE_FORCE_OPAQUE) {
+				vk_flags |= VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+			}
+			if (f & ACCELERATION_STRUCTURE_INSTANCE_FORCE_NO_OPAQUE) {
+				vk_flags |= VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;
+			}
+			if (f & ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FLIP_FACING) {
+				vk_flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR;
+			}
+		} else {
+			// Legacy default: disable culling + flip facing to match Godot CW convention.
+			vk_flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR | VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR;
+		}
+		instance.flags = vk_flags;
 	}
 
 	uint8_t *data_ptr = buffer_map(p_instances_buffer);
@@ -6313,7 +6458,7 @@ void RenderingDeviceDriverVulkan::tlas_instances_buffer_fill(BufferID p_instance
 #endif
 }
 
-RDD::AccelerationStructureID RenderingDeviceDriverVulkan::tlas_create(BufferID p_instances_buffer) {
+RDD::AccelerationStructureID RenderingDeviceDriverVulkan::tlas_create(BufferID p_instances_buffer, uint32_t p_instance_count) {
 #if VULKAN_RAYTRACING_ENABLED
 	ERR_FAIL_COND_V(p_instances_buffer == BufferID(), AccelerationStructureID());
 
@@ -6331,11 +6476,10 @@ RDD::AccelerationStructureID RenderingDeviceDriverVulkan::tlas_create(BufferID p
 	accel_info->build_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
 	accel_info->build_info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
 
-	uint32_t instance_count = buffer_get_allocation_size(p_instances_buffer) / sizeof(VkAccelerationStructureInstanceKHR);
 	VkAccelerationStructureBuildSizesInfoKHR size_info = {};
 	size_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
-	vkGetAccelerationStructureBuildSizesKHR(vk_device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &accel_info->build_info, &instance_count, &size_info);
-	accel_info->range_info.primitiveCount = instance_count;
+	vkGetAccelerationStructureBuildSizesKHR(vk_device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &accel_info->build_info, &p_instance_count, &size_info);
+	accel_info->range_info.primitiveCount = p_instance_count;
 
 	_acceleration_structure_create(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR, size_info, accel_info);
 	return AccelerationStructureID(accel_info);
@@ -6435,7 +6579,7 @@ void RenderingDeviceDriverVulkan::command_trace_rays(CommandBufferID p_cmd_buffe
 
 // --- PIPELINE ---
 
-RDD::RaytracingPipelineID RenderingDeviceDriverVulkan::raytracing_pipeline_create(ShaderID p_shader, VectorView<PipelineSpecializationConstant> p_specialization_constants) {
+RDD::RaytracingPipelineID RenderingDeviceDriverVulkan::raytracing_pipeline_create(ShaderID p_shader, VectorView<PipelineSpecializationConstant> p_specialization_constants, const RaytracingPipelineSettings &p_settings) {
 #if VULKAN_RAYTRACING_ENABLED
 	const ShaderInfo *shader_info = (const ShaderInfo *)p_shader.id;
 
@@ -6470,18 +6614,25 @@ RDD::RaytracingPipelineID RenderingDeviceDriverVulkan::raytracing_pipeline_creat
 		}
 	}
 
-	// Groups.
-	pipeline_create_info.groupCount = pipeline_create_info.stageCount;
+	// Groups (may differ from stage count when any_hit + closest_hit share a hit group).
+	pipeline_create_info.groupCount = shader_info->vk_groups_create_info.size();
 	VkRayTracingShaderGroupCreateInfoKHR *vk_pipeline_groups = ALLOCA_ARRAY(VkRayTracingShaderGroupCreateInfoKHR, pipeline_create_info.groupCount);
-	for (uint32_t i = 0; i < pipeline_create_info.stageCount; i++) {
+	for (uint32_t i = 0; i < pipeline_create_info.groupCount; i++) {
 		vk_pipeline_groups[i] = shader_info->vk_groups_create_info[i];
 	}
+
+	// Pipeline interface for payload/hit attribute sizes.
+	VkRayTracingPipelineInterfaceCreateInfoKHR interface_info = {};
+	interface_info.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_INTERFACE_CREATE_INFO_KHR;
+	interface_info.maxPipelineRayPayloadSize = p_settings.max_payload_size_bytes;
+	interface_info.maxPipelineRayHitAttributeSize = p_settings.max_hit_attribute_size_bytes;
 
 	// Pipeline.
 	pipeline_create_info.layout = shader_info->vk_pipeline_layout;
 	pipeline_create_info.pStages = vk_pipeline_stages;
 	pipeline_create_info.pGroups = vk_pipeline_groups;
-	pipeline_create_info.maxPipelineRayRecursionDepth = 1;
+	pipeline_create_info.maxPipelineRayRecursionDepth = p_settings.max_recursion_depth;
+	pipeline_create_info.pLibraryInterface = &interface_info;
 
 	RaytracingPipelineInfo *rpi = VersatileResource::allocate<RaytracingPipelineInfo>(resources_allocator);
 
@@ -6853,6 +7004,11 @@ void RenderingDeviceDriverVulkan::command_insert_breadcrumb(CommandBufferID p_cm
 #endif
 }
 
+void *RenderingDeviceDriverVulkan::command_buffer_get_native_handle(CommandBufferID p_cmd_buffer) {
+	const CommandBufferInfo *cmd_buf_info = (const CommandBufferInfo *)p_cmd_buffer.id;
+	return (void *)cmd_buf_info->vk_command_buffer;
+}
+
 void RenderingDeviceDriverVulkan::on_device_lost() const {
 	if (device_functions.GetDeviceFaultInfoEXT == nullptr) {
 		_err_print_error(FUNCTION_STR, __FILE__, __LINE__, "VK_EXT_device_fault not available.");
@@ -7161,6 +7317,14 @@ uint64_t RenderingDeviceDriverVulkan::get_resource_native_handle(DriverResource 
 			const TextureInfo *tex_info = (const TextureInfo *)p_driver_id.id;
 			return (uint64_t)tex_info->vk_view_create_info.format;
 		}
+		case DRIVER_RESOURCE_TEXTURE_DEVICE_MEMORY: {
+			const TextureInfo *tex_info = (const TextureInfo *)p_driver_id.id;
+			return (uint64_t)tex_info->allocation.info.deviceMemory;
+		} break;
+		case DRIVER_RESOURCE_TEXTURE_USAGE_FLAGS: {
+			const TextureInfo *tex_info = (const TextureInfo *)p_driver_id.id;
+			return (uint64_t)tex_info->vk_create_info.usage;
+		} break;
 		case DRIVER_RESOURCE_SAMPLER:
 		case DRIVER_RESOURCE_UNIFORM_SET:
 		case DRIVER_RESOURCE_BUFFER:
@@ -7397,6 +7561,12 @@ RenderingDeviceDriverVulkan::RenderingDeviceDriverVulkan(RenderingContextDriverV
 }
 
 RenderingDeviceDriverVulkan::~RenderingDeviceDriverVulkan() {
+#if defined(STREAMLINE_ENABLED)
+	if (Streamline::get_singleton()) {
+		Streamline::get_singleton()->emit_marker(STREAMLINE_MARKER_BEFORE_DEVICE_DESTROY);
+	}
+#endif
+
 #if defined(DEBUG_ENABLED) || defined(DEV_ENABLED)
 	if (breadcrumb_buffer != BufferID()) {
 		buffer_free(breadcrumb_buffer);

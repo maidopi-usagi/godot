@@ -41,6 +41,7 @@
 #include "core/os/keyboard.h"
 #include "core/os/os.h"
 #include "core/string/translation_server.h"
+#include "drivers/streamline/streamline.h"
 #include "editor/animation/animation_player_editor_plugin.h"
 #include "editor/debugger/editor_debugger_node.h"
 #include "editor/docks/scene_tree_dock.h"
@@ -3082,6 +3083,10 @@ void Node3DEditorViewport::_project_settings_changed() {
 
 	const Viewport::AnisotropicFiltering anisotropic_filtering_level = Viewport::AnisotropicFiltering(int(GLOBAL_GET("rendering/textures/default_filters/anisotropic_filtering_level")));
 	viewport->set_anisotropic_filtering_level(anisotropic_filtering_level);
+
+	if (Streamline::get_singleton()) {
+		Streamline::get_singleton()->update_project_settings();
+	}
 }
 
 static void override_label_colors(Control *p_control) {
@@ -4266,7 +4271,11 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 		case VIEW_DISPLAY_DEBUG_CLUSTER_REFLECTION_PROBES:
 		case VIEW_DISPLAY_DEBUG_OCCLUDERS:
 		case VIEW_DISPLAY_MOTION_VECTORS:
-		case VIEW_DISPLAY_INTERNAL_BUFFER: {
+		case VIEW_DISPLAY_INTERNAL_BUFFER:
+		case VIEW_DISPLAY_DEBUG_DLSS_RR_DIFFUSE_ALBEDO:
+		case VIEW_DISPLAY_DEBUG_DLSS_RR_SPECULAR_ALBEDO:
+		case VIEW_DISPLAY_DEBUG_DLSS_RR_NORMAL_ROUGHNESS:
+		case VIEW_DISPLAY_DEBUG_DLSS_RR_SPECULAR_HIT_DIST: {
 			static const int display_options[] = {
 				VIEW_DISPLAY_NORMAL,
 				VIEW_DISPLAY_WIREFRAME,
@@ -4295,6 +4304,10 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 				VIEW_DISPLAY_DEBUG_OCCLUDERS,
 				VIEW_DISPLAY_MOTION_VECTORS,
 				VIEW_DISPLAY_INTERNAL_BUFFER,
+				VIEW_DISPLAY_DEBUG_DLSS_RR_DIFFUSE_ALBEDO,
+				VIEW_DISPLAY_DEBUG_DLSS_RR_SPECULAR_ALBEDO,
+				VIEW_DISPLAY_DEBUG_DLSS_RR_NORMAL_ROUGHNESS,
+				VIEW_DISPLAY_DEBUG_DLSS_RR_SPECULAR_HIT_DIST,
 				VIEW_MAX
 			};
 			static const Viewport::DebugDraw debug_draw_modes[] = {
@@ -4325,6 +4338,10 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 				Viewport::DEBUG_DRAW_OCCLUDERS,
 				Viewport::DEBUG_DRAW_MOTION_VECTORS,
 				Viewport::DEBUG_DRAW_INTERNAL_BUFFER,
+				Viewport::DEBUG_DRAW_DLSS_RR_DIFFUSE_ALBEDO,
+				Viewport::DEBUG_DRAW_DLSS_RR_SPECULAR_ALBEDO,
+				Viewport::DEBUG_DRAW_DLSS_RR_NORMAL_ROUGHNESS,
+				Viewport::DEBUG_DRAW_DLSS_RR_SPECULAR_HIT_DIST,
 			};
 
 			for (int idx = 0; display_options[idx] != VIEW_MAX; idx++) {
@@ -6461,6 +6478,15 @@ Node3DEditorViewport::Node3DEditorViewport(Node3DEditor *p_spatial_editor, int p
 			TTRC("Represents motion vectors with colored lines in the direction of motion. Gray dots represent areas with no per-pixel motion."));
 	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("Internal Buffer"), VIEW_DISPLAY_INTERNAL_BUFFER, SupportedRenderingMethods::FORWARD_PLUS_MOBILE,
 			TTRC("Shows the scene rendered in linear colorspace before any tonemapping or post-processing."));
+	display_submenu->add_separator();
+	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("DLSS RR Diffuse Albedo"), VIEW_DISPLAY_DEBUG_DLSS_RR_DIFFUSE_ALBEDO, SupportedRenderingMethods::FORWARD_PLUS,
+			TTRC("Displays the DLSS Ray Reconstruction diffuse albedo output buffer. Requires raytracing with DLSS RR enabled."));
+	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("DLSS RR Specular Albedo"), VIEW_DISPLAY_DEBUG_DLSS_RR_SPECULAR_ALBEDO, SupportedRenderingMethods::FORWARD_PLUS,
+			TTRC("Displays the DLSS Ray Reconstruction specular albedo output buffer. Requires raytracing with DLSS RR enabled."));
+	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("DLSS RR Normal/Roughness"), VIEW_DISPLAY_DEBUG_DLSS_RR_NORMAL_ROUGHNESS, SupportedRenderingMethods::FORWARD_PLUS,
+			TTRC("Displays the DLSS Ray Reconstruction normal and roughness output buffer. Requires raytracing with DLSS RR enabled."));
+	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("DLSS RR Specular Hit Dist"), VIEW_DISPLAY_DEBUG_DLSS_RR_SPECULAR_HIT_DIST, SupportedRenderingMethods::FORWARD_PLUS,
+			TTRC("Displays the DLSS Ray Reconstruction specular hit distance output buffer. Requires raytracing with DLSS RR enabled."));
 	view_display_menu->get_popup()->add_submenu_node_item(TTRC("Display Advanced..."), display_submenu, VIEW_DISPLAY_ADVANCED);
 
 	view_display_menu->get_popup()->add_separator();

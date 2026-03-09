@@ -3375,6 +3375,9 @@
 			Sent when the window has been forcibly closed by the display server. The window will immediately hide and clean any internal rendering references.
 			[b]Note:[/b] This flag is implemented only on Linux (Wayland).
 		</constant>
+		<constant name="WINDOW_EVENT_PCL_PING" value="9" enum="WindowEvent">
+			Sent when NVIDIA Streamline PC Latency (PCL) receives a ping event. Used for latency measurement.
+		</constant>
 		<constant name="WINDOW_EDGE_TOP_LEFT" value="0" enum="WindowResizeEdge">
 			Top-left edge of a window.
 		</constant>

@@ -891,6 +891,11 @@ public:
 		PagedArray<RID> mesh_instances;
 		PagedArray<RID> fog_volumes;
 
+		// RT-extra: instances/lights inside the camera AABB but outside the view frustum.
+		// Used for path tracing TLAS and light gathering only (not rasterized).
+		PagedArray<RenderGeometryInstance *> rt_geometry_instances;
+		PagedArray<RID> rt_light_instances;
+
 		struct DirectionalShadow {
 			PagedArray<RenderGeometryInstance *> cascade_geometry_instances[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES];
 		} directional_shadows[RendererSceneRender::MAX_DIRECTIONAL_LIGHTS];
@@ -908,6 +913,8 @@ public:
 			voxel_gi_instances.clear();
 			mesh_instances.clear();
 			fog_volumes.clear();
+			rt_geometry_instances.clear();
+			rt_light_instances.clear();
 			for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHTS; i++) {
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].clear();
@@ -933,6 +940,8 @@ public:
 			voxel_gi_instances.reset();
 			mesh_instances.reset();
 			fog_volumes.reset();
+			rt_geometry_instances.reset();
+			rt_light_instances.reset();
 			for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHTS; i++) {
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].reset();
@@ -958,6 +967,8 @@ public:
 			voxel_gi_instances.merge_unordered(p_cull_result.voxel_gi_instances);
 			mesh_instances.merge_unordered(p_cull_result.mesh_instances);
 			fog_volumes.merge_unordered(p_cull_result.fog_volumes);
+			rt_geometry_instances.merge_unordered(p_cull_result.rt_geometry_instances);
+			rt_light_instances.merge_unordered(p_cull_result.rt_light_instances);
 
 			for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHTS; i++) {
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
@@ -984,6 +995,8 @@ public:
 			voxel_gi_instances.set_page_pool(p_rid_pool);
 			mesh_instances.set_page_pool(p_rid_pool);
 			fog_volumes.set_page_pool(p_rid_pool);
+			rt_geometry_instances.set_page_pool(p_geometry_instance_pool);
+			rt_light_instances.set_page_pool(p_rid_pool);
 			for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHTS; i++) {
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].set_page_pool(p_geometry_instance_pool);
@@ -1120,6 +1133,10 @@ public:
 		SpinLock lock;
 
 		Frustum frustum;
+
+		// Raytracing: wider AABB cull volume for TLAS and light gathering.
+		bool rt_enabled = false;
+		AABB rt_aabb;
 	} cull;
 
 	struct VisibilityCullData {
@@ -1360,6 +1377,13 @@ public:
 	PASS1(environment_set_sdfgi_ray_count, RSE::EnvironmentSDFGIRayCount)
 	PASS1(environment_set_sdfgi_frames_to_converge, RSE::EnvironmentSDFGIFramesToConverge)
 	PASS1(environment_set_sdfgi_frames_to_update_light, RSE::EnvironmentSDFGIFramesToUpdateLight)
+
+	// Pathtracing
+	PASS2(environment_set_pathtracing, RID, bool)
+	PASS2(environment_set_pathtracing_params, RID, const PackedFloat32Array &)
+
+	PASS1RC(bool, environment_get_pathtracing_enabled, RID)
+	PASS1RC(PackedFloat32Array, environment_get_pathtracing_params, RID)
 
 	// Adjustment
 	PASS7(environment_set_adjustment, RID, bool, float, float, float, bool, RID)

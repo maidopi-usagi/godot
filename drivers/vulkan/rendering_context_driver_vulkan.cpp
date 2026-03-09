@@ -33,6 +33,11 @@
 #include "rendering_context_driver_vulkan.h"
 
 #include "core/config/engine.h"
+
+#if defined(USE_VOLK) && defined(STREAMLINE_ENABLED) && defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include "core/config/project_settings.h"
 #include "core/version.h"
 #include "drivers/vulkan/rendering_device_driver_vulkan.h"
@@ -922,7 +927,19 @@ Error RenderingContextDriverVulkan::_create_vulkan_instance(const VkInstanceCrea
 Error RenderingContextDriverVulkan::initialize() {
 	Error err;
 
-#ifdef USE_VOLK
+#if defined(USE_VOLK) && defined(STREAMLINE_ENABLED) && defined(_WIN32)
+	HMODULE module;
+	module = LoadLibraryA("sl.interposer.dll");
+	if (module != nullptr) {
+		// note: function pointer is cast through void function pointer to silence cast-function-type warning on gcc8
+		PFN_vkGetInstanceProcAddr vk_getInstanceProcAddr = (PFN_vkGetInstanceProcAddr)(void (*)(void))GetProcAddress(module, "vkGetInstanceProcAddr");
+		volkInitializeCustom(vk_getInstanceProcAddr);
+	} else {
+		if (volkInitialize() != VK_SUCCESS) {
+			return FAILED;
+		}
+	}
+#elif defined(USE_VOLK)
 	if (volkInitialize() != VK_SUCCESS) {
 		return FAILED;
 	}
