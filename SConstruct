@@ -283,6 +283,13 @@ opts.Add(BoolVariable("use_precise_math_checks", "Math checks use very precise e
 opts.Add(BoolVariable("strict_checks", "Enforce stricter checks (debug option)", False))
 opts.Add(
     BoolVariable(
+        "error_backtrace",
+        "Dump native C++ stack traces to stderr on each printed engine error (slow); use debug_symbols for file:line where supported",
+        False,
+    )
+)
+opts.Add(
+    BoolVariable(
         "limit_transitive_includes", "Attempt to limit the amount of transitive includes in system headers", True
     )
 )
@@ -680,6 +687,9 @@ if env["production"]:
 
 if env["strict_checks"]:
     env.Append(CPPDEFINES=["STRICT_CHECKS"])
+
+if env["error_backtrace"]:
+    env.Append(CPPDEFINES=["ERROR_BACKTRACE_ENABLED"])
 
 # Run SCU file generation script if in a SCU build.
 if env["scu_build"]:

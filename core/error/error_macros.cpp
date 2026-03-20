@@ -30,6 +30,7 @@
 
 #include "error_macros.h"
 
+#include "core/error/error_backtrace.h"
 #include "core/io/logger.h"
 #include "core/object/object_id.h"
 #include "core/object/script_language.h"
@@ -117,6 +118,15 @@ void _err_print_error(const char *p_function, const char *p_file, int p_line, co
 
 	if (OS::get_singleton()) {
 		OS::get_singleton()->print_error(p_function, p_file, p_line, p_error, p_message, p_editor_notify, (Logger::ErrorType)p_type, ScriptServer::capture_script_backtraces(false));
+#ifdef ERROR_BACKTRACE_ENABLED
+		if (p_type == ERR_HANDLER_ERROR || p_type == ERR_HANDLER_SHADER) {
+			const String bt = backtrace_dump();
+			if (!bt.is_empty()) {
+				const CharString bt_utf8 = bt.utf8();
+				OS::get_singleton()->printerr("%s", bt_utf8.get_data());
+			}
+		}
+#endif
 	} else {
 		// Fallback if errors happen before OS init or after it's destroyed.
 		const char *err_details = (p_message && *p_message) ? p_message : p_error;

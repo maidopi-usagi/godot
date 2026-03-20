@@ -1968,6 +1968,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 		if (p_render_data->environment.is_valid()) {
 			rt_set_enabled(RendererEnvironmentStorage::get_singleton()->environment_get_pathtracing_enabled(p_render_data->environment));
+			scene_features.rt = rt_enabled;
 
 			if (environment_get_sdfgi_enabled(p_render_data->environment) && get_debug_draw_mode() != RSE::VIEWPORT_DEBUG_DRAW_UNSHADED) {
 				scene_features.set(SCENE_FEATURE_SDFGI);

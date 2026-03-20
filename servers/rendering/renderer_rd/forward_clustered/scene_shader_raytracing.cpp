@@ -304,23 +304,31 @@ SceneShaderRaytracing::~SceneShaderRaytracing() {
 		}
 	}
 	multi_hg_shaders.clear();
+
+	if (raygen_shader_version.is_valid()) {
+		raygen_shader.version_free(raygen_shader_version);
+	}
+
 	singleton = nullptr;
 }
 
 void SceneShaderRaytracing::invalidate_custom_shader_pipelines() {
-	for (const KeyValue<uint32_t, RID> &kv : multi_hg_shaders) {
-		if (kv.value.is_valid()) {
-			RD::get_singleton()->free_rid(kv.value);
-		}
-	}
-	multi_hg_shaders.clear();
-
+	// Raytracing pipelines depend on their shader (RD::_add_dependency). Freeing the shader first
+	// runs _free_dependencies and recursively frees those pipelines, so a second free_rid on the
+	// cached pipeline RIDs would hit "invalid ID". In essence: Free pipelines before shaders.
 	for (const KeyValue<uint32_t, RID> &kv : raytracing_pipelines) {
 		if (kv.value.is_valid()) {
 			RD::get_singleton()->free_rid(kv.value);
 		}
 	}
 	raytracing_pipelines.clear();
+
+	for (const KeyValue<uint32_t, RID> &kv : multi_hg_shaders) {
+		if (kv.value.is_valid()) {
+			RD::get_singleton()->free_rid(kv.value);
+		}
+	}
+	multi_hg_shaders.clear();
 }
 
 void SceneShaderRaytracing::begin_custom_shader_frame() {

@@ -136,7 +136,7 @@ void BindlessBlock::finalize(RID p_shader, uint32_t p_set_index) {
 }
 
 void BindlessBlock::clear() {
-	if (uniform_set.is_valid() && rd) {
+	if (uniform_set.is_valid() && rd && rd->uniform_set_is_valid(uniform_set)) {
 		rd->free_rid(uniform_set);
 	}
 	uniform_set = RID();
