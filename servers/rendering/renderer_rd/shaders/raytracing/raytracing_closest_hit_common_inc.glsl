@@ -99,6 +99,58 @@ void write_primary_hit_depth(vec3 hit_pos) {
 }
 
 // ============================================================================
+// ENVIRONMENT FOG (per ray segment)
+// ============================================================================
+
+vec3 fog_get_directional_color(uint index) {
+	return rt_lights[index].emission;
+}
+
+vec3 fog_get_directional_direction(uint index) {
+	vec3 world_dir = -normalize(rt_lights[index].position);
+	mat3 view_rot = transpose(mat3(
+			scene_data_block.data.view_matrix[0].xyz,
+			scene_data_block.data.view_matrix[1].xyz,
+			scene_data_block.data.view_matrix[2].xyz));
+	return view_rot * world_dir;
+}
+
+#define FOG_HAS_RADIANCE
+
+vec3 fog_sample_radiance(vec3 vertex, float mip_level) {
+	vec3 cube_view = scene_data_block.data.radiance_inverse_xform * vertex;
+	float roughness_lod = mip_level * MAX_ROUGHNESS_LOD;
+	vec2 border = vec2(scene_data_block.data.radiance_border_size,
+			1.0 - scene_data_block.data.radiance_border_size * 2.0);
+	vec2 cube_uv = vec3_to_oct_with_border(cube_view, border);
+	return textureLod(sampler2D(radiance_octmap, radiance_sampler), cube_uv, roughness_lod).rgb;
+}
+
+#include "../fog_inc.glsl"
+
+/// Apply environment fog for the ray segment that was just traversed.
+/// Attenuates throughput and adds in-scattered fog color.
+void apply_segment_fog(float segment_dist) {
+	if ((RT_FLAGS & RT_FLAG_FOG_ENABLED) == 0u) {
+		return;
+	}
+
+	// Build a view-space vertex along the ray direction at the hit distance.
+	// fog_process needs view-space position for distance and height calculations.
+	mat4 view_mat = transpose(mat4(
+			scene_data_block.data.view_matrix[0],
+			scene_data_block.data.view_matrix[1],
+			scene_data_block.data.view_matrix[2],
+			vec4(0.0, 0.0, 0.0, 1.0)));
+	vec3 world_hit = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * segment_dist;
+	vec3 vertex = (view_mat * vec4(world_hit, 1.0)).xyz;
+
+	vec4 fog = fog_process(scene_data_block.data, vertex);
+	payload.radiance += payload.throughput * fog.rgb * fog.a;
+	payload.throughput *= (1.0 - fog.a);
+}
+
+// ============================================================================
 // SHADE AND BOUNCE
 // ============================================================================
 
@@ -110,6 +162,9 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 
 	uint total_bounces = get_total_bounces(payload.packed_bounces_flags);
 	uint diffuse_bounces = get_diffuse_bounces(payload.packed_bounces_flags);
+
+	// Environment fog for this ray segment (before surface contribution).
+	apply_segment_fog(gl_HitTEXT);
 
 	// Emissive contribution.
 	payload.radiance += payload.throughput * m.emissive;

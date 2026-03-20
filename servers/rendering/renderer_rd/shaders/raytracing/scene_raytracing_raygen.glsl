@@ -141,6 +141,19 @@ void main() {
 	// Apply IBL exposure normalization
 	sky_color *= scene_data_block.data.IBL_exposure_normalization;
 
+	// Apply environment fog to sky.
+	if ((RT_FLAGS & RT_FLAG_FOG_ENABLED) != 0u) {
+		vec3 fog_color = scene_data_block.data.fog_light_color;
+
+		if (scene_data_block.data.fog_aerial_perspective > 0.0) {
+			vec3 sky_fog = textureLod(sampler2D(radiance_octmap, radiance_sampler), sky_uv, 1.0).rgb;
+			sky_fog *= scene_data_block.data.IBL_exposure_normalization;
+			fog_color = mix(fog_color, sky_fog, scene_data_block.data.fog_aerial_perspective);
+		}
+
+		sky_color = mix(sky_color, fog_color, scene_data_block.data.fog_sky_affect);
+	}
+
 	// For pathtracing mode, multiply by throughput; debug modes just use sky color directly
 	if ((RT_FLAGS & RT_FLAG_DEBUG_VIS_ENABLED) != 0u) {
 		int VIS_MODE = int(get_rt_param(RT_PARAM_VIS_MODE));
@@ -200,6 +213,9 @@ layout(set = 0, binding = 5, std430) readonly buffer MaterialBuffer {
 };
 
 #include "raytracing_lights_inc.glsl"
+
+layout(set = 0, binding = 7) uniform texture2D radiance_octmap;
+layout(set = 0, binding = 8) uniform sampler radiance_sampler;
 
 // clang-format off
 #include "raytracing_material_eval_inc.glsl"

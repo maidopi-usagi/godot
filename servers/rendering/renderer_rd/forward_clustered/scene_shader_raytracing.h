@@ -75,6 +75,7 @@ public:
 		RT_FLAG_NONE = 0,
 		RT_FLAG_DEBUG_VIS_ENABLED = (1 << 0),
 		RT_FLAG_DLSS_RR_ENABLED = (1 << 1),
+		RT_FLAG_FOG_ENABLED = (1 << 2),
 	};
 
 	constexpr static uint32_t RT_SAMPLE_COUNT_SHIFT = 8;

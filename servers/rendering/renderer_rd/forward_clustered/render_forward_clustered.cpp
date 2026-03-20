@@ -1602,6 +1602,22 @@ void RenderForwardClustered::_copy_framebuffer_to_ss_effects(Ref<RenderSceneBuff
 	ss_effects->copy_internal_texture_to_last_frame(p_render_buffers, *copy_effects);
 }
 
+uint32_t RenderForwardClustered::_count_directional_lights(const RenderDataRD *p_render_data) {
+	// TODO: Cache this? Seems wasteful to recalculate every frame, it changes rarely.
+	if (!p_render_data || !p_render_data->lights) {
+		return 0;
+	}
+	RendererRD::LightStorage *ls = RendererRD::LightStorage::get_singleton();
+	uint32_t count = 0;
+	for (uint32_t li = 0; li < (uint32_t)p_render_data->lights->size(); li++) {
+		RID base = ls->light_instance_get_base_light((*p_render_data->lights)[li]);
+		if (ls->light_get_type(base) == RSE::LIGHT_DIRECTIONAL) {
+			count++;
+		}
+	}
+	return count;
+}
+
 void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer) {
 	// RT rendering handles shadows and GI itself, so we don't need to render them here
 	if (rt_enabled) {
@@ -2021,6 +2037,11 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	_setup_lightmaps(p_render_data, *p_render_data->lightmaps, p_render_data->scene_data->cam_transform);
 	_setup_voxelgis(*p_render_data->voxel_gi_instances);
+
+	if (rt_enabled) {
+		p_render_data->scene_data->directional_light_count = _count_directional_lights(p_render_data);
+	}
+
 	uint32_t depth_prepass_uniform_buffer_index = _setup_environment(p_render_data, is_reflection_probe, screen_size, screen_size, p_default_bg_color, false);
 
 	// May have changed due to the above (light buffer enlarged, as an example).
@@ -2448,6 +2469,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				if ((uint32_t)env_params[SceneShaderRaytracing::RT_PARAM_DENOISER] == RSE::PT_DENOISER_DLSS_RAY_RECONSTRUCTION) {
 					rt_flags |= SceneShaderRaytracing::RT_FLAG_DLSS_RR_ENABLED;
 				}
+			}
+
+			if (environment_get_fog_enabled(p_render_data->environment)) {
+				rt_flags |= SceneShaderRaytracing::RT_FLAG_FOG_ENABLED;
 			}
 		}
 
@@ -5395,7 +5420,9 @@ void RenderForwardClustered::rt_set_enabled(bool p_enabled) {
 		raytracing = memnew(RenderRaytracing);
 		raytracing->initialize(this);
 		raytracing->shader = SceneShaderRaytracing::get_singleton();
-		raytracing->shader->init("");
+		String rt_defines;
+		rt_defines += "\n#define MAX_ROUGHNESS_LOD " + itos(get_roughness_layers() - 1) + ".0\n";
+		raytracing->shader->init(rt_defines);
 	}
 
 	rt_enabled = p_enabled;
