@@ -4030,6 +4030,7 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 
 		// Mark immutable samplers to be skipped when creating uniform set.
 		driver_uniform.immutable_sampler = uniform.immutable_sampler;
+		driver_uniform.variable_count = uniform.variable_count;
 
 		switch (uniform.uniform_type) {
 			case UNIFORM_TYPE_SAMPLER: {

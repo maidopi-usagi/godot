@@ -4714,6 +4714,7 @@ RDD::UniformSetID RenderingDeviceDriverVulkan::uniform_set_create(VectorView<Bou
 	// Immutable samplers will be skipped so we need to track the number of vk_writes used.
 	VkWriteDescriptorSet *vk_writes = ALLOCA_ARRAY(VkWriteDescriptorSet, p_uniforms.size());
 	uint32_t writes_amount = 0;
+	uint32_t variable_descriptor_count = 0;
 	for (uint32_t i = 0; i < p_uniforms.size(); i++) {
 		const BoundUniform &uniform = p_uniforms[i];
 
@@ -4932,6 +4933,12 @@ RDD::UniformSetID RenderingDeviceDriverVulkan::uniform_set_create(VectorView<Bou
 		if (add_write) {
 			vk_writes[writes_amount].dstBinding = uniform.binding;
 			vk_writes[writes_amount].descriptorCount = num_descriptors;
+			if (uniform.variable_count) {
+				ERR_FAIL_COND_V_MSG(variable_descriptor_count > 0, UniformSetID(), "Trying to create a uniform set with multiple bindings that are variable. Only the last binding can be variable!");
+
+				variable_descriptor_count = num_descriptors;
+			}
+
 			writes_amount++;
 		}
 
@@ -4954,6 +4961,16 @@ RDD::UniformSetID RenderingDeviceDriverVulkan::uniform_set_create(VectorView<Bou
 	descriptor_set_allocate_info.descriptorSetCount = 1;
 	const ShaderInfo *shader_info = (const ShaderInfo *)p_shader.id;
 	descriptor_set_allocate_info.pSetLayouts = &shader_info->vk_descriptor_set_layouts[p_set_index];
+
+	VkDescriptorSetVariableDescriptorCountAllocateInfo variable_count_info = {};
+	if (variable_descriptor_count > 0) {
+		variable_count_info.pNext = nullptr;
+		variable_count_info.descriptorSetCount = 1;
+		variable_count_info.pDescriptorCounts = &variable_descriptor_count;
+		variable_count_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
+
+		descriptor_set_allocate_info.pNext = &variable_count_info;
+	}
 
 	VkDescriptorSet vk_descriptor_set = VK_NULL_HANDLE;
 	for (KeyValue<VkDescriptorPool, uint32_t> &E : pool_sets_it->value) {
