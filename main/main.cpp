@@ -2442,7 +2442,7 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 
 	// Start with RenderingDevice-based backends.
 #ifdef RD_ENABLED
-	renderer_hints = "forward_plus,mobile,raytracing";
+	renderer_hints = "forward_plus,mobile";
 	default_renderer_mobile = "mobile";
 #endif
 
