@@ -68,7 +68,7 @@ bool is_shadow_ray(uint packed) {
 
 // Bounce limits
 #define MAX_DIFFUSE_BOUNCES 2u
-#define MAX_DENOISER_SPECULAR_HIT_THRESHOLD 0.3
+#define MAX_DENOISER_SPECULAR_HIT_THRESHOLD 0.25
 
 // ============================================================================
 // CONSTANTS

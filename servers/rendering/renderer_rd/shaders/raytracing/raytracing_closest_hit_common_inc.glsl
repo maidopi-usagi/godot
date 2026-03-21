@@ -201,26 +201,28 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 
 		imageStore(dlss_rr_normal_roughness, pixel, vec4(m.normal, m.roughness));
 
-		// Specular hit distance via inline ray query.
-		vec3 spec_dir = reflect(-V, m.normal);
-		vec3 spec_origin = offset_ray_origin(h.hit_pos, spec_dir);
+		// Specular hit distance via inline ray query (only for smooth surfaces).
+		float spec_hit_dist = -1.0;
+		if (m.roughness < MAX_DENOISER_SPECULAR_HIT_THRESHOLD) {
+			vec3 spec_dir = reflect(-V, m.normal);
+			vec3 spec_origin = offset_ray_origin(h.hit_pos, spec_dir);
 
-		rayQueryEXT spec_rq;
-		rayQueryInitializeEXT(spec_rq, tlas, RT_RAY_FLAGS | gl_RayFlagsTerminateOnFirstHitEXT,
-				0xFF, spec_origin, 0.001, spec_dir, 10000.0);
-		while (rayQueryProceedEXT(spec_rq)) {
-			if (rayQueryGetIntersectionTypeEXT(spec_rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT) {
-				if (ray_query_alpha_test(
-							rayQueryGetIntersectionInstanceCustomIndexEXT(spec_rq, false),
-							rayQueryGetIntersectionPrimitiveIndexEXT(spec_rq, false),
-							rayQueryGetIntersectionBarycentricsEXT(spec_rq, false))) {
-					rayQueryConfirmIntersectionEXT(spec_rq);
+			rayQueryEXT spec_rq;
+			rayQueryInitializeEXT(spec_rq, tlas, RT_RAY_FLAGS | gl_RayFlagsTerminateOnFirstHitEXT,
+					0xFF, spec_origin, 0.001, spec_dir, 10000.0);
+			while (rayQueryProceedEXT(spec_rq)) {
+				if (rayQueryGetIntersectionTypeEXT(spec_rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT) {
+					if (ray_query_alpha_test(
+								rayQueryGetIntersectionInstanceCustomIndexEXT(spec_rq, false),
+								rayQueryGetIntersectionPrimitiveIndexEXT(spec_rq, false),
+								rayQueryGetIntersectionBarycentricsEXT(spec_rq, false))) {
+						rayQueryConfirmIntersectionEXT(spec_rq);
+					}
 				}
 			}
-		}
-		float spec_hit_dist = -1.0;
-		if (rayQueryGetIntersectionTypeEXT(spec_rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
-			spec_hit_dist = rayQueryGetIntersectionTEXT(spec_rq, true);
+			if (rayQueryGetIntersectionTypeEXT(spec_rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+				spec_hit_dist = rayQueryGetIntersectionTEXT(spec_rq, true);
+			}
 		}
 		imageStore(dlss_rr_specular_hit_dist, pixel, vec4(spec_hit_dist));
 	}
