@@ -124,6 +124,7 @@ void BindlessBlock::finalize(RID p_shader, uint32_t p_set_index) {
 	RD::Uniform u;
 	u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 	u.binding = 0;
+	u.variable_count = true;
 	for (uint32_t i = 0; i < textures.size(); i++) {
 		u.append_id(textures[i]);
 	}

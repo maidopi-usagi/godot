@@ -1060,6 +1060,8 @@ public:
 		uint32_t binding = 0; // Binding index as specified in shader.
 		// This flag specifies that this is an immutable sampler to be set when creating pipeline layout.
 		bool immutable_sampler = false;
+		// This flag specifies that this uniform uses descriptor indexing. Note that his can only be used by the last uniform in the set.
+		bool variable_count = false;
 
 	private:
 		// In most cases only one ID is provided per binding, so avoid allocating memory unnecessarily for performance.
