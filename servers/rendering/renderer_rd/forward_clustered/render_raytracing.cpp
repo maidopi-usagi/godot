@@ -1122,7 +1122,7 @@ _FORCE_INLINE_ static uint32_t _rt_indices_to_primitives(RSE::PrimitiveType p_pr
 }
 
 void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data) {
-	if (!owner->rt_enabled || !p_render_data || !p_render_data->rt_instances) {
+	if (!p_render_data || !p_render_data->rt_instances) {
 		return;
 	}
 
@@ -1420,10 +1420,6 @@ uint32_t RenderRaytracing::gather_lights(const RenderDataRD *p_render_data, RT_L
 // ---------------------------------------------------------------------------
 
 void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data) {
-	if (!owner->rt_enabled) {
-		return;
-	}
-
 	if (uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(uniform_set)) {
 		RD::get_singleton()->free_rid(uniform_set);
 	}
@@ -1669,10 +1665,6 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data) {
 // ---------------------------------------------------------------------------
 
 void RenderRaytracing::copy_output_texture(const RenderDataRD *p_render_data) {
-	if (!owner->rt_enabled) {
-		return;
-	}
-
 	Ref<RenderSceneBuffersRD> rb = p_render_data->render_buffers;
 	ERR_FAIL_COND(rb.is_null());
 
