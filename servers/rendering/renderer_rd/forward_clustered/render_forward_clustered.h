@@ -199,8 +199,6 @@ private:
 
 	RID render_base_uniform_set;
 
-	bool rt_enabled = false;
-
 	uint64_t lightmap_texture_array_version = 0xFFFFFFFF;
 
 	void _update_render_base_uniform_set();
@@ -830,6 +828,9 @@ private:
 	void _pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer);
 	void _process_sss(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection &p_camera);
 
+	/* RayTracing */
+	bool _setup_rt();
+
 	/* Debug */
 	void _debug_draw_cluster(Ref<RenderSceneBuffersRD> p_render_buffers);
 
@@ -889,11 +890,6 @@ public:
 
 	virtual void mesh_generate_pipelines(RID p_mesh, bool p_background_compilation) override;
 	virtual uint32_t get_pipeline_compilations(RSE::PipelineSource p_source) override;
-
-	/* RAYTRACING */
-
-	void rt_set_enabled(bool p_enabled);
-	bool rt_is_enabled() const { return rt_enabled; }
 
 	/* SHADER LIBRARY */
 

@@ -1619,11 +1619,6 @@ uint32_t RenderForwardClustered::_count_directional_lights(const RenderDataRD *p
 }
 
 void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer) {
-	// RT rendering handles shadows and GI itself, so we don't need to render them here
-	if (rt_enabled) {
-		return;
-	}
-
 	// Render shadows while GI is rendering, due to how barriers are handled, this should happen at the same time
 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
 	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
@@ -1823,6 +1818,15 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	}
 	bool is_reflection_probe = p_render_data->reflection_probe.is_valid();
 
+	// Resolve scene feature flags from environment.
+	// Reading via .has()/.get() automatically masks off RT-incompatible features.
+	SceneFeatures scene_features;
+	scene_features.rt = false;
+
+	if (!is_reflection_probe && p_render_data->environment.is_valid() && RendererEnvironmentStorage::get_singleton()->environment_get_pathtracing_enabled(p_render_data->environment)) {
+		scene_features.rt = _setup_rt();
+	}
+
 	static const int texture_multisamples[RSE::VIEWPORT_MSAA_MAX] = { 1, 2, 4, 8 };
 
 	//first of all, make a new render pass
@@ -1856,7 +1860,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 		p_render_data->voxel_gi_count = 0;
 
-		if (!rt_enabled && rb->has_custom_data(RB_SCOPE_SDFGI)) {
+		if (!scene_features.rt && rb->has_custom_data(RB_SCOPE_SDFGI)) {
 			Ref<RendererRD::GI::SDFGI> sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
 			if (sdfgi.is_valid()) {
 				sdfgi->update_cascades();
@@ -1944,11 +1948,6 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	bool reverse_cull = p_render_data->scene_data->cam_transform.basis.determinant() < 0;
 	bool using_motion_pass = rb_data.is_valid() && (using_upscaling || using_taa);
 
-	// Resolve scene feature flags from environment.
-	// Reading via .has()/.get() automatically masks off RT-incompatible features.
-	SceneFeatures scene_features;
-	scene_features.rt = rt_enabled;
-
 	if (is_reflection_probe) {
 		uint32_t resolution = light_storage->reflection_probe_instance_get_resolution(p_render_data->reflection_probe);
 		screen_size.x = resolution;
@@ -1983,9 +1982,6 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		}
 
 		if (p_render_data->environment.is_valid()) {
-			rt_set_enabled(RendererEnvironmentStorage::get_singleton()->environment_get_pathtracing_enabled(p_render_data->environment));
-			scene_features.rt = rt_enabled;
-
 			if (environment_get_sdfgi_enabled(p_render_data->environment) && get_debug_draw_mode() != RSE::VIEWPORT_DEBUG_DRAW_UNSHADED) {
 				scene_features.set(SCENE_FEATURE_SDFGI);
 			}
@@ -2006,7 +2002,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 		// Free GPU resources for screen-space effects disabled by raytracing.
 		// SDFGI cleanup is handled by sdfgi_update(); these cover SSIL/SSR/SSAO.
-		if (rt_enabled) {
+		if (scene_features.rt) {
 			rb->clear_context(RB_SCOPE_SSIL);
 			rb->clear_context(RB_SCOPE_SSAO);
 			rb->clear_context(RB_SCOPE_SSR);
@@ -2038,7 +2034,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	_setup_lightmaps(p_render_data, *p_render_data->lightmaps, p_render_data->scene_data->cam_transform);
 	_setup_voxelgis(*p_render_data->voxel_gi_instances);
 
-	if (rt_enabled) {
+	if (scene_features.rt) {
 		p_render_data->scene_data->directional_light_count = _count_directional_lights(p_render_data);
 	}
 
@@ -2050,11 +2046,11 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	// _fill_render_list always populates MOTION and ALPHA as side-effects of the OPAQUE pass.
 	// When RT is enabled the TLAS is built from rt_instances (in _rt_tlas_create), so we only
 	// need the render list for MOTION (rasterized per-object motion vectors) and ALPHA.
-	_fill_render_list(RENDER_LIST_OPAQUE, p_render_data, PASS_MODE_COLOR, using_sdfgi, using_sdfgi || using_voxelgi, using_motion_pass, false, rt_enabled);
+	_fill_render_list(RENDER_LIST_OPAQUE, p_render_data, PASS_MODE_COLOR, using_sdfgi, using_sdfgi || using_voxelgi, using_motion_pass, false, scene_features.rt);
 
 	int *render_info = p_render_data->render_info ? p_render_data->render_info->info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE] : (int *)nullptr;
 
-	if (rt_enabled) {
+	if (scene_features.rt) {
 		// RT path: skip opaque sort/instance data -- only motion + alpha are rasterized.
 		// TLAS transforms come from rt_instances via _rt_tlas_create, not the render list.
 		render_list[RENDER_LIST_MOTION].sort_by_key();
@@ -2074,7 +2070,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	}
 
 	// Create TLAS for raytracing if enabled
-	if (rt_enabled && rb_data.is_valid() && raytracing && raytracing->get_shader()) {
+	if (scene_features.rt && rb_data.is_valid() && raytracing && raytracing->get_shader()) {
 		// Create or destroy DLSS RR buffers based on denoiser selection.
 		// This must happen BEFORE update_uniform_set so the correct buffers are bound.
 		bool dlss_rr_enabled = false;
@@ -2361,7 +2357,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	RID rp_uniform_set;
 
 	// Skip opaque color pass when raytracing is enabled - RT doesn't use rasterization pipeline
-	if (!rt_enabled) {
+	if (!scene_features.rt) {
 		RID normal_roughness_views[RendererSceneRender::MAX_RENDER_VIEWS];
 		if (rb_data.is_valid() && rb_data->has_normal_roughness()) {
 			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
@@ -2440,7 +2436,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	}
 
 	// Execute raytracing if enabled (replaces opaque/motion vector pass)
-	if (rt_enabled && rb_data.is_valid() && raytracing && raytracing->get_shader()) {
+	if (scene_features.rt && rb_data.is_valid() && raytracing && raytracing->get_shader()) {
 		RD::get_singleton()->draw_command_begin_label("Raytracing");
 		RENDER_TIMESTAMP("TLAS Build");
 
@@ -2544,7 +2540,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	{
 		// Skip color MSAA resolve when raytracing - RT output is already in internal_texture.
-		if (!rt_enabled && ce_post_opaque_resolved_color) {
+		if (!scene_features.rt && ce_post_opaque_resolved_color) {
 			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
 				RD::get_singleton()->texture_resolve_multisample(rb->get_color_msaa(v), rb->get_internal_texture(v));
 			}
@@ -2599,7 +2595,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RENDER_TIMESTAMP("Resolve MSAA");
 
 		// Skip color MSAA resolve when raytracing - RT output is already in internal_texture.
-		if (!rt_enabled && (scene_state.used_screen_texture || using_separate_specular || ce_pre_transparent_resolved_color)) {
+		if (!scene_features.rt && (scene_state.used_screen_texture || using_separate_specular || ce_pre_transparent_resolved_color)) {
 			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
 				RD::get_singleton()->texture_resolve_multisample(rb->get_color_msaa(v), rb->get_internal_texture(v));
 			}
@@ -2683,7 +2679,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			// Fairly unlikely scenario though.
 
 			// Skip color MSAA resolve when raytracing - RT output is already in internal_texture.
-			if (!rt_enabled && ce_pre_transparent_resolved_color) {
+			if (!scene_features.rt && ce_pre_transparent_resolved_color) {
 				for (uint32_t v = 0; v < rb->get_view_count(); v++) {
 					RD::get_singleton()->texture_resolve_multisample(rb->get_color_msaa(v), rb->get_internal_texture(v));
 				}
@@ -2732,7 +2728,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		for (uint32_t v = 0; v < rb->get_view_count(); v++) {
 			// Skip color MSAA resolve when raytracing - RT output is already in internal_texture
 			// and MSAA color buffer is empty since we skipped rasterization.
-			if (!rt_enabled) {
+			if (!scene_features.rt) {
 				RD::get_singleton()->texture_resolve_multisample(rb->get_color_msaa(v), rb->get_internal_texture(v));
 			}
 			resolve_effects->resolve_depth(rb->get_depth_msaa(v), rb->get_depth_texture(v), rb->get_internal_size(), texture_multisamples[msaa]);
@@ -5407,16 +5403,13 @@ void RenderForwardClustered::_update_shader_quality_settings() {
 
 // Raytracing methods
 
-void RenderForwardClustered::rt_set_enabled(bool p_enabled) {
+bool RenderForwardClustered::_setup_rt() {
 	if (!RD::get_singleton()->has_feature(RD::SUPPORTS_RAYTRACING_PIPELINE)) {
-		rt_enabled = false;
-		if (p_enabled) {
-			WARN_PRINT("Raytracing not supported on this device.");
-		}
-		return;
+		WARN_PRINT_ONCE("Raytracing not supported on this device.");
+		return false;
 	}
 
-	if (p_enabled && !raytracing) {
+	if (!raytracing) {
 		raytracing = memnew(RenderRaytracing);
 		raytracing->initialize(this);
 		raytracing->shader = SceneShaderRaytracing::get_singleton();
@@ -5425,7 +5418,7 @@ void RenderForwardClustered::rt_set_enabled(bool p_enabled) {
 		raytracing->shader->init(rt_defines);
 	}
 
-	rt_enabled = p_enabled;
+	return true;
 }
 
 RenderForwardClustered::RenderForwardClustered() {
