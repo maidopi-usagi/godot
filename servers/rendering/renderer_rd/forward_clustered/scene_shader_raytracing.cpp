@@ -344,6 +344,11 @@ uint32_t SceneShaderRaytracing::register_custom_shader(uint32_t p_shader_id, RID
 
 	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
 	String code = material_storage->material_get_shader_code(p_material);
+	if (code.is_empty()) {
+		// ShaderMaterial without a Shader, silently fall back to default material
+		frame_shader_id_to_hg[p_shader_id] = 0;
+		return 0;
+	}
 	uint64_t code_hash = code.hash64();
 
 	HashMap<uint32_t, CustomShaderEntry>::Iterator cache_it = compilation_cache.find(p_shader_id);
