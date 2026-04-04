@@ -2098,6 +2098,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		}
 		if (dlss_rr_enabled) {
 			rb_data->dlss_rr_ensure_buffers();
+			scene_features.set(SCENE_FEATURE_DEPTH_RECONSTRUCT);
 		} else if (rb_data->dlss_rr_has_buffers()) {
 			rb_data->dlss_rr_free_buffers();
 		}
@@ -2589,7 +2590,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		_debug_sdfgi_probes(rb, color_only_framebuffer, p_render_data->scene_data->view_count, cms);
 	}
 
-	if (draw_sky || draw_sky_fog_only) {
+	if ((draw_sky || draw_sky_fog_only) && !scene_features.rt) {
 		RENDER_TIMESTAMP("Render Sky");
 
 		RD::get_singleton()->draw_command_begin_label("Draw Sky");
@@ -2763,6 +2764,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		_process_compositor_effects(RSE::COMPOSITOR_EFFECT_CALLBACK_TYPE_POST_TRANSPARENT, p_render_data);
 	}
 
+	if (rb_data.is_valid()) {
+		rb->set_depth_reconstruct_requested(scene_features.has(SCENE_FEATURE_DEPTH_RECONSTRUCT));
+	}
+
 	if (rb_data.is_valid() && (using_upscaling || using_taa)) {
 		if (scale_type == SCALE_FSR2) {
 			rb_data->ensure_fsr2(fsr2_effect);
@@ -2847,6 +2852,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				// Enable DLSS Ray Reconstruction if raytracing buffers are available
 				if (rb_data->dlss_rr_has_buffers()) {
 					params.dlss_rr = true;
+					params.dlss_rr_alpha_upscaling = false;
 					params.dlss_rr_diffuse_albedo = rb_data->dlss_rr_get_diffuse_albedo();
 					params.dlss_rr_specular_albedo = rb_data->dlss_rr_get_specular_albedo();
 					params.dlss_rr_normal_roughness = rb_data->dlss_rr_get_normal_roughness();
@@ -2982,9 +2988,16 @@ void RenderForwardClustered::_render_buffers_debug_draw(const RenderDataRD *p_re
 		}
 
 		if (get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_DLSS_RR_SPECULAR_HIT_DIST) {
-			// Specular hit distance is R16F, display as grayscale
 			copy_effects->copy_to_fb_rect(rb_data->dlss_rr_get_specular_hit_dist(), fb, Rect2(Vector2(), rtsize), false, true);
 		}
+
+	}
+
+	if (get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_RECONSTRUCTED_DEPTH && rb->has_texture(RB_SCOPE_BUFFERS, RB_TEX_RECONSTRUCTED_DEPTH)) {
+		Size2i rtsize = texture_storage->render_target_get_size(render_target);
+		RID fb = texture_storage->render_target_get_rd_framebuffer(render_target);
+		RID depth_tex = rb->get_texture(RB_SCOPE_BUFFERS, RB_TEX_RECONSTRUCTED_DEPTH);
+		copy_effects->copy_to_fb_rect(depth_tex, fb, Rect2(Vector2(), rtsize), false, true, false, false, RID(), false, false, false, false, Rect2(), 1.0, RendererRD::CopyEffects::COPY_TO_FB_FLAG_MODE_LOG_LUMINANCE);
 	}
 }
 

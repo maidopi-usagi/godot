@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  dlss.h                                                                */
+/*  depth_reconstruct.h                                                   */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,70 +30,52 @@
 
 #pragma once
 
-#include "servers/rendering/renderer_rd/shader_rd.h"
-
-#include "servers/rendering/renderer_rd/shaders/effects/motion_vector_decode.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/effects/depth_reconstruct.glsl.gen.h"
 
 namespace RendererRD {
 
-class DLSSEffect;
-class DLSSContext {
-public:
-	struct Parameters {
-		DLSSContext *context;
-		Size2i internal_size;
-		RID color;
-		RID depth;
-		RID velocity;
-		RID reactive;
-		RID exposure;
-		RID output;
-		float z_near = 0.0f;
-		float z_far = 0.0f;
-		float fovy = 0.0f;
-		bool reverse_depth = true;
-		Vector2 jitter;
-		float delta_time = 0.0f;
-		float sharpness = 0.0f;
-		char preset = '?';
-		bool reset_accumulation = false;
-		Projection reprojection;
-		Projection cam_projection;
-		Transform3D cam_transform;
-		bool dlss_g = false;
-
-		// DLSS Ray Reconstruction buffers
-		bool dlss_rr = false; // Enable DLSS-RR mode instead of regular DLSS
-		bool dlss_rr_alpha_upscaling = false; // Upscale alpha channel (needed for depth reconstruction)
-		RID dlss_rr_diffuse_albedo; // Diffuse albedo buffer (RGB)
-		RID dlss_rr_specular_albedo; // Specular albedo buffer (RGB)
-		RID dlss_rr_normal_roughness; // World-space normal (XYZ) + roughness (W)
-		RID dlss_rr_specular_hit_dist; // Specular hit distance (R16F, -1 = sky)
-	} last_parameters;
-	DLSSEffect *last_effect = nullptr;
-	bool is_d3d12 = false;
-	int delay = 4; // Warmup frames before DLSS evaluates (Vulkan stability workaround).
-
-	virtual ~DLSSContext() {}
-};
-
-class DLSSEffect {
-public:
-	struct Shaders {
-		MotionVectorDecodeShaderRD mvec_decode_shader;
-		RID mvec_decode_version;
-		RID mvec_decode_pipeline;
-	} shaders;
-
-	DLSSEffect();
-	~DLSSEffect();
-	DLSSContext *create_context(Size2i p_internal_size, Size2i p_target_size);
-	void upscale(const DLSSContext::Parameters &p_params);
-	bool is_ready(DLSSContext *context);
-
+/// Reconstructs a full-resolution depth buffer from low-res depth using
+/// joint bilateral upsampling guided by the upscaled color buffer, with
+/// temporal accumulation via motion-vector reprojection (8-frame history).
+class DepthReconstruct {
 private:
-	void _upscale_internal(RDD::CommandBufferID cmdid, const DLSSContext::Parameters &p_params);
-	static void _upscale_internal_graph_callback(RenderingDeviceDriver *p_driver, RDD::CommandBufferID p_command_buffer, void *p_userdata);
+	struct PushConstant {
+		int32_t target_size[2];
+		int32_t lowres_size[2];
+		float z_near;
+		float z_far;
+		float history_weight;
+		float _pad;
+	};
+
+	PushConstant push_constant;
+	DepthReconstructShaderRD shader;
+	RID shader_version;
+	RID pipeline;
+
+	RID history_texture;
+	Size2i history_size;
+	int frame_count = 0;
+
+	void _ensure_history_texture(const Size2i &p_size);
+
+public:
+	DepthReconstruct();
+	~DepthReconstruct();
+
+	/// Reconstruct full-resolution depth with temporal accumulation.
+	/// @param p_lowres_depth    Low-resolution depth texture (reverse-Z).
+	/// @param p_upscaled_color  Upscaled color texture for edge guidance.
+	/// @param p_velocity        Motion vector texture (RG16F, prev_uv - current_uv).
+	/// @param p_dest_depth      Output R32F image at target resolution.
+	/// @param p_target_size     Target (output) resolution.
+	/// @param p_lowres_size     Low-resolution input size.
+	/// @param p_z_near          Camera near plane.
+	/// @param p_z_far           Camera far plane.
+	void process(RID p_lowres_depth, RID p_upscaled_color, RID p_velocity,
+			RID p_dest_depth,
+			const Size2i &p_target_size, const Size2i &p_lowres_size,
+			float p_z_near, float p_z_far);
 };
 
 } // namespace RendererRD

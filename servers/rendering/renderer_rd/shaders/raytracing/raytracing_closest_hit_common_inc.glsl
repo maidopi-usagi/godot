@@ -136,7 +136,7 @@ vec3 fog_sample_radiance(vec3 vertex, float mip_level) {
 
 /// Apply environment fog for the ray segment that was just traversed.
 /// Attenuates throughput and adds in-scattered fog color.
-void apply_segment_fog(float segment_dist) {
+void apply_segment_fog(float segment_dist, inout vec3 radiance, inout vec3 throughput) {
 	if ((RT_FLAGS & RT_FLAG_FOG_ENABLED) == 0u) {
 		return;
 	}
@@ -152,8 +152,8 @@ void apply_segment_fog(float segment_dist) {
 	vec3 vertex = (view_mat * vec4(world_hit, 1.0)).xyz;
 
 	vec4 fog = fog_process(scene_data_block.data, vertex);
-	payload.radiance += payload.throughput * fog.rgb * fog.a;
-	payload.throughput *= (1.0 - fog.a);
+	radiance += throughput * fog.rgb * fog.a;
+	throughput *= (1.0 - fog.a);
 }
 
 // ============================================================================
@@ -163,20 +163,23 @@ void apply_segment_fog(float segment_dist) {
 /// Production shading: emissive + NEE direct lighting + BRDF importance sampling + next bounce.
 /// Also handles DLSS-RR G-buffer output on primary ray.
 void shade_and_bounce(HitData h, MaterialResult m) {
+	PathState ps = path_unpack(payload);
+
 	vec3 V = -gl_WorldRayDirectionEXT;
 	float NdotV = max(dot(m.normal, V), 0.0001);
 
-	uint total_bounces = get_total_bounces(payload.packed_bounces_flags);
-	uint diffuse_bounces = get_diffuse_bounces(payload.packed_bounces_flags);
+	uint total_bounces = get_total_bounces(ps.packed_bounces_flags);
+	uint diffuse_bounces = get_diffuse_bounces(ps.packed_bounces_flags);
 
 	// Environment fog for this ray segment (before surface contribution).
-	apply_segment_fog(gl_HitTEXT);
+	apply_segment_fog(gl_HitTEXT, ps.radiance, ps.throughput);
 
 	// Emissive contribution.
-	payload.radiance += payload.throughput * m.emissive;
+	ps.radiance += ps.throughput * m.emissive;
 
 	// Bounce limit check.
 	if (total_bounces >= RT_GET_MAX_BOUNCES() || diffuse_bounces >= MAX_DIFFUSE_BOUNCES) {
+		path_pack(payload, ps);
 		return;
 	}
 
@@ -196,7 +199,7 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 	// DLSS Ray Reconstruction output (primary ray, sample 0 only)
 	// =================================================================
 #ifdef DLSS_RR_ENABLED
-	if (total_bounces == 0u && is_sample_zero(payload.packed_bounces_flags)) {
+	if (total_bounces == 0u && is_sample_zero(ps.packed_bounces_flags)) {
 		ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
 
 		vec3 diffuse_albedo = DLSSRR_computeDiffuseAlbedo(m.albedo, m.metalness);
@@ -237,13 +240,15 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 	// =================================================================
 	// NEE: Next Event Estimation (direct light sampling)
 	// =================================================================
+	path_pack(payload, ps);
+
 	uint rt_light_count = uint(get_rt_param(RT_PARAM_LIGHT_COUNT));
 	if (rt_light_count > 0u) {
 		vec3 hit_pos_offset = offset_ray_origin(h.hit_pos, h.geometry_normal);
 		bool is_indirect = (diffuse_bounces > 0u);
 		vec3 direct_light = lights_evaluate_direct_lighting(
-				hit_pos_offset, m.normal, V, brdf_mat, payload.rng_state, is_indirect, rt_light_count);
-		payload.radiance += payload.throughput * direct_light;
+				hit_pos_offset, m.normal, V, brdf_mat, ps.rng_state, is_indirect, rt_light_count);
+		ps.radiance += ps.throughput * direct_light;
 	}
 
 	// =================================================================
@@ -259,30 +264,32 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 		brdfType = DIFFUSE_TYPE;
 	} else {
 		float brdfProbability = clamp(specularLum / (specularLum + diffuseLum), 0.01, 0.99);
-		if (rand(payload.rng_state) < brdfProbability) {
+		if (rand(ps.rng_state) < brdfProbability) {
 			brdfType = SPECULAR_TYPE;
-			payload.throughput /= brdfProbability;
+			ps.throughput /= brdfProbability;
 		} else {
 			brdfType = DIFFUSE_TYPE;
-			payload.throughput /= (1.0 - brdfProbability);
+			ps.throughput /= (1.0 - brdfProbability);
 		}
 	}
 
-	vec2 u = rand2(payload.rng_state);
+	vec2 u = rand2(ps.rng_state);
 	vec3 next_dir;
 	vec3 brdf_weight;
 	if (!evalIndirectCombinedBRDF(u, m.normal, h.geometry_normal, V, brdf_mat, brdfType, next_dir, brdf_weight, vec4(0.0))) {
+		path_pack(payload, ps);
 		return;
 	}
 
-	payload.throughput *= brdf_weight;
+	ps.throughput *= brdf_weight;
 
 	if (brdfType == DIFFUSE_TYPE) {
-		payload.packed_bounces_flags = inc_diffuse_bounce(payload.packed_bounces_flags);
+		ps.packed_bounces_flags = inc_diffuse_bounce(ps.packed_bounces_flags);
 	} else {
-		payload.packed_bounces_flags = inc_total_bounce(payload.packed_bounces_flags);
+		ps.packed_bounces_flags = inc_total_bounce(ps.packed_bounces_flags);
 	}
 
+	path_pack(payload, ps);
 	vec3 ray_origin = offset_ray_origin(h.hit_pos, h.geometry_normal);
 	traceRayEXT(tlas, RT_RAY_FLAGS, 0xFF, 0, 0, 0, ray_origin, 0.001, next_dir, 10000.0, 0);
 }

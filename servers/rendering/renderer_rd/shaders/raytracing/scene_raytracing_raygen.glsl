@@ -44,20 +44,21 @@ void main() {
 	vec3 total_radiance = vec3(0.0);
 
 	[[dont_unroll]] for (uint sample_idx = 0u; sample_idx < samples_per_pixel; sample_idx++) {
-		// Initialize payload for this sample
-		payload.radiance = vec3(0.0);
-		payload.throughput = vec3(1.0);
-		// Set sample 0 flag so closest_hit only writes DLSS RR outputs on first sample
-		payload.packed_bounces_flags = (sample_idx == 0u) ? set_sample_zero(0u) : 0u;
-		payload.rng_state = init_rng(pixel, frame_index, sample_idx);
+		PathState ps;
+		ps.radiance = vec3(0.0);
+		ps.throughput = vec3(1.0);
+		ps.packed_bounces_flags = (sample_idx == 0u) ? set_sample_zero(0u) : 0u;
+		ps.rng_state = init_rng(pixel, frame_index, sample_idx);
+		path_pack(payload, ps);
 
 		traceRayEXT(tlas, RT_RAY_FLAGS, 0xFF, 0, 0, 0, origin.xyz, 0.001, direction.xyz, 10000.0, 0);
 
-		total_radiance += payload.radiance;
+		ps = path_unpack(payload);
+		total_radiance += ps.radiance;
 	}
 
-	// Average samples
 	vec3 final_radiance = total_radiance / float(samples_per_pixel);
+
 	imageStore(image, ivec2(pixel), vec4(final_radiance, 1.0));
 }
 
@@ -86,9 +87,12 @@ layout(set = 0, binding = 7) uniform texture2D radiance_octmap;
 layout(set = 0, binding = 8) uniform sampler radiance_sampler;
 
 void main() {
+	PathState ps = path_unpack(payload);
+
 	// Shadow rays that miss mean the light is visible (no occluder).
-	if (is_shadow_ray(payload.packed_bounces_flags)) {
-		payload.radiance = vec3(1.0);
+	if (is_shadow_ray(ps.packed_bounces_flags)) {
+		ps.radiance = vec3(1.0);
+		path_pack(payload, ps);
 		return;
 	}
 
@@ -97,51 +101,41 @@ void main() {
 		int VIS_MODE = int(get_rt_param(RT_PARAM_VIS_MODE));
 
 		// Special handling for specular hit distance mode
-		if (VIS_MODE == 13 && get_total_bounces(payload.packed_bounces_flags) > 0u) {
-			// Return -1 to signal sky hit
-			payload.radiance = vec3(-1.0, 0.0, 0.0);
+		if (VIS_MODE == 13 && get_total_bounces(ps.packed_bounces_flags) > 0u) {
+			ps.radiance = vec3(-1.0, 0.0, 0.0);
+			path_pack(payload, ps);
 			return;
 		}
 	}
 
 	// Primary ray miss: write depth and DLSS RR defaults (sample 0 only).
 	{
-		uint total_bounces = get_total_bounces(payload.packed_bounces_flags);
-		if (total_bounces == 0u && is_sample_zero(payload.packed_bounces_flags)) {
+		uint total_bounces = get_total_bounces(ps.packed_bounces_flags);
+		if (total_bounces == 0u && is_sample_zero(ps.packed_bounces_flags)) {
 			ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
 
-			// Reverse-Z far plane = 0.0.
 			imageStore(rt_depth_image, pixel, vec4(0.0));
 
 #ifdef DLSS_RR_ENABLED
-			// Sky has no surface - write zeros for albedo/normals.
 			imageStore(dlss_rr_diffuse_albedo, pixel, vec4(0.0));
 			imageStore(dlss_rr_specular_albedo, pixel, vec4(0.0));
-			// Normal pointing towards camera, zero roughness (sky is infinitely far).
 			imageStore(dlss_rr_normal_roughness, pixel, vec4(-gl_WorldRayDirectionEXT, 0.0));
-			// Sky hit distance: -1 indicates infinite/sky.
 			imageStore(dlss_rr_specular_hit_dist, pixel, vec4(-1.0));
 #endif
 		}
 	}
 
-	// Transform ray direction from world to sky space (user can rotate the skybox in world environment, this will make sure it is handled)
 	mat3 camera_basis = mat3(scene_data_block.data.inv_view_matrix);
 	mat3 world_to_sky = scene_data_block.data.radiance_inverse_xform * camera_basis;
 	vec3 sky_dir = world_to_sky * gl_WorldRayDirectionEXT;
 
-	// Convert to octahedral UV with border handling
 	vec2 border = vec2(scene_data_block.data.radiance_border_size,
 			1.0 - scene_data_block.data.radiance_border_size * 2.0);
 	vec2 sky_uv = vec3_to_oct_with_border(sky_dir, border);
 
-	// Sample sky radiance at LOD 0 (sharpest)
 	vec3 sky_color = textureLod(sampler2D(radiance_octmap, radiance_sampler), sky_uv, 0.0).rgb;
-
-	// Apply IBL exposure normalization
 	sky_color *= scene_data_block.data.IBL_exposure_normalization;
 
-	// Apply environment fog to sky.
 	if ((RT_FLAGS & RT_FLAG_FOG_ENABLED) != 0u) {
 		vec3 fog_color = scene_data_block.data.fog_light_color;
 
@@ -154,18 +148,20 @@ void main() {
 		sky_color = mix(sky_color, fog_color, scene_data_block.data.fog_sky_affect);
 	}
 
-	// For pathtracing mode, multiply by throughput; debug modes just use sky color directly
 	if ((RT_FLAGS & RT_FLAG_DEBUG_VIS_ENABLED) != 0u) {
 		int VIS_MODE = int(get_rt_param(RT_PARAM_VIS_MODE));
-		if (VIS_MODE == 0) {
-			payload.radiance += payload.throughput * sky_color;
+		if (VIS_MODE == 20) {
+			ps.radiance = vec3(1.0);
+		} else if (VIS_MODE == 0) {
+			ps.radiance += ps.throughput * sky_color;
 		} else {
-			payload.radiance = sky_color;
+			ps.radiance = sky_color;
 		}
 	} else {
-		// Production: always pathtracing
-		payload.radiance += payload.throughput * sky_color;
+		ps.radiance += ps.throughput * sky_color;
 	}
+
+	path_pack(payload, ps);
 }
 
 #[closest_hit]
@@ -239,75 +235,59 @@ void debug_visualize(
 		float roughness,
 		vec3 V,
 		float NdotV) {
+	PathState ps = path_unpack(payload);
+
 	if (vis_mode == 1) {
-		// Mirror reflection using geometry normal
-		if (get_total_bounces(payload.packed_bounces_flags) == 0u) {
-			payload.packed_bounces_flags = inc_total_bounce(payload.packed_bounces_flags);
+		if (get_total_bounces(ps.packed_bounces_flags) == 0u) {
+			ps.packed_bounces_flags = inc_total_bounce(ps.packed_bounces_flags);
 			vec3 hit_pos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
 			vec3 reflect_dir = reflect(gl_WorldRayDirectionEXT, geometry_normal);
 			vec3 ray_origin = hit_pos + geometry_normal * 0.01;
+			path_pack(payload, ps);
 			traceRayEXT(tlas, RT_RAY_FLAGS, 0xFF, 0, 0, 0, ray_origin, 0.001, reflect_dir, 10000.0, 0);
+			return;
 		} else {
-			payload.radiance = geometry_normal * 0.5 + 0.5;
+			ps.radiance = geometry_normal * 0.5 + 0.5;
 		}
 	} else if (vis_mode == 2) {
-		// Geometry normals (world space, no normal map)
-		payload.radiance = geometry_normal * 0.5 + 0.5;
+		ps.radiance = geometry_normal * 0.5 + 0.5;
 	} else if (vis_mode == 3) {
-		// Final normals (with normal map applied)
-		payload.radiance = final_normal * 0.5 + 0.5;
+		ps.radiance = final_normal * 0.5 + 0.5;
 	} else if (vis_mode == 4) {
-		// Normal map raw (tangent space)
-		payload.radiance = tangent_space_normal * 0.5 + 0.5;
+		ps.radiance = tangent_space_normal * 0.5 + 0.5;
 	} else if (vis_mode == 5) {
-		// Tangent visualization
-		payload.radiance = world_tangent * 0.5 + 0.5;
+		ps.radiance = world_tangent * 0.5 + 0.5;
 	} else if (vis_mode == 6) {
-		// Bitangent visualization
-		payload.radiance = world_bitangent * 0.5 + 0.5;
+		ps.radiance = world_bitangent * 0.5 + 0.5;
 	} else if (vis_mode == 7) {
-		// UV visualization
-		payload.radiance = vec3(fract(uv), 0.0);
+		ps.radiance = vec3(fract(uv), 0.0);
 	} else if (vis_mode == 8) {
-		// Albedo only (unlit)
-		payload.radiance = albedo;
+		ps.radiance = albedo;
 	} else if (vis_mode == 9) {
-		// ORM texture (Occlusion=R, Roughness=G, Metallic=B)
-		payload.radiance = orm;
-	}
-	// =========================================================================
-	// DLSS-RR STYLE VISUALIZATION MODES
-	// =========================================================================
-	else if (vis_mode == 10) {
-		// Diffuse Albedo
-		payload.radiance = DLSSRR_computeDiffuseAlbedo(albedo, metalness);
+		ps.radiance = orm;
+	} else if (vis_mode == 10) {
+		ps.radiance = DLSSRR_computeDiffuseAlbedo(albedo, metalness);
 	} else if (vis_mode == 11) {
-		// Specular Albedo
-		payload.radiance = DLSSRR_computeSpecularAlbedo(albedo, metalness, roughness, NdotV);
+		ps.radiance = DLSSRR_computeSpecularAlbedo(albedo, metalness, roughness, NdotV);
 	} else if (vis_mode == 12) {
-		// Normal + Roughness visualization
-		payload.radiance = (final_normal * 0.5 + 0.5) * (1.0 - roughness * 0.5);
+		ps.radiance = (final_normal * 0.5 + 0.5) * (1.0 - roughness * 0.5);
 	} else if (vis_mode == 13) {
-		// DLSS RR Specular Hit Distance (with log-scale heat map)
-		if (get_total_bounces(payload.packed_bounces_flags) == 0u) {
-			// Primary ray - trace specular ray if smooth enough
+		if (get_total_bounces(ps.packed_bounces_flags) == 0u) {
 			if (roughness < MAX_DENOISER_SPECULAR_HIT_THRESHOLD) {
-				payload.packed_bounces_flags = inc_total_bounce(payload.packed_bounces_flags);
-				payload.radiance = vec3(-1.0, 0.0, 0.0); // Initialize to sky value before trace
+				ps.packed_bounces_flags = inc_total_bounce(ps.packed_bounces_flags);
+				ps.radiance = vec3(-1.0, 0.0, 0.0);
 				vec3 hit_pos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
 				vec3 reflect_dir = reflect(gl_WorldRayDirectionEXT, final_normal);
 				vec3 ray_origin = hit_pos + final_normal * 0.01;
+				path_pack(payload, ps);
 				traceRayEXT(tlas, RT_RAY_FLAGS, 0xFF, 0, 0, 0, ray_origin, 0.001, reflect_dir, 10000.0, 0);
-				float spec_hit_t = payload.radiance.r;
+				ps = path_unpack(payload);
+				float spec_hit_t = ps.radiance.r;
 
-				// Negative = sky/miss (show as dark blue), positive = hit distance
 				if (spec_hit_t < 0.0) {
-					payload.radiance = vec3(0.1, 0.1, 0.4); // Dark blue for sky
+					ps.radiance = vec3(0.1, 0.1, 0.4);
 				} else {
-					// Log scale for better visibility (range ~0.01 to 1000)
 					float v = clamp(log(spec_hit_t + 1.0) / log(1000.0), 0.0, 1.0);
-
-					// Heat map: black -> red -> yellow -> white
 					vec3 color;
 					if (v < 0.33) {
 						color = mix(vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), v * 3.0);
@@ -316,39 +296,37 @@ void debug_visualize(
 					} else {
 						color = mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 1.0, 1.0), (v - 0.66) * 3.0);
 					}
-					payload.radiance = color;
+					ps.radiance = color;
 				}
 			} else {
-				// Too rough for meaningful specular reflection - use same color as sky/miss
-				payload.radiance = vec3(0.1, 0.1, 0.4);
+				ps.radiance = vec3(0.1, 0.1, 0.4);
 			}
 		} else {
-			// Secondary ray - return hit distance
-			payload.radiance = vec3(gl_HitTEXT, 0.0, 0.0);
+			ps.radiance = vec3(gl_HitTEXT, 0.0, 0.0);
 		}
 	} else if (vis_mode == 14) {
-		// Metalness
-		payload.radiance = vec3(metalness);
+		ps.radiance = vec3(metalness);
 	} else if (vis_mode == 15) {
-		// Roughness
-		payload.radiance = vec3(roughness);
+		ps.radiance = vec3(roughness);
 	} else if (vis_mode == 16) {
-		// View-space normals
 		mat3 world_to_view = mat3(scene_data_block.data.inv_view_matrix);
-		payload.radiance = normalize(world_to_view * final_normal) * 0.5 + 0.5;
+		ps.radiance = normalize(world_to_view * final_normal) * 0.5 + 0.5;
 	} else if (vis_mode == 17) {
-		// Diffuse + Specular split
 		vec3 diffuse_albedo = DLSSRR_computeDiffuseAlbedo(albedo, metalness);
 		vec3 specular_albedo = DLSSRR_computeSpecularAlbedo(albedo, metalness, roughness, NdotV);
-		payload.radiance = mix(diffuse_albedo, specular_albedo, metalness);
+		ps.radiance = mix(diffuse_albedo, specular_albedo, metalness);
 	} else if (vis_mode == 18) {
-		// Fresnel F0
-		payload.radiance = baseColorToSpecularF0(albedo, metalness);
+		ps.radiance = baseColorToSpecularF0(albedo, metalness);
 	} else if (vis_mode == 19) {
-		// Front/Back face hit
 		bool is_front_face = (gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT);
-		payload.radiance = is_front_face ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+		ps.radiance = is_front_face ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+	} else if (vis_mode == 20) {
+		float depth_range = scene_data_block.data.z_far - scene_data_block.data.z_near;
+		float d = clamp(gl_HitTEXT / depth_range, 0.0, 1.0);
+		ps.radiance = vec3(d);
 	}
+
+	path_pack(payload, ps);
 }
 
 // ============================================================================
@@ -379,8 +357,10 @@ void main() {
 
 	// Alpha scissor: treat pixel as fully transparent if below threshold.
 	if (alpha_scissor_threshold > 0.0 && alpha < alpha_scissor_threshold) {
-		payload.radiance = vec3(0.0);
-		payload.packed_bounces_flags = inc_total_bounce(payload.packed_bounces_flags);
+		PathState ps = path_unpack(payload);
+		ps.radiance = vec3(0.0);
+		ps.packed_bounces_flags = inc_total_bounce(ps.packed_bounces_flags);
+		path_pack(payload, ps);
 		vec3 hit_pos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
 		traceRayEXT(tlas, RT_RAY_FLAGS, 0xFF, 0, 0, 0,
 				hit_pos + gl_WorldRayDirectionEXT * 0.001, 0.0,

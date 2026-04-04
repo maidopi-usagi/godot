@@ -62,12 +62,14 @@
 
 #define RB_TEX_BACK_COLOR SNAME("back_color")
 #define RB_TEX_BACK_DEPTH SNAME("back_depth")
+#define RB_TEX_RECONSTRUCTED_DEPTH SNAME("reconstructed_depth")
 
 class RenderSceneBuffersRD : public RenderSceneBuffers {
 	GDCLASS(RenderSceneBuffersRD, RenderSceneBuffers);
 
 private:
 	bool upscaler_ready = false;
+	bool depth_reconstruct_requested = false;
 	bool can_be_storage = true;
 	bool force_hdr = false;
 	uint32_t max_cluster_elements = 512;
@@ -311,6 +313,9 @@ public:
 
 	_FORCE_INLINE_ bool get_upscaler_ready() const { return upscaler_ready; }
 	_FORCE_INLINE_ void set_upscaler_ready(bool ready) { upscaler_ready = ready; }
+
+	_FORCE_INLINE_ bool get_depth_reconstruct_requested() const { return depth_reconstruct_requested; }
+	_FORCE_INLINE_ void set_depth_reconstruct_requested(bool p_requested) { depth_reconstruct_requested = p_requested; }
 
 	_FORCE_INLINE_ bool has_upscaled_texture() const {
 		return get_upscaler_ready() && has_texture(RB_SCOPE_BUFFERS, RB_TEX_COLOR_UPSCALED);

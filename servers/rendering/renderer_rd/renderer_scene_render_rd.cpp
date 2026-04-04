@@ -30,6 +30,10 @@
 
 #include "renderer_scene_render_rd.h"
 
+#ifdef WINDOWS_ENABLED
+#include <windows.h>
+#endif
+
 #include "core/config/project_settings.h"
 #include "core/io/image.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
@@ -490,6 +494,36 @@ void RendererSceneRenderRD::_render_buffers_post_process_and_tonemap(const Rende
 
 	bool dest_is_msaa_2d = rb->get_view_count() == 1 && texture_storage->render_target_get_msaa(render_target) != RSE::VIEWPORT_MSAA_DISABLED;
 
+	// Reconstruct full-resolution depth from low-res depth buffer using
+	// color-guided bilateral upsampling with motion-vector temporal accumulation.
+	bool has_reconstructed_depth = false;
+	if (can_use_effects && can_use_storage && use_upscaled_texture && depth_reconstruct && rb->get_depth_reconstruct_requested()) {
+		Size2i internal_size = rb->get_internal_size();
+		bool size_differs = (internal_size.x != target_size.x) || (internal_size.y != target_size.y);
+		if (size_differs) {
+			RENDER_TIMESTAMP("Depth Reconstruct");
+			RD::get_singleton()->draw_command_begin_label("Depth Reconstruct");
+
+			uint32_t depth_usage = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+			rb->create_texture(RB_SCOPE_BUFFERS, RB_TEX_RECONSTRUCTED_DEPTH, RD::DATA_FORMAT_R32_SFLOAT, depth_usage, RD::TEXTURE_SAMPLES_1, target_size, 0, 1, true, true);
+
+			for (uint32_t i = 0; i < rb->get_view_count(); i++) {
+				float z_near = p_render_data->scene_data->view_projection[i].get_z_near();
+				float z_far = p_render_data->scene_data->view_projection[i].get_z_far();
+
+				RID lowres_depth = rb->get_depth_texture(i);
+				RID upscaled_color = use_upscaled_texture ? rb->get_upscaled_texture(i) : rb->get_internal_texture(i);
+				RID velocity = rb->get_velocity_buffer(false, i);
+				RID dest_depth = rb->get_texture_slice(RB_SCOPE_BUFFERS, RB_TEX_RECONSTRUCTED_DEPTH, i, 0);
+
+				depth_reconstruct->process(lowres_depth, upscaled_color, velocity, dest_depth, target_size, internal_size, z_near, z_far);
+			}
+			has_reconstructed_depth = true;
+
+			RD::get_singleton()->draw_command_end_label();
+		}
+	}
+
 	bool using_dof = RSG::camera_attributes->camera_attributes_uses_dof(p_render_data->camera_attributes);
 
 	if (using_dof && p_render_data->transparent_bg) {
@@ -514,7 +548,12 @@ void RendererSceneRenderRD::_render_buffers_post_process_and_tonemap(const Rende
 		if (can_use_storage) {
 			for (uint32_t i = 0; i < rb->get_view_count(); i++) {
 				buffers.base_texture = use_upscaled_texture ? rb->get_upscaled_texture(i) : rb->get_internal_texture(i);
-				buffers.depth_texture = rb->get_depth_texture(i);
+	#ifdef WINDOWS_ENABLED
+				bool force_lowres_depth = (GetAsyncKeyState(VK_BACK) & 0x8000) != 0;
+#else
+				bool force_lowres_depth = false;
+#endif
+				buffers.depth_texture = (has_reconstructed_depth && !force_lowres_depth) ? rb->get_texture_slice(RB_SCOPE_BUFFERS, RB_TEX_RECONSTRUCTED_DEPTH, i, 0) : rb->get_depth_texture(i);
 
 				// In stereo p_render_data->z_near and p_render_data->z_far can be offset for our combined frustum.
 				float z_near = p_render_data->scene_data->view_projection[i].get_z_near();
@@ -1865,6 +1904,9 @@ void RendererSceneRenderRD::init() {
 
 	bokeh_dof = memnew(RendererRD::BokehDOF(!can_use_storage));
 	copy_effects = memnew(RendererRD::CopyEffects(raster_effects));
+	if (can_use_storage) {
+		depth_reconstruct = memnew(RendererRD::DepthReconstruct);
+	}
 	debug_effects = memnew(RendererRD::DebugEffects);
 	luminance = memnew(RendererRD::Luminance(!can_use_storage));
 	smaa = memnew(RendererRD::SMAA);
@@ -1891,6 +1933,9 @@ RendererSceneRenderRD::~RendererSceneRenderRD() {
 	}
 	if (copy_effects) {
 		memdelete(copy_effects);
+	}
+	if (depth_reconstruct) {
+		memdelete(depth_reconstruct);
 	}
 	if (debug_effects) {
 		memdelete(debug_effects);

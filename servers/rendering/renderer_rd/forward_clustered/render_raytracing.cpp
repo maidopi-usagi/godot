@@ -1690,6 +1690,6 @@ void RenderRaytracing::copy_output_texture(const RenderDataRD *p_render_data) {
 	for (uint32_t v = 0; v < rb->get_view_count(); v++) {
 		RID src = rb_data->rt_get_texture();
 		RID dst = rb->get_internal_texture(v);
-		owner->copy_effects->copy_to_rect(src, dst, Rect2i(0, 0, rb->get_internal_size().x, rb->get_internal_size().y));
+		owner->copy_effects->copy_to_rect(src, dst, Rect2i(0, 0, rb->get_internal_size().x, rb->get_internal_size().y), false, false, false, false, false, true);
 	}
 }

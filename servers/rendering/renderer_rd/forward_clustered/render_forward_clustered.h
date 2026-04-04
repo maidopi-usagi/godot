@@ -327,6 +327,7 @@ private:
 		SCENE_FEATURE_SSAO = (1 << 3),
 		SCENE_FEATURE_VOXELGI = (1 << 4),
 		SCENE_FEATURE_DEPTH_PREPASS = (1 << 5),
+		SCENE_FEATURE_DEPTH_RECONSTRUCT = (1 << 6),
 	};
 
 	// Features that are fully disabled when raytracing is active.

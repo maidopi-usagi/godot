@@ -346,6 +346,7 @@ void DLSSEffect::_upscale_internal(RDD::CommandBufferID cmdid, const DLSSContext
 		context->currentDlssDOptions.outputWidth = context->currentDlssOptions.outputWidth;
 		context->currentDlssDOptions.outputHeight = context->currentDlssOptions.outputHeight;
 		context->currentDlssDOptions.colorBuffersHDR = sl::Boolean::eTrue;
+		context->currentDlssDOptions.alphaUpscalingEnabled = p_params.dlss_rr_alpha_upscaling ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 		context->currentDlssDOptions.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked; // Normal XYZ + Roughness W
 
 		// Set world-to-camera and camera-to-world matrices for DLSS-RR

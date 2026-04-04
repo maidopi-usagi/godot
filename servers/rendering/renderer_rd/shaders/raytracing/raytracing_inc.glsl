@@ -21,15 +21,50 @@
 #define RT_PARAM_FRAME_INDEX 15 // rt_params[3].w - Frame counter for temporal variation
 
 // ============================================================================
-// PATHTRACING PAYLOAD (32 bytes)
+// PATHTRACING PAYLOAD (32 bytes, fp16-packed)
 // ============================================================================
-// All shader stages must use identical struct layout for payload communication.
+// Radiance (r) and throughput (T) interleaved as fp16 into 3 uints:
+//   [0]=rg, [1]=bR, [2]=GB  (packHalf2x16 pairs).
+// Use PathState + path_pack/path_unpack for fp32 working copies.
 struct PathPayload {
-	vec3 radiance; // 12 bytes - Output color / accumulated radiance
-	uint packed_bounces_flags; // 4 bytes  - Packed: [flags:8][unused:8][diffuse_bounces:8][total_bounces:8]
-	vec3 throughput; // 12 bytes - Path throughput
-	uint rng_state; // 4 bytes  - RNG state for PCG
+	uint packed_rt[3]; // 12 bytes - radiance+throughput interleaved as fp16
+	uint packed_bounces_flags; //  4 bytes - [flags:8][unused:8][diffuse:8][total:8]
+	uint rng_state; //  4 bytes - RNG state for PCG
+	uint _pad0; //  4 bytes
+	uint _pad1; //  4 bytes
+	uint _pad2; //  4 bytes
 };
+
+/// Unpacked fp32 working copy of the payload.
+struct PathState {
+	vec3 radiance;
+	vec3 throughput;
+	uint packed_bounces_flags;
+	uint rng_state;
+};
+
+PathState path_unpack(PathPayload p) {
+	PathState s;
+	vec2 rg = unpackHalf2x16(p.packed_rt[0]);
+	vec2 bR = unpackHalf2x16(p.packed_rt[1]);
+	vec2 GB = unpackHalf2x16(p.packed_rt[2]);
+	s.radiance = max(vec3(rg.x, rg.y, bR.x), vec3(0.0));
+	s.throughput = max(vec3(bR.y, GB.x, GB.y), vec3(0.0));
+	s.packed_bounces_flags = p.packed_bounces_flags;
+	s.rng_state = p.rng_state;
+	return s;
+}
+
+void path_pack(inout PathPayload p, PathState s) {
+	const float FP16_MAX = 65504.0;
+	vec3 r = clamp(s.radiance, vec3(0.0), vec3(FP16_MAX));
+	vec3 t = clamp(s.throughput, vec3(0.0), vec3(FP16_MAX));
+	p.packed_rt[0] = packHalf2x16(vec2(r.r, r.g));
+	p.packed_rt[1] = packHalf2x16(vec2(r.b, t.r));
+	p.packed_rt[2] = packHalf2x16(vec2(t.g, t.b));
+	p.packed_bounces_flags = s.packed_bounces_flags;
+	p.rng_state = s.rng_state;
+}
 
 // Bounce count helpers (bits 0-7: total, bits 8-15: diffuse)
 uint get_total_bounces(uint packed) {
