@@ -582,7 +582,7 @@ bool Window::get_flag(Flags p_flag) const {
 }
 
 bool Window::is_popup() const {
-	return get_flag(Window::FLAG_POPUP) || get_flag(Window::FLAG_NO_FOCUS);
+	return (get_flag(Window::FLAG_POPUP) && get_flag(Window::FLAG_NO_FOCUS)) || get_flag(Window::FLAG_MOUSE_PASSTHROUGH);
 }
 
 void Window::set_hdr_output_requested(bool p_requested) {
@@ -926,6 +926,10 @@ void Window::_event_callback(DisplayServerEnums::WindowEvent p_event) {
 			hide();
 		} break;
 		case DisplayServerEnums::WINDOW_EVENT_PCL_PING: {
+		} break;
+		case DisplayServerEnums::WINDOW_EVENT_OUTPUT_MAX_LINEAR_VALUE_CHANGED: {
+			_propagate_window_notification(this, NOTIFICATION_WM_OUTPUT_MAX_LINEAR_VALUE_CHANGED);
+			emit_signal(SNAME("output_max_linear_value_changed"), get_output_max_linear_value());
 		} break;
 	}
 }
@@ -1516,6 +1520,35 @@ RID Window::get_focused_accessibility_element() const {
 	return Node::get_focused_accessibility_element();
 }
 
+String Window::_get_accessibility_name() const {
+	if (accessibility_name.is_empty()) {
+		return displayed_title;
+	} else {
+		return accessibility_name;
+	}
+}
+
+PackedStringArray Window::get_accessibility_configuration_warnings() const {
+	ERR_READ_THREAD_GUARD_V(PackedStringArray());
+	PackedStringArray warnings = Node::get_accessibility_configuration_warnings();
+
+	String ac_name = _get_accessibility_name().strip_edges();
+	if (ac_name.is_empty()) {
+		warnings.push_back(RTR("Accessibility Name must not be empty, or contain only spaces."));
+	}
+	if (ac_name.contains(get_class_name())) {
+		warnings.push_back(RTR("Accessibility Name must not include Node class name."));
+	}
+	for (int i = 0; i < ac_name.length(); i++) {
+		if (is_control(ac_name[i])) {
+			warnings.push_back(RTR("Accessibility Name must not include control character."));
+			break;
+		}
+	}
+
+	return warnings;
+}
+
 void Window::_notification(int p_what) {
 	ERR_MAIN_THREAD_GUARD;
 	switch (p_what) {
@@ -1535,11 +1568,7 @@ void Window::_notification(int p_what) {
 			ERR_FAIL_COND(ae.is_null());
 
 			AccessibilityServer::get_singleton()->update_set_role(ae, AccessibilityServerEnums::AccessibilityRole::ROLE_WINDOW);
-			if (accessibility_name.is_empty()) {
-				AccessibilityServer::get_singleton()->update_set_name(ae, displayed_title);
-			} else {
-				AccessibilityServer::get_singleton()->update_set_name(ae, accessibility_name);
-			}
+			AccessibilityServer::get_singleton()->update_set_name(ae, _get_accessibility_name());
 			AccessibilityServer::get_singleton()->update_set_description(ae, accessibility_description);
 			AccessibilityServer::get_singleton()->update_set_flag(ae, AccessibilityServerEnums::AccessibilityFlags::FLAG_MODAL, exclusive);
 			AccessibilityServer::get_singleton()->update_add_action(ae, AccessibilityServerEnums::AccessibilityAction::ACTION_FOCUS, callable_mp(this, &Window::_accessibility_action_grab_focus));
@@ -1923,7 +1952,7 @@ Size2 Window::_get_contents_minimum_size() const {
 		Control *c = Object::cast_to<Control>(get_child(i));
 		if (c) {
 			Point2i pos = c->get_position();
-			Size2i min = c->get_combined_minimum_size();
+			Size2i min = c->get_bound_minimum_size();
 
 			max = max.max(pos + min);
 		}
@@ -3321,6 +3350,7 @@ void Window::_update_displayed_title() {
 	}
 #endif
 
+	update_configuration_warnings();
 	queue_accessibility_update();
 }
 
@@ -3591,6 +3621,7 @@ void Window::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("dpi_changed"));
 	ADD_SIGNAL(MethodInfo("titlebar_changed"));
 	ADD_SIGNAL(MethodInfo("title_changed"));
+	ADD_SIGNAL(MethodInfo("output_max_linear_value_changed", PropertyInfo(Variant::FLOAT, "output_max_linear_value")));
 
 	BIND_CONSTANT(NOTIFICATION_VISIBILITY_CHANGED);
 	BIND_CONSTANT(NOTIFICATION_THEME_CHANGED);

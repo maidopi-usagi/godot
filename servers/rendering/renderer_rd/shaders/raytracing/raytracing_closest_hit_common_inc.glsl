@@ -19,6 +19,7 @@ struct HitData {
 	vec3 tangent; // World space.
 	vec3 bitangent; // World space.
 	vec2 uv; // Raw UV (no material scale/offset applied).
+	vec4 color; // Vertex color (white if not present).
 	bool is_front_face;
 	uint geometry_idx;
 };
@@ -30,8 +31,13 @@ HitData compute_hit_data() {
 	h.geometry_idx = gl_InstanceCustomIndexEXT;
 	GeometryData geom = geometries[h.geometry_idx];
 
-	VertexAttributes attrs = fetch_vertex_attributes(geom, attribs, true, true);
+#ifdef RT_CUSTOM_HIT_GROUP
+	VertexAttributes attrs = fetch_vertex_attributes(geom, attribs, FETCH_ALL);
+#else
+	VertexAttributes attrs = fetch_vertex_attributes(geom, attribs, FETCH_UV | FETCH_TBN);
+#endif
 	h.uv = attrs.uv;
+	h.color = attrs.color;
 
 	mat3 model_rotation = mat3(gl_ObjectToWorldEXT);
 	mat3 normal_matrix = mat3(

@@ -78,6 +78,7 @@
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
 #include <cerrno>
 #include <csignal>
 #include <cstdio>
@@ -792,7 +793,7 @@ Dictionary OS_Unix::execute_with_pipe(const String &p_path, const List<String> &
 
 		execvp(p_path.utf8().get_data(), &args[0]);
 		// The execvp() function only returns if an error occurs.
-		ERR_PRINT("Could not create child process: " + p_path);
+		fprintf(stderr, "Could not create child process: %s\n", p_path.utf8().get_data());
 		raise(SIGKILL);
 	}
 	::close(pipe_in[0]);
@@ -938,7 +939,7 @@ Error OS_Unix::execute(const String &p_path, const List<String> &p_arguments, St
 
 		execvp(p_path.utf8().get_data(), &args[0]);
 		// The execvp() function only returns if an error occurs.
-		ERR_PRINT("Could not create child process: " + p_path);
+		fprintf(stderr, "Could not create child process: %s\n", p_path.utf8().get_data());
 		raise(SIGKILL);
 	}
 
@@ -980,7 +981,7 @@ Error OS_Unix::create_process(const String &p_path, const List<String> &p_argume
 
 		execvp(p_path.utf8().get_data(), &args[0]);
 		// The execvp() function only returns if an error occurs.
-		ERR_PRINT("Could not create child process: " + p_path);
+		fprintf(stderr, "Could not create child process: %s\n", p_path.utf8().get_data());
 		raise(SIGKILL);
 	}
 
@@ -1207,6 +1208,19 @@ String OS_Unix::get_executable_path() const {
 	ERR_PRINT("Warning, don't know how to obtain executable path on this OS! Please override this function properly.");
 	return OS::get_executable_path();
 #endif
+}
+
+String OS_Unix::expand_path(const String &p_path) const {
+	String path = p_path;
+
+	if (path.begins_with("~/") || path == "~") {
+		String home = get_environment("HOME");
+		if (!home.is_empty()) {
+			path = home + path.substr(1);
+		}
+	}
+
+	return path;
 }
 
 void UnixTerminalLogger::log_error(const char *p_function, const char *p_file, int p_line, const char *p_code, const char *p_rationale, bool p_editor_notify, ErrorType p_type, const Vector<Ref<ScriptBacktrace>> &p_script_backtraces) {

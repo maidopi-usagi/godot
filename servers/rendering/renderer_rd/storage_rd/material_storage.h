@@ -30,11 +30,10 @@
 
 #pragma once
 
-#include "texture_storage.h"
-
 #include "core/templates/rid_owner.h"
 #include "core/templates/self_list.h"
 #include "servers/rendering/renderer_rd/pipeline_cache_rd.h"
+#include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/rendering_server_types.h"
 #include "servers/rendering/shader_compiler.h"
 #include "servers/rendering/shader_language.h"
@@ -457,6 +456,10 @@ public:
 	virtual void global_shader_parameters_instance_update(RID p_instance, int p_index, const Variant &p_value, int p_flags_count = 0) override;
 
 	RID global_shader_uniforms_get_storage_buffer() const;
+	/// Returns the override (or value) RID for a global texture parameter, or RID() if not found.
+	RID global_shader_uniform_get_texture(const StringName &p_name) const;
+	/// Returns the buffer index for a scalar/vector global shader parameter, or -1 if not found.
+	int32_t global_shader_uniform_get_buffer_index(const StringName &p_name) const;
 
 	/* SHADER API */
 

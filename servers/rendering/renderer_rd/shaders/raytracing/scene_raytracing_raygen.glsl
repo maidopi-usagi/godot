@@ -206,11 +206,11 @@ layout(set = 1, binding = 0) uniform texture2D bindless_textures[];
 
 layout(set = 0, binding = 3, std430) readonly buffer GeometryBuffer {
 	GeometryData geometries[];
-};
+}
 
 layout(set = 0, binding = 5, std430) readonly buffer MaterialBuffer {
 	MaterialData materials[];
-};
+}
 
 #include "raytracing_lights_inc.glsl"
 
@@ -369,6 +369,7 @@ void main() {
 	uint rt_geometry_idx = h.geometry_idx;
 	vec3 rt_hit_pos = h.hit_pos;
 	vec2 rt_uv = h.uv;
+	vec4 rt_color = h.color;
 	vec3 rt_normal = h.geometry_normal;
 	vec3 rt_tangent = h.tangent;
 	vec3 rt_bitangent = h.bitangent;
@@ -491,11 +492,11 @@ layout(location = 0) rayPayloadInEXT PathPayload payload;
 
 layout(set = 0, binding = 3, std430) readonly buffer GeometryBuffer {
 	GeometryData geometries[];
-};
+}
 
 layout(set = 0, binding = 5, std430) readonly buffer MaterialBuffer {
 	MaterialData materials[];
-};
+}
 
 layout(set = 1, binding = 0) uniform texture2D bindless_textures[];
 
@@ -537,6 +538,7 @@ void main() {
 	vec3 rt_hit_pos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
 	vec3 rt_tangent = normalize(normal_matrix * ah_tbn.tangent);
 	vec3 rt_bitangent = cross(rt_normal, rt_tangent) * ah_tbn.bitangent_sign;
+	vec4 rt_color = fetch_color(geom, i0, i1, i2, bary);
 
 #include "raytracing_custom_fragment_inc.glsl"
 

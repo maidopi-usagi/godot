@@ -32,6 +32,8 @@
 
 #include "core/config/project_settings.h"
 #include "core/io/json.h"
+#include "core/io/resource_importer.h"
+#include "core/io/resource_loader.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "editor/editor_node.h"
@@ -258,6 +260,7 @@ const HashMap<EditorBuildProfile::BuildOption, LocalVector<EditorBuildProfile::B
 	} },
 };
 
+// Should also contain classes not derived from either `Resource` or `Node`.
 const HashMap<EditorBuildProfile::BuildOption, LocalVector<String>> EditorBuildProfile::build_option_classes = {
 	{ BUILD_OPTION_3D, {
 			"Node3D",
@@ -949,12 +952,8 @@ void EditorBuildProfileManager::_detect_from_project() {
 	const LocalVector<String> hardcoded_classes = {
 		"Font",
 		"InputEvent",
-		"MainLoop",
-		"Mutex",
 		"ShaderInclude",
-		"ShaderIncludeDB",
 		"StyleBox",
-		"Time",
 		"Window",
 	};
 
@@ -1014,8 +1013,15 @@ void EditorBuildProfileManager::_detect_from_project() {
 	ClassDB::get_class_list(all_classes);
 
 	for (const StringName &class_name : all_classes) {
-		if (String(class_name).begins_with("Editor") || ClassDB::get_api_type(class_name) != ClassDB::API_CORE || all_used_classes.has(class_name)) {
-			// This class is valid or editor-only, do nothing.
+		if (ClassDB::get_api_type(class_name) != ClassDB::API_CORE) {
+			continue; // This class is editor-only or not from Godot itself.
+		}
+
+		if (class_name != "Resource" && class_name != "Node" && !ClassDB::is_parent_class(class_name, "Resource") && !ClassDB::is_parent_class(class_name, "Node")) {
+			continue;
+		}
+
+		if (all_used_classes.has(class_name)) {
 			continue;
 		}
 
@@ -1054,7 +1060,7 @@ void EditorBuildProfileManager::_detect_from_project() {
 		const LocalVector<String> classes = EditorBuildProfile::get_build_option_classes(EditorBuildProfile::BuildOption(i));
 		if (!classes.is_empty()) {
 			for (StringName class_name : classes) {
-				if (!edited->is_class_disabled(class_name)) {
+				if (all_used_classes.has(class_name) && !edited->is_class_disabled(class_name)) {
 					skip = true;
 					break;
 				}
@@ -1181,10 +1187,9 @@ void EditorBuildProfileManager::_fill_classes_from(TreeItem *p_parent, const Str
 	child_classes.sort_custom<StringName::AlphCompare>();
 
 	for (const StringName &name : child_classes) {
-		if (String(name).begins_with("Editor") || ClassDB::get_api_type(name) != ClassDB::API_CORE) {
-			continue;
+		if (ClassDB::get_api_type(name) == ClassDB::API_CORE) {
+			_fill_classes_from(class_item, name, p_selected);
 		}
-		_fill_classes_from(class_item, name, p_selected);
 	}
 }
 
@@ -1398,7 +1403,7 @@ EditorBuildProfileManager::EditorBuildProfileManager() {
 	profiles_hbc->add_spacer();
 
 	profile_actions[ACTION_CLEAR_CACHE] = memnew(Button(TTRC("Clear Cache")));
-	profile_actions[ACTION_CLEAR_CACHE]->set_disabled(FileAccess::exists(EditorPaths::get_singleton()->get_project_settings_dir().path_join("used_class_cache")));
+	profile_actions[ACTION_CLEAR_CACHE]->set_disabled(!FileAccess::exists(EditorPaths::get_singleton()->get_project_settings_dir().path_join("used_class_cache")));
 	profiles_hbc->add_child(profile_actions[ACTION_CLEAR_CACHE]);
 	profile_actions[ACTION_CLEAR_CACHE]->connect(SceneStringName(pressed), callable_mp(this, &EditorBuildProfileManager::_profile_action).bind(ACTION_CLEAR_CACHE));
 

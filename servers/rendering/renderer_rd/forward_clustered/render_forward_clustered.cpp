@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "render_forward_clustered.h"
+
 #include "scene_shader_raytracing.h"
 
 #include "core/config/project_settings.h"
@@ -2440,10 +2441,6 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RD::get_singleton()->draw_command_begin_label("Raytracing");
 		RENDER_TIMESTAMP("TLAS Build");
 
-		// BLAS are built when created (in _rt_build_acceleration_structures for new ones)
-		// Cached BLAS don't need rebuilding - only TLAS needs rebuild each frame (transforms change)
-		RD::get_singleton()->acceleration_structure_build(raytracing->get_tlas());
-
 		// Ensure raytracing output textures exist
 		rb_data->rt_ensure_textures();
 
@@ -2486,10 +2483,8 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RD::get_singleton()->raytracing_list_bind_raytracing_pipeline(raytracing_list, rt_pipeline);
 		RD::get_singleton()->raytracing_list_bind_uniform_set(raytracing_list, raytracing->get_uniform_set(), 0);
 		RD::get_singleton()->raytracing_list_bind_uniform_set(raytracing_list, raytracing->get_bindless_uniform_set(), 1);
-		// Use internal_size for raytracing dispatch - this is the render resolution before FSR/upscaling.
-		// The raytracing texture is created at internal_size, so dispatch must match.
 		Size2i rt_size = rb->get_internal_size();
-		RD::get_singleton()->raytracing_list_trace_rays(raytracing_list, rt_size.width, rt_size.height);
+		RD::get_singleton()->raytracing_list_trace_rays(raytracing_list, 0, raytracing->get_shader()->get_hit_sbt(rt_flags), rt_size.width, rt_size.height, 1);
 		RD::get_singleton()->raytracing_list_end();
 
 		RD::get_singleton()->draw_command_end_label();

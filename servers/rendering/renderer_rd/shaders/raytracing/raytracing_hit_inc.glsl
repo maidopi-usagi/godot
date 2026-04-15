@@ -6,10 +6,10 @@
 // ============================================================================
 layout(buffer_reference, std430) readonly buffer FloatBuffer {
 	float v[];
-};
+}
 layout(buffer_reference, std430) readonly buffer Uint32Buffer {
 	uint v[];
-};
+}
 
 // ============================================================================
 // GEOMETRY DATA (matches C++ RT_GeometryData, 128 bytes)
@@ -40,7 +40,7 @@ struct GeometryData {
 	float aabb_size_y;
 	float aabb_size_z;
 
-	uint material_index;
+	uint color_byte_offset;
 	uint _pad[9];
 };
 
@@ -78,9 +78,11 @@ struct VertexAttributes {
 	vec3 normal;
 	vec3 tangent;
 	float bitangent_sign;
+	vec4 color;
 	bool has_uv;
 	bool has_normal;
 	bool has_tangent;
+	bool has_color;
 };
 
 struct TBNResult {
@@ -174,6 +176,25 @@ vec2 fetch_uv(in GeometryData geom, uint i0, uint i1, uint i2, vec3 bary) {
 	}
 
 	return bary.x * uv0 + bary.y * uv1 + bary.z * uv2;
+}
+
+// ============================================================================
+// VERTEX COLOR FETCHING (RGBA8 packed in uint32)
+// ============================================================================
+vec4 fetch_color(in GeometryData geom, uint i0, uint i1, uint i2, vec3 bary) {
+	if (geom.color_byte_offset == OFFSET_NONE || geom.attribute_address == 0ul) {
+		return vec4(1.0);
+	}
+
+	Uint32Buffer attr = Uint32Buffer(geom.attribute_address);
+	uint stride_words = geom.attribute_stride >> 2;
+	uint color_word_off = geom.color_byte_offset >> 2;
+
+	vec4 col0 = unpackUnorm4x8(attr.v[i0 * stride_words + color_word_off]);
+	vec4 col1 = unpackUnorm4x8(attr.v[i1 * stride_words + color_word_off]);
+	vec4 col2 = unpackUnorm4x8(attr.v[i2 * stride_words + color_word_off]);
+
+	return bary.x * col0 + bary.y * col1 + bary.z * col2;
 }
 
 // ============================================================================
@@ -274,28 +295,40 @@ TBNResult fetch_tbn(in GeometryData geom, uint i0, uint i1, uint i2, vec3 bary) 
 // ============================================================================
 // VERTEX ATTRIBUTE FETCHING (requires hitAttributeEXT vec2 attribs to be declared)
 // ============================================================================
+#define FETCH_UV (1u << 0)
+#define FETCH_TBN (1u << 1)
+#define FETCH_COLOR (1u << 2)
+#define FETCH_ALL (FETCH_UV | FETCH_TBN | FETCH_COLOR)
+
 #ifdef RT_HIT_ATTRIBS_DECLARED
-VertexAttributes fetch_vertex_attributes(in GeometryData geom, vec2 hit_attribs, bool want_uv, bool want_tbn) {
+VertexAttributes fetch_vertex_attributes(in GeometryData geom, vec2 hit_attribs, uint fetch_flags) {
 	VertexAttributes attrs;
 	attrs.uv = vec2(0.0);
 	attrs.normal = vec3(0.0, 1.0, 0.0);
 	attrs.tangent = vec3(1.0, 0.0, 0.0);
 	attrs.bitangent_sign = 1.0;
+	attrs.color = vec4(1.0);
 	attrs.has_uv = false;
 	attrs.has_normal = false;
 	attrs.has_tangent = false;
+	attrs.has_color = false;
 
 	uint i0, i1, i2;
 	get_triangle_indices(geom, i0, i1, i2);
 
 	vec3 bary = vec3(1.0 - hit_attribs.x - hit_attribs.y, hit_attribs.x, hit_attribs.y);
 
-	if (want_uv && geom.uv_byte_offset != OFFSET_NONE) {
+	if ((fetch_flags & FETCH_UV) != 0u && geom.uv_byte_offset != OFFSET_NONE) {
 		attrs.uv = fetch_uv(geom, i0, i1, i2, bary);
 		attrs.has_uv = true;
 	}
 
-	if (want_tbn && geom.normal_byte_offset != OFFSET_NONE) {
+	if ((fetch_flags & FETCH_COLOR) != 0u && geom.color_byte_offset != OFFSET_NONE) {
+		attrs.color = fetch_color(geom, i0, i1, i2, bary);
+		attrs.has_color = true;
+	}
+
+	if ((fetch_flags & FETCH_TBN) != 0u && geom.normal_byte_offset != OFFSET_NONE) {
 		TBNResult tbn = fetch_tbn(geom, i0, i1, i2, bary);
 		attrs.normal = tbn.normal;
 		attrs.tangent = tbn.tangent;

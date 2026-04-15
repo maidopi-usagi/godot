@@ -32,11 +32,6 @@
 
 #ifdef APPLE_EMBEDDED_ENABLED
 
-#import "app_delegate_service.h"
-#import "display_server_apple_embedded.h"
-#import "godot_view_apple_embedded.h"
-#import "godot_view_controller.h"
-
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
@@ -45,10 +40,15 @@
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
 #import "drivers/apple/os_log_logger.h"
+#import "drivers/apple_embedded/app_delegate_service.h"
+#import "drivers/apple_embedded/display_server_apple_embedded.h"
+#import "drivers/apple_embedded/godot_view_apple_embedded.h"
+#import "drivers/apple_embedded/godot_view_controller.h"
 #ifdef SDL_ENABLED
 #include "drivers/sdl/joypad_sdl.h"
 #endif
 #include "main/main.h"
+#include "servers/camera/camera_server.h"
 
 #import <AVFoundation/AVFAudio.h>
 #import <AudioToolbox/AudioServices.h>
@@ -56,10 +56,12 @@
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
 #include <sys/sysctl.h>
+
 #include <iterator>
 
 #if defined(RD_ENABLED)
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
+
 #import <QuartzCore/CAMetalLayer.h>
 
 #if defined(VULKAN_ENABLED)
@@ -804,6 +806,11 @@ void OS_AppleEmbedded::on_focus_in() {
 void OS_AppleEmbedded::on_enter_background() {
 	// Do not check for is_focused, because on_focus_out will always be fired first by applicationWillResignActive.
 
+	CameraServer *camera_server = CameraServer::get_singleton();
+	if (camera_server) {
+		camera_server->handle_application_pause();
+	}
+
 	if (OS::get_singleton()->get_main_loop()) {
 		OS::get_singleton()->get_main_loop()->notification(MainLoop::NOTIFICATION_APPLICATION_PAUSED);
 	}
@@ -817,6 +824,11 @@ void OS_AppleEmbedded::on_exit_background() {
 
 		if (OS::get_singleton()->get_main_loop()) {
 			OS::get_singleton()->get_main_loop()->notification(MainLoop::NOTIFICATION_APPLICATION_RESUMED);
+		}
+
+		CameraServer *camera_server = CameraServer::get_singleton();
+		if (camera_server) {
+			camera_server->handle_application_resume();
 		}
 	}
 }

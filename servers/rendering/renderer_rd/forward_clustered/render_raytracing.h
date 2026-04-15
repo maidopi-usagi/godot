@@ -74,7 +74,8 @@ struct alignas(16) RT_GeometryData {
 	float aabb_size_x;
 	float aabb_size_y;
 	float aabb_size_z;
-	uint32_t _pad[10];
+	uint32_t color_byte_offset;
+	uint32_t _pad[9];
 };
 static_assert(sizeof(RT_GeometryData) == 128, "RT_GeometryData must be 128 bytes for std430");
 
@@ -225,8 +226,9 @@ class RenderRaytracing {
 	LocalVector<Transform3D> blas_transforms;
 	LocalVector<uint32_t> instance_flags;
 	LocalVector<uint32_t> sbt_offsets; // 0 = default material hit group
-	RID tlas_instances_buffer;
 	RID tlas;
+	uint32_t tlas_max_instances = 0;
+
 	uint32_t frame_counter = 0;
 
 	// Cache helpers.

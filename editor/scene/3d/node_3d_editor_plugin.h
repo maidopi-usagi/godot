@@ -201,11 +201,19 @@ private:
 	Node3D *ruler_start_point = nullptr;
 	Node3D *ruler_end_point = nullptr;
 	Ref<ImmediateMesh> geometry;
+	Ref<ImmediateMesh> geometry_xray;
 	MeshInstance3D *ruler_line = nullptr;
 	MeshInstance3D *ruler_line_xray = nullptr;
 	Label *ruler_label = nullptr;
 	Ref<StandardMaterial3D> ruler_material;
 	Ref<StandardMaterial3D> ruler_material_xray;
+	Ref<StandardMaterial3D> ruler_triangle_material;
+	Ref<StandardMaterial3D> ruler_triangle_material_xray;
+	MeshInstance3D *ruler_triangle_lines = nullptr;
+	MeshInstance3D *ruler_triangle_lines_xray = nullptr;
+	Label *ruler_label_x = nullptr;
+	Label *ruler_label_y = nullptr;
+	Label *ruler_label_z = nullptr;
 
 	int index;
 	void _menu_option(int p_option);
@@ -264,7 +272,7 @@ private:
 	ViewportNavigationControl *position_control = nullptr;
 	ViewportNavigationControl *look_control = nullptr;
 	ViewportRotationControl *rotation_control = nullptr;
-	Gradient *frame_time_gradient = nullptr;
+	Ref<Gradient> frame_time_gradient;
 	PanelContainer *frame_time_panel = nullptr;
 	VBoxContainer *frame_time_vbox = nullptr;
 	Label *cpu_time_label = nullptr;
@@ -358,7 +366,6 @@ private:
 		Vector3 center;
 		Point2 mouse_pos;
 		Point2 original_mouse_pos;
-		bool snap = false;
 		bool show_rotation_line = false;
 		bool is_trackball = false;
 		Ref<EditorNode3DGizmo> gizmo;
@@ -392,6 +399,7 @@ private:
 	void _update_view_3d_controller(bool p_update_all = true);
 
 	void _cursor_interpolated();
+	void _cursor_distance_scaled();
 
 	void _freelook_changed();
 	void _freelook_speed_scaled();
@@ -582,6 +590,9 @@ public:
 
 	void add_viewport(Node3DEditorViewport *p_viewport, int p_index);
 
+	Dictionary get_split_state() const;
+	void set_split_state(const Dictionary &p_state);
+
 	Node3DEditorViewportContainer();
 };
 
@@ -620,7 +631,6 @@ public:
 	};
 
 	real_t gizmo_view_rotation_scale = 1.0;
-	real_t gizmo_view_rotation_shrink = 1.0;
 
 private:
 	EditorSelection *editor_selection = nullptr;

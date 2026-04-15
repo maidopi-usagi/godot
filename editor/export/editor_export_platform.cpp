@@ -40,6 +40,8 @@
 #include "core/io/file_access_pack.h" // PACK_HEADER_MAGIC, PACK_FORMAT_VERSION
 #include "core/io/image.h"
 #include "core/io/image_loader.h"
+#include "core/io/resource_loader.h"
+#include "core/io/resource_saver.h"
 #include "core/io/resource_uid.h"
 #include "core/io/zip_io.h"
 #include "core/math/random_pcg.h"
@@ -51,12 +53,12 @@
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 #include "editor/export/editor_export.h"
+#include "editor/export/editor_export_plugin.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/file_system/editor_paths.h"
 #include "editor/script/script_editor_plugin.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
-#include "editor_export_plugin.h"
 #include "scene/gui/rich_text_label.h"
 #include "scene/main/node.h"
 #include "scene/resources/packed_scene.h"
@@ -1904,10 +1906,8 @@ EditorExportPlatform::FilteredCache EditorExportPlatform::_get_filtered_cache(co
 	}
 
 	// Encode global classes.
-	if (!global_class_list.is_empty()) {
-		global_class_cf->set_value("", "list", global_class_list);
-		result.global_class_list = global_class_cf->encode_to_text().to_utf8_buffer();
-	}
+	global_class_cf->set_value("", "list", global_class_list);
+	result.global_class_list = global_class_cf->encode_to_text().to_utf8_buffer();
 
 	// Encode UIDs.
 	result.uids = ResourceUID::encode_binary_cache(uid_entries);
@@ -1983,7 +1983,7 @@ void EditorExportPlatform::zip_folder_recursive(zipFile &p_zip, const String &p_
 			// 0000755: permissions rwxr-xr-x
 			// 0000644: permissions rw-r--r--
 			uint32_t _mode = 0120644;
-			zipfi.external_fa = (_mode << 16L) | !(_mode & 0200);
+			zipfi.external_fa = (_mode << 16L) | ((_mode & 0200) ? 0 : 1); // UUUUUUUUUUUUUUUU0000000000ADVSHR: Unix permissions (U) + DOS read-only flag (R).
 			zipfi.internal_fa = 0;
 
 			zipOpenNewFileInZip4(p_zip,
@@ -2027,7 +2027,7 @@ void EditorExportPlatform::zip_folder_recursive(zipFile &p_zip, const String &p_
 			// 0000755: permissions rwxr-xr-x
 			// 0000644: permissions rw-r--r--
 			uint32_t _mode = (_is_executable ? 0100755 : 0100644);
-			zipfi.external_fa = (_mode << 16L) | !(_mode & 0200);
+			zipfi.external_fa = (_mode << 16L) | ((_mode & 0200) ? 0 : 1); // UUUUUUUUUUUUUUUU0000000000ADVSHR: Unix permissions (U) + DOS read-only flag (R).
 			zipfi.internal_fa = 0;
 
 			zipOpenNewFileInZip4(p_zip,

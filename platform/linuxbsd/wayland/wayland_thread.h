@@ -52,7 +52,8 @@
 // These must go after the Wayland client include to work properly.
 #include "wayland/protocol/idle_inhibit.gen.h"
 #include "wayland/protocol/primary_selection.gen.h"
-// These four protocol headers name wl_pointer method arguments as `pointer`,
+
+// These protocol headers name wl_pointer method arguments as `pointer`,
 // which is the same name as X11's pointer typedef. This trips some very
 // annoying shadowing warnings. A `#define` works around this issue.
 #define pointer wl_pointer
@@ -62,6 +63,7 @@
 #include "wayland/protocol/pointer_warp.gen.h"
 #include "wayland/protocol/relative_pointer.gen.h"
 #undef pointer
+
 #include "wayland/protocol/color_management.gen.h"
 #include "wayland/protocol/fractional_scale.gen.h"
 #include "wayland/protocol/tablet.gen.h"
@@ -75,10 +77,11 @@
 #include "wayland/protocol/xdg_system_bell.gen.h"
 #include "wayland/protocol/xdg_toplevel_icon.gen.h"
 
-#include "wayland/protocol/godot_embedding_compositor.gen.h"
-
 // NOTE: Deprecated.
 #include "wayland/protocol/xdg_foreign_v1.gen.h"
+
+// Custom internal protocol.
+#include "wayland/protocol/godot_embedding_compositor.gen.h"
 
 #ifdef LIBDECOR_ENABLED
 #ifdef SOWRAP_ENABLED
@@ -88,12 +91,12 @@
 #endif // SOWRAP_ENABLED
 #endif // LIBDECOR_ENABLED
 
+#include "wayland_embedder.h"
+
 #include "core/input/input_event.h"
 #include "core/os/process_id.h"
 #include "core/os/thread.h"
 #include "servers/display/display_server_enums.h"
-
-#include "wayland_embedder.h"
 
 class Image;
 
@@ -130,9 +133,17 @@ public:
 		GDSOFTCLASS(WindowRectMessage, WindowMessage);
 
 	public:
-		// NOTE: This is in "scaled" terms. For example, if there's a 1920x1080 rect
-		// with a scale factor of 2, the actual value of `rect` will be 3840x2160.
+		// The window size in "absolute units" (pre-scaled). Basically the desired
+		// resolution of the underlying buffer.
 		Rect2i rect;
+
+		// Used to synchronize buffer size and scale together, otherwise we risk a
+		// protocol error. Note that this doesn't control scaling in general, only the
+		// concept of "surface buffer scale". See the protocol documentation of
+		// `wl_surface::set_buffer_scale` for more details.
+		//
+		// Defaults to 0 so that we can catch malformed messages.
+		int buffer_scale = 0;
 	};
 
 	class WindowEventMessage : public WindowMessage {
@@ -180,6 +191,8 @@ public:
 	};
 
 	struct RegistryState {
+		HashSet<uint32_t> global_names;
+
 		WaylandThread *wayland_thread;
 
 		// Core Wayland globals.
@@ -299,6 +312,10 @@ public:
 		bool can_maximize = true;
 		bool can_fullscreen = true;
 
+		xdg_toplevel_icon_v1 *xdg_icon = nullptr;
+		wl_buffer *icon_buffer = nullptr;
+		bool icon_set = false;
+
 		HashSet<struct wl_output *> wl_outputs;
 
 		// NOTE: If for whatever reason this callback is destroyed _while_ the event
@@ -327,12 +344,6 @@ public:
 
 		// Currently applied buffer scale.
 		int buffer_scale = 1;
-
-		// Buffer scale must be applied right before rendering but _after_ committing
-		// everything else or otherwise we might have an inconsistent state (e.g.
-		// double scale and odd resolution). This flag assists with that; when set,
-		// on the next frame, we'll commit whatever is set in `buffer_scale`.
-		bool buffer_scale_changed = false;
 
 		// NOTE: The preferred buffer scale is currently only dynamically calculated.
 		// It can be accessed by calling `window_state_get_preferred_buffer_scale`.
@@ -701,6 +712,8 @@ private:
 #ifdef LIBDECOR_ENABLED
 	struct libdecor *libdecor_context = nullptr;
 #endif // LIBDECOR_ENABLED
+
+	static void _clipboard_send(Vector<uint8_t> &p_data, const char *p_media_type, int32_t p_fd);
 
 	// Main polling method.
 	static void _poll_events_thread(void *p_data);
@@ -1201,6 +1214,7 @@ public:
 	static int window_state_get_preferred_buffer_scale(WindowState *p_ws);
 	static double window_state_get_scale_factor(const WindowState *p_ws);
 	static void window_state_update_size(WindowState *p_ws, int p_width, int p_height);
+	static void window_state_set_buffer_scale(WindowState *p_ws, int p_buffer_scale);
 
 	static Vector2i scale_vector2i(const Vector2i &p_vector, double p_amount);
 
@@ -1210,7 +1224,8 @@ public:
 
 	void beep() const;
 
-	void set_icon(const Ref<Image> &p_icon);
+	void set_icon(const Ref<Image> &p_icon, DisplayServerEnums::WindowID p_window_id);
+	void set_default_icon(const Ref<Image> &p_icon);
 
 	void window_create(DisplayServerEnums::WindowID p_window_id, const Size2i &p_size, DisplayServerEnums::WindowID p_parent_id = DisplayServerEnums::INVALID_WINDOW_ID);
 	void window_create_popup(DisplayServerEnums::WindowID p_window_id, DisplayServerEnums::WindowID p_parent_id, Rect2i p_rect);

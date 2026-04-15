@@ -132,6 +132,7 @@ void BindlessBlock::finalize(RID p_shader, uint32_t p_set_index) {
 
 	uniform_set = rd->uniform_set_create(uniforms, p_shader, p_set_index);
 	ERR_FAIL_COND_MSG(!uniform_set.is_valid(), "Failed to create bindless uniform set.");
+	rd->set_resource_name(uniform_set, "Bindless Texture Set");
 
 	needs_refinalize = false;
 }

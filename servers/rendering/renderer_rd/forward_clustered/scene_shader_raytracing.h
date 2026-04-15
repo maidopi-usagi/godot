@@ -86,8 +86,6 @@ public:
 
 	// RT pipeline limits (must match GLSL payload/hit attribute struct sizes).
 	constexpr static uint32_t RT_MAX_RECURSION_DEPTH = 9;
-	constexpr static uint32_t RT_MAX_PAYLOAD_SIZE = 32;
-	constexpr static uint32_t RT_MAX_HIT_ATTRIB_SIZE = 8;
 
 	// Pathtracing parameter indices - aliased from the shared enum in rendering_server_enums.h.
 	static constexpr int RT_PARAM_VIS_MODE = RSE::PT_PARAM_VIS_MODE;
@@ -333,21 +331,28 @@ public:
 
 	SceneRaytracingRaygenShaderRD raygen_shader;
 
-	// Raytracing pipelines keyed by RaytracingFlags.
-	HashMap<uint32_t, RID> raytracing_pipelines;
+	/// All resources for one raytracing pipeline variant, keyed by RaytracingFlags.
+	struct PipelineBundle {
+		RID pipeline;
+		RID hit_sbt;
+		RID base_shader; // Layout-defining shader -- use for uniform_set_create.
+		LocalVector<RID> owned_shaders; // All shader RIDs created for this variant (for cleanup).
+	};
 
-	HashMap<uint32_t, RID> multi_hg_shaders;
+	HashMap<uint32_t, PipelineBundle> pipeline_bundles;
 
 	struct TextureUniformInfo {
 		StringName name;
 		ShaderLanguage::ShaderNode::Uniform::Hint hint = ShaderLanguage::ShaderNode::Uniform::HINT_NONE;
 		bool use_color = false;
+		bool is_global = false;
 		uint32_t buffer_offset = 0; // Stored as bindless index in UBO
 	};
 
 	// Per-shader transpiled code for RT hit group injection.
 	struct CustomShaderEntry {
 		uint64_t source_hash = 0;
+		String vertex_code;
 		String fragment_code;
 		String fragment_globals;
 		String uniform_members; // GLSL struct members for uniform buffer
@@ -373,11 +378,14 @@ public:
 
 	const CustomShaderEntry *get_custom_shader_entry(uint32_t p_hg_index) const;
 
-	RID get_raytracing_pipeline(uint32_t p_rt_flags);
+	/// Lazily creates (or returns cached) the full pipeline bundle for the given flags.
+	const PipelineBundle &ensure_pipeline_bundle(uint32_t p_rt_flags);
 
-	void invalidate_custom_shader_pipelines();
+	RID get_raytracing_pipeline(uint32_t p_rt_flags) { return ensure_pipeline_bundle(p_rt_flags).pipeline; }
+	RID get_hit_sbt(uint32_t p_rt_flags) { return ensure_pipeline_bundle(p_rt_flags).hit_sbt; }
+	RID get_pipeline_base_shader(uint32_t p_rt_flags) { return ensure_pipeline_bundle(p_rt_flags).base_shader; }
 
-	RID get_raytracing_shader_rd(uint32_t p_rt_flags);
+	void invalidate_pipeline_bundles();
 
 	ShaderCompiler compiler;
 
@@ -389,8 +397,6 @@ public:
 	RID debug_shadow_splits_material;
 	RID default_shader_rd;
 	RID raygen_shader_version;
-	RID default_raygen_shader_rd;
-	RID dlss_rr_raygen_shader_rd;
 	RID default_shader_sdfgi_rd;
 
 	RID default_vec4_xform_buffer;

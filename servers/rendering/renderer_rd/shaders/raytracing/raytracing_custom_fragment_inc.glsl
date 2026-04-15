@@ -14,32 +14,47 @@
 //   materials[], CustomMaterialUniforms, scene_data_block
 
 MaterialData rt_mat = materials[rt_geometry_idx];
-CustomMaterialUniforms material = CustomMaterialUniforms(rt_mat.uniform_address);
+material = CustomMaterialUniforms(rt_mat.uniform_address);
 
-// Map hit data to Godot Shader Language built-in names.
+// Matrices.
 mat4 rt_view_matrix = transpose(mat4(scene_data_block.data.view_matrix[0],
 		scene_data_block.data.view_matrix[1],
 		scene_data_block.data.view_matrix[2],
 		vec4(0.0, 0.0, 0.0, 1.0)));
-vec3 vertex = (rt_view_matrix * vec4(rt_hit_pos, 1.0)).xyz;
-vec2 uv_interp = rt_uv;
-vec2 uv2_interp = rt_uv;
-vec3 normal = rt_normal;
-vec3 tangent = rt_tangent;
-vec3 binormal = rt_bitangent;
-vec3 view = -gl_WorldRayDirectionEXT;
-vec4 color_interp = vec4(1.0);
-bool rt_front_facing = rt_front_face;
-vec2 rt_screen_uv = vec2(gl_LaunchIDEXT.xy) / vec2(gl_LaunchSizeEXT.xy);
-vec4 rt_frag_coord = vec4(gl_LaunchIDEXT.xy, 0.0, 1.0);
-float global_time = scene_data_block.data.time;
-mat4 read_model_matrix = mat4(gl_ObjectToWorldEXT);
-vec2 read_viewport_size = scene_data_block.data.viewport_size;
-mat4 inv_view_matrix = transpose(mat4(scene_data_block.data.inv_view_matrix[0],
+read_model_matrix = mat4(gl_ObjectToWorldEXT);
+read_view_matrix = rt_view_matrix;
+inv_view_matrix = transpose(mat4(scene_data_block.data.inv_view_matrix[0],
 		scene_data_block.data.inv_view_matrix[1],
 		scene_data_block.data.inv_view_matrix[2],
 		vec4(0.0, 0.0, 0.0, 1.0)));
-mat4 read_view_matrix = rt_view_matrix;
+projection_matrix = scene_data_block.data.projection_matrix;
+inv_projection_matrix = scene_data_block.data.inv_projection_matrix;
+read_viewport_size = scene_data_block.data.viewport_size;
+global_time = scene_data_block.data.time;
+
+// Vertex shader inputs: object-space geometry (matches rasterizer vertex() inputs).
+mat4 rt_world_to_object = mat4(gl_WorldToObjectEXT);
+vertex = (rt_world_to_object * vec4(rt_hit_pos, 1.0)).xyz;
+normal = mat3(rt_world_to_object) * rt_normal;
+tangent = mat3(rt_world_to_object) * rt_tangent;
+binormal = mat3(rt_world_to_object) * rt_bitangent;
+uv_interp = rt_uv;
+uv2_interp = rt_uv;
+color_interp = rt_color;
+view = -gl_WorldRayDirectionEXT;
+rt_front_facing = rt_front_face;
+rt_screen_uv = vec2(gl_LaunchIDEXT.xy) / vec2(gl_LaunchSizeEXT.xy);
+rt_frag_coord = vec4(gl_LaunchIDEXT.xy, 0.0, 1.0);
+
+// Run vertex shader (computes varyings, may modify built-ins).
+/* RT_CUSTOM_VERTEX_CALL */
+
+// Post-vertex transform: object-space -> view-space (mirrors rasterizer post-vertex).
+mat4 rt_modelview = rt_view_matrix * read_model_matrix;
+vertex = (rt_modelview * vec4(vertex, 1.0)).xyz;
+normal = normalize(mat3(rt_modelview) * normal);
+tangent = normalize(mat3(rt_modelview) * tangent);
+binormal = normalize(mat3(rt_modelview) * binormal);
 
 // Fragment outputs with sensible defaults.
 vec3 albedo = vec3(1.0);
@@ -62,6 +77,8 @@ float anisotropy = 0.0;
 vec2 anisotropy_flow = vec2(1.0, 0.0);
 float alpha_scissor_threshold = 0.0;
 float alpha_hash_scale = 1.0;
+float alpha_antialiasing_edge = 0.0;
+vec2 alpha_texture_coordinate = vec2(0.0);
 
 {
 	/* RT_CUSTOM_FRAGMENT_CODE */

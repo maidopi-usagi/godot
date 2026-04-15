@@ -32,6 +32,7 @@
 
 #include "core/config/project_settings.h"
 #include "core/input/input.h"
+#include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
@@ -67,6 +68,7 @@
 #include "scene/audio/audio_stream_player.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/check_box.h"
+#include "scene/gui/panel_container.h"
 #include "scene/main/scene_tree.h"
 #include "scene/property_utils.h"
 #include "scene/resources/packed_scene.h"
@@ -75,6 +77,7 @@
 void SceneTreeDock::_nodes_drag_begin() {
 	pending_click_select = nullptr;
 	edited_object_at_drag_start = InspectorDock::get_inspector_singleton()->get_edited_object();
+	scene_tree_drag_active = true;
 }
 
 void SceneTreeDock::_quick_open(const String &p_file_path) {
@@ -1820,6 +1823,11 @@ void SceneTreeDock::_notification(int p_what) {
 				tree_item_inspected = nullptr;
 			}
 
+			if (!scene_tree_drag_active) {
+				return;
+			}
+			scene_tree_drag_active = false;
+
 			InspectorDock *inspector_dock = InspectorDock::get_singleton();
 			if (!inspector_dock->get_rect().has_point(inspector_dock->get_local_mouse_position())) {
 				Node *node_edited = Object::cast_to<Node>(InspectorDock::get_inspector_singleton()->get_edited_object());
@@ -2043,6 +2051,11 @@ bool SceneTreeDock::_update_node_path(Node *p_root_node, NodePath &r_node_path, 
 	// Try to find the target node in modified node paths.
 	HashMap<Node *, NodePath>::Iterator found_node_path = p_renames->find(target_node);
 	if (found_node_path) {
+		if (found_node_path->value.is_empty()) {
+			r_node_path = found_node_path->value;
+			return true;
+		}
+
 		String old_subnames;
 		if (r_node_path.get_subname_count() > 0) {
 			old_subnames = ":" + r_node_path.get_concatenated_subnames();
@@ -3579,29 +3592,12 @@ static bool _is_node_visible(Node *p_node) {
 	return true;
 }
 
-static bool _has_visible_children(Node *p_node) {
-	bool collapsed = p_node->is_displayed_folded();
-	if (collapsed) {
-		return false;
-	}
-
-	for (int i = 0; i < p_node->get_child_count(); i++) {
-		Node *child = p_node->get_child(i);
-		if (!_is_node_visible(child)) {
-			continue;
-		}
-
-		return true;
-	}
-
-	return false;
-}
-
 void SceneTreeDock::_normalize_drop(Node *&to_node, int &to_pos, int p_type) {
+	// Drop as last child, by default.
 	to_pos = -1;
 
 	if (p_type == -1) {
-		//drop at above selected node
+		// Drop as sibling, above.
 		if (to_node == EditorNode::get_singleton()->get_edited_scene()) {
 			to_node = nullptr;
 			ERR_FAIL_MSG("Cannot perform drop above the root node!");
@@ -3609,33 +3605,32 @@ void SceneTreeDock::_normalize_drop(Node *&to_node, int &to_pos, int p_type) {
 
 		to_pos = to_node->get_index(false);
 		to_node = to_node->get_parent();
-
 	} else if (p_type == 1) {
-		//drop at below selected node
+		// Drop as child of root node if out of bounds.
 		if (to_node == EditorNode::get_singleton()->get_edited_scene()) {
-			//if at lower sibling of root node
-			to_pos = 0; //just insert at beginning of root node
+			to_pos = -1;
 			return;
 		}
 
+		// Drop as sibling, below, by using indent space or when children are collapsed.
 		Node *lower_sibling = nullptr;
 
-		if (_has_visible_children(to_node)) {
-			to_pos = 0;
-		} else {
-			for (int i = to_node->get_index(false) + 1; i < to_node->get_parent()->get_child_count(false); i++) {
-				Node *c = to_node->get_parent()->get_child(i, false);
-				if (_is_node_visible(c)) {
-					lower_sibling = c;
-					break;
-				}
+		for (int i = to_node->get_index(false) + 1; i < to_node->get_parent()->get_child_count(false); i++) {
+			Node *c = to_node->get_parent()->get_child(i, false);
+			if (_is_node_visible(c)) {
+				lower_sibling = c;
+				break;
 			}
-			if (lower_sibling) {
-				to_pos = lower_sibling->get_index(false);
-			}
-
-			to_node = to_node->get_parent();
 		}
+
+		if (lower_sibling) {
+			to_pos = lower_sibling->get_index(false);
+		}
+
+		to_node = to_node->get_parent();
+	} else if (p_type == 2) {
+		// Drop as first child, among others.
+		to_pos = 0;
 	}
 }
 
@@ -4611,11 +4606,11 @@ void SceneTreeDock::hide_remote_tree() {
 }
 
 void SceneTreeDock::show_tab_buttons() {
-	button_hb->show();
+	button_panel->show();
 }
 
 void SceneTreeDock::hide_tab_buttons() {
-	button_hb->hide();
+	button_panel->hide();
 }
 
 void SceneTreeDock::_remote_tree_selected() {
@@ -5032,8 +5027,12 @@ SceneTreeDock::SceneTreeDock(Node *p_scene_root, EditorSelection *p_editor_selec
 	PopupMenu *tree_menu = button_tree_menu->get_popup();
 	tree_menu->connect(SceneStringName(id_pressed), callable_mp(this, &SceneTreeDock::_tool_selected).bind(false));
 
-	button_hb = memnew(HBoxContainer);
-	main_vbox->add_child(button_hb);
+	button_panel = memnew(PanelContainer);
+	button_panel->set_theme_type_variation("PanelContainerTabbarInner");
+	main_vbox->add_child(button_panel);
+
+	HBoxContainer *button_hb = memnew(HBoxContainer);
+	button_panel->add_child(button_hb);
 
 	edit_remote = memnew(Button);
 	edit_remote->set_theme_type_variation(SceneStringName(FlatButton));
@@ -5054,7 +5053,7 @@ SceneTreeDock::SceneTreeDock(Node *p_scene_root, EditorSelection *p_editor_selec
 	edit_local->connect(SceneStringName(pressed), callable_mp(this, &SceneTreeDock::_local_tree_selected));
 
 	remote_tree = nullptr;
-	button_hb->hide();
+	button_panel->hide();
 
 	main_mc = memnew(MarginContainer);
 	main_vbox->add_child(main_mc);

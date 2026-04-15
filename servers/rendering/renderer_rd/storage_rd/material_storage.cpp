@@ -2027,6 +2027,26 @@ RID MaterialStorage::global_shader_uniforms_get_storage_buffer() const {
 	return global_shader_uniforms.buffer;
 }
 
+RID MaterialStorage::global_shader_uniform_get_texture(const StringName &p_name) const {
+	const GlobalShaderUniforms::Variable *v = global_shader_uniforms.variables.getptr(p_name);
+	if (!v || v->buffer_index >= 0) {
+		return RID();
+	}
+	RID rid = v->override;
+	if (!rid.is_valid()) {
+		rid = v->value;
+	}
+	return rid;
+}
+
+int32_t MaterialStorage::global_shader_uniform_get_buffer_index(const StringName &p_name) const {
+	const GlobalShaderUniforms::Variable *v = global_shader_uniforms.variables.getptr(p_name);
+	if (!v) {
+		return -1;
+	}
+	return v->buffer_index;
+}
+
 int32_t MaterialStorage::global_shader_parameters_instance_allocate(RID p_instance) {
 	ERR_FAIL_COND_V(global_shader_uniforms.instance_buffer_pos.has(p_instance), -1);
 	int32_t pos = _global_shader_uniform_allocate(ShaderLanguage::MAX_INSTANCE_UNIFORM_INDICES);

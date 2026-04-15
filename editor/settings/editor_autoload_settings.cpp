@@ -32,6 +32,8 @@
 
 #include "core/config/project_settings.h"
 #include "core/core_constants.h"
+#include "core/io/resource_loader.h"
+#include "core/io/resource_saver.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "editor/docks/filesystem_dock.h"
@@ -521,6 +523,7 @@ void EditorAutoloadSettings::update_autoload() {
 
 		TreeItem *item = tree->create_item(root);
 		item->set_text(0, name);
+		item->set_auto_translate_mode(0, AUTO_TRANSLATE_MODE_DISABLED); // For tooltip.
 		item->set_editable(0, true);
 
 		item->set_text(1, ResourceUID::ensure_path(scr_path));

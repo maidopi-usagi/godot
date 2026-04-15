@@ -24,11 +24,16 @@ layout(set = 0, binding = 2, std140) uniform SceneDataBlock {
 }
 scene_data_block;
 
+layout(set = 0, binding = 14, std430) readonly buffer GlobalShaderUniformData {
+	vec4 data[256];
+}
+global_shader_uniforms;
+
 #ifndef RT_STAGE_ANY_HIT
 
 layout(set = 0, binding = 6, std140) uniform RaytracingParams {
 	vec4 rt_params[4];
-};
+}
 
 float get_rt_param(uint idx) {
 	return rt_params[idx >> 2u][idx & 3u];
