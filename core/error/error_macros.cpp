@@ -30,8 +30,8 @@
 
 #include "error_macros.h"
 
-#include "core/error/error_backtrace.h"
 #include "core/core_globals.h"
+#include "core/error/error_backtrace.h"
 #include "core/io/logger.h"
 #include "core/object/object_id.h"
 #include "core/object/script_language.h"

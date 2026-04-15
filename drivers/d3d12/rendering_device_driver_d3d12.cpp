@@ -36,6 +36,7 @@
 #include "drivers/d3d12/d3d12_hooks.h"
 #include "drivers/d3d12/rendering_context_driver_d3d12.h"
 #include "drivers/streamline/streamline.h"
+
 #include <drivers/d3d12/godot_d3d12ma.h>
 #include <drivers/d3d12/godot_nir.h>
 #include <dxgi1_6.h>
