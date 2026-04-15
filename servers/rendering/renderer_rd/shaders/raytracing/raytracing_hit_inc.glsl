@@ -6,10 +6,10 @@
 // ============================================================================
 layout(buffer_reference, std430) readonly buffer FloatBuffer {
 	float v[];
-}
+};
 layout(buffer_reference, std430) readonly buffer Uint32Buffer {
 	uint v[];
-}
+};
 
 // ============================================================================
 // GEOMETRY DATA (matches C++ RT_GeometryData, 128 bytes)

@@ -206,11 +206,11 @@ layout(set = 1, binding = 0) uniform texture2D bindless_textures[];
 
 layout(set = 0, binding = 3, std430) readonly buffer GeometryBuffer {
 	GeometryData geometries[];
-}
+};
 
 layout(set = 0, binding = 5, std430) readonly buffer MaterialBuffer {
 	MaterialData materials[];
-}
+};
 
 #include "raytracing_lights_inc.glsl"
 
@@ -492,11 +492,11 @@ layout(location = 0) rayPayloadInEXT PathPayload payload;
 
 layout(set = 0, binding = 3, std430) readonly buffer GeometryBuffer {
 	GeometryData geometries[];
-}
+};
 
 layout(set = 0, binding = 5, std430) readonly buffer MaterialBuffer {
 	MaterialData materials[];
-}
+};
 
 layout(set = 1, binding = 0) uniform texture2D bindless_textures[];
 

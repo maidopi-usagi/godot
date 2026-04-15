@@ -33,7 +33,7 @@ global_shader_uniforms;
 
 layout(set = 0, binding = 6, std140) uniform RaytracingParams {
 	vec4 rt_params[4];
-}
+};
 
 float get_rt_param(uint idx) {
 	return rt_params[idx >> 2u][idx & 3u];
