@@ -473,13 +473,152 @@ uint32_t SceneShaderRaytracing::register_custom_shader(uint32_t p_shader_id, RID
 	return hg_index;
 }
 
+uint32_t SceneShaderRaytracing::register_procedural_shader(uint32_t p_shader_id, RID p_material) {
+	HashMap<uint32_t, uint32_t>::Iterator it = frame_shader_id_to_hg.find(p_shader_id);
+	if (it != frame_shader_id_to_hg.end()) {
+		return it->value;
+	}
+
+	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
+	String code = material_storage->material_get_shader_code(p_material);
+	uint64_t code_hash = code.hash64();
+
+	HashMap<uint32_t, CustomShaderEntry>::Iterator cache_it = compilation_cache.find(p_shader_id);
+	if (cache_it == compilation_cache.end() || cache_it->value.source_hash != code_hash) {
+		ShaderCompiler::IdentifierActions actions;
+		actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_VERTEX;
+		actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_FRAGMENT;
+		actions.entry_point_stages["light"] = ShaderCompiler::STAGE_FRAGMENT;
+		actions.entry_point_stages["intersection"] = ShaderCompiler::STAGE_INTERSECTION;
+
+		bool detected_alpha_clip = false;
+		actions.usage_flag_pointers["ALPHA_SCISSOR_THRESHOLD"] = &detected_alpha_clip;
+		actions.usage_flag_pointers["ALPHA_HASH_SCALE"] = &detected_alpha_clip;
+
+		HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> uniform_sink;
+		actions.uniforms = &uniform_sink;
+
+		ShaderCompiler::GeneratedCode gen_code;
+		Error err = compiler.compile(RSE::SHADER_SPATIAL, code, &actions, String(), gen_code);
+
+		CustomShaderEntry entry;
+		entry.source_hash = code_hash;
+		entry.is_procedural = true;
+		entry.uses_alpha_clip = detected_alpha_clip;
+		if (err == OK) {
+			entry.intersection_code = gen_code.code.has("intersection") ? gen_code.code["intersection"] : String();
+			entry.intersection_globals = gen_code.stage_globals[ShaderCompiler::STAGE_INTERSECTION];
+			entry.fragment_code = gen_code.code.has("fragment") ? gen_code.code["fragment"] : String();
+			entry.fragment_globals = gen_code.stage_globals[ShaderCompiler::STAGE_FRAGMENT];
+			entry.uniform_members = gen_code.uniforms;
+			entry.uniform_total_size = gen_code.uniform_total_size;
+			entry.uniform_offsets = gen_code.uniform_offsets;
+			entry.uniforms = uniform_sink;
+
+			// Compute raw (unrounded) end of the last uniform member.
+			uint32_t raw_uniform_end = 0;
+			for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &kv : uniform_sink) {
+				const ShaderLanguage::ShaderNode::Uniform &uu = kv.value;
+				if (ShaderLanguage::is_sampler_type(uu.type) || uu.order < 0 || uu.order >= (int)gen_code.uniform_offsets.size()) {
+					continue;
+				}
+				uint32_t end = gen_code.uniform_offsets[uu.order] + ShaderLanguage::get_datatype_size(uu.type);
+				if (end > raw_uniform_end) {
+					raw_uniform_end = end;
+				}
+			}
+
+			for (int ti = 0; ti < gen_code.texture_uniforms.size(); ti++) {
+				const ShaderCompiler::GeneratedCode::Texture &tex = gen_code.texture_uniforms[ti];
+				if (tex.name.is_empty()) {
+					continue;
+				}
+
+				// Strip texture declarations from both globals.
+				String decl_marker = " m_" + tex.name + ";";
+				for (String *globals : { &entry.intersection_globals, &entry.fragment_globals }) {
+					int pos = globals->find(decl_marker);
+					if (pos >= 0) {
+						int line_start = globals->rfind("\n", pos);
+						line_start = (line_start < 0) ? 0 : line_start + 1;
+						int line_end = globals->find("\n", pos);
+						if (line_end < 0) {
+							line_end = globals->length();
+						} else {
+							line_end += 1;
+						}
+						*globals = globals->substr(0, line_start) + globals->substr(line_end);
+					}
+				}
+
+				uint32_t offset = raw_uniform_end;
+				if (offset % 4 != 0) {
+					offset += 4 - (offset % 4);
+				}
+
+				TextureUniformInfo tui;
+				tui.name = tex.name;
+				tui.hint = tex.hint;
+				tui.use_color = tex.use_color;
+				tui.buffer_offset = offset;
+				entry.texture_uniforms.push_back(tui);
+
+				entry.uniform_members += "uint m_" + tex.name + ";\n";
+				raw_uniform_end = offset + 4;
+			}
+
+			entry.uniform_total_size = raw_uniform_end;
+			if (entry.uniform_total_size % 16 != 0) {
+				entry.uniform_total_size += 16 - (entry.uniform_total_size % 16);
+			}
+		} else {
+			WARN_PRINT_ONCE("RT: Failed to compile procedural shader (shader_id=" + itos(p_shader_id) + "). Skipping.");
+			// Cache the failure with the real hash so we don't retry every frame.
+			entry.intersection_code = String();
+			if (cache_it != compilation_cache.end()) {
+				cache_it->value = entry;
+			} else {
+				compilation_cache.insert(p_shader_id, entry);
+			}
+			frame_shader_id_to_hg[p_shader_id] = 0;
+			return 0;
+		}
+
+		if (cache_it != compilation_cache.end()) {
+			cache_it->value = entry;
+		} else {
+			cache_it = compilation_cache.insert(p_shader_id, entry);
+		}
+	}
+
+	if (cache_it->value.intersection_code.is_empty()) {
+		frame_shader_id_to_hg[p_shader_id] = 0;
+		return 0;
+	}
+
+	uint32_t hg_index = frame_custom_shaders.size() + 1;
+	frame_custom_shaders.push_back(cache_it->value);
+	frame_shader_id_to_hg[p_shader_id] = hg_index;
+	return hg_index;
+}
+
 void SceneShaderRaytracing::finalize_custom_shaders() {
+	bool any_procedural = false;
 	uint64_t new_hash = 0;
 	for (uint32_t i = 0; i < frame_custom_shaders.size(); i++) {
 		new_hash = hash_djb2_one_64(frame_custom_shaders[i].vertex_code.hash64(), new_hash);
 		new_hash = hash_djb2_one_64(frame_custom_shaders[i].fragment_code.hash64(), new_hash);
+		new_hash = hash_djb2_one_64(frame_custom_shaders[i].fragment_globals.hash64(), new_hash);
 		new_hash = hash_djb2_one_64(frame_custom_shaders[i].uniform_members.hash64(), new_hash);
 		new_hash = hash_djb2_one_64(frame_custom_shaders[i].uses_alpha_clip ? 1 : 0, new_hash);
+		new_hash = hash_djb2_one_64(frame_custom_shaders[i].intersection_code.hash64(), new_hash);
+		new_hash = hash_djb2_one_64(frame_custom_shaders[i].intersection_globals.hash64(), new_hash);
+		new_hash = hash_djb2_one_64(frame_custom_shaders[i].is_procedural ? 1 : 0, new_hash);
+		any_procedural = any_procedural || frame_custom_shaders[i].is_procedural;
+	}
+
+	if (any_procedural != has_intersection_shaders) {
+		has_intersection_shaders = any_procedural;
 	}
 
 	if (new_hash != active_custom_shaders_hash || frame_custom_shaders.size() != active_custom_shaders.size()) {
@@ -494,6 +633,29 @@ const SceneShaderRaytracing::CustomShaderEntry *SceneShaderRaytracing::get_custo
 		return nullptr;
 	}
 	return &frame_custom_shaders[p_hg_index - 1];
+}
+
+uint32_t SceneShaderRaytracing::compute_rt_flags(const float *p_env_params, bool p_fog_enabled) {
+	uint32_t flags = RT_FLAG_NONE;
+	uint32_t sample_count = 1;
+	uint32_t max_bounces = 3;
+
+	if (p_env_params) {
+		if (p_env_params[RT_PARAM_VIS_MODE] != 0.0f) {
+			flags |= RT_FLAG_DEBUG_VIS_ENABLED;
+		}
+		sample_count = MAX(1u, (uint32_t)p_env_params[RT_PARAM_SAMPLE_COUNT]);
+		max_bounces = MAX(1u, MIN(8u, (uint32_t)p_env_params[RT_PARAM_MAX_BOUNCES]));
+		if ((uint32_t)p_env_params[RT_PARAM_DENOISER] == RSE::PT_DENOISER_DLSS_RAY_RECONSTRUCTION) {
+			flags |= RT_FLAG_DLSS_RR_ENABLED;
+		}
+	}
+
+	if (p_fog_enabled) {
+		flags |= RT_FLAG_FOG_ENABLED;
+	}
+
+	return rt_flags_pack(flags, sample_count, max_bounces);
 }
 
 SceneShaderRaytracing *SceneShaderRaytracing::get_singleton() {
@@ -520,6 +682,31 @@ const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipel
 
 	Vector<String> sources = raygen_shader.version_build_variant_stage_sources(raygen_shader_version, variant);
 	ERR_FAIL_COND_V(sources.is_empty(), EMPTY_BUNDLE);
+
+	// Procedural instances need full HitAttribs (normal/tangent).
+	if (has_intersection_shaders) {
+		static const String is_define = "#define ENABLE_INTERSECTION_SHADERS\n";
+		for (int i = 0; i < sources.size(); i++) {
+			if (sources[i].is_empty()) {
+				continue;
+			}
+			int ver_pos = sources[i].find("#version");
+			if (ver_pos >= 0) {
+				int nl = sources[i].find("\n", ver_pos);
+				if (nl >= 0) {
+					sources.write[i] = sources[i].insert(nl + 1, is_define);
+				}
+			}
+		}
+	}
+
+	// Save intersection source as template for procedural HGs; clear it from
+	// the base so HG0 stays a triangle hit group.
+	String intersection_source_template;
+	if (sources.size() > RD::SHADER_STAGE_INTERSECTION) {
+		intersection_source_template = sources[RD::SHADER_STAGE_INTERSECTION];
+		sources.write[RD::SHADER_STAGE_INTERSECTION] = String();
+	}
 
 	Vector<RD::ShaderStageSPIRVData> base_stages = ShaderRD::compile_stages(sources, {});
 	ERR_FAIL_COND_V(base_stages.is_empty(), EMPTY_BUNDLE);
@@ -583,6 +770,15 @@ const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipel
 		hg0_fallback.closest_hit_shader = base_ps;
 		hg0_fallback.any_hit_shader = base_ps;
 
+		// Prepare intersection source template for procedural HGs.
+		String is_template;
+		if (!intersection_source_template.is_empty()) {
+			int base_is_ver = intersection_source_template.find("#version");
+			if (base_is_ver >= 0) {
+				is_template = intersection_source_template.insert(intersection_source_template.find("\n", base_is_ver) + 1, custom_hg_define);
+			}
+		}
+
 		String error;
 		for (uint32_t hg_i = 0; hg_i < active_custom_shaders.size(); hg_i++) {
 			const CustomShaderEntry &entry = active_custom_shaders[hg_i];
@@ -601,9 +797,30 @@ const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipel
 				vertex_call = "rt_run_vertex_shader();";
 			}
 
+			// Procedural without custom fragment: fall back to standard material eval.
+			String fragment_code = entry.fragment_code;
+			if (fragment_code.is_empty() && entry.is_procedural) {
+				fragment_code =
+						"vec2 mat_uv = uv_interp * rt_mat.uv1_scale + rt_mat.uv1_offset;\n"
+						"vec4 albedo_tex = sample_material_texture(rt_mat.albedo_texture_idx, mat_uv, rt_mat.flags);\n"
+						"albedo = albedo_tex.rgb * rt_mat.albedo_color.rgb;\n"
+						"alpha = albedo_tex.a * rt_mat.albedo_color.a;\n"
+						"vec3 orm = sample_material_texture(rt_mat.orm_texture_idx, mat_uv, rt_mat.flags).rgb;\n"
+						"roughness = orm.g * rt_mat.roughness;\n"
+						"metallic = orm.b * rt_mat.metallic;\n"
+						"if ((rt_mat.flags & 1u) != 0u) {\n"
+						"    normal_map = sample_material_texture(rt_mat.normal_texture_idx, mat_uv, rt_mat.flags).rgb;\n"
+						"    normal_map_depth = rt_mat.normal_map_depth;\n"
+						"}\n"
+						"if ((rt_mat.flags & 2u) != 0u) {\n"
+						"    emission = sample_material_texture(rt_mat.emission_texture_idx, mat_uv, rt_mat.flags).rgb\n"
+						"             * rt_mat.emission_color * rt_mat.emission_strength;\n"
+						"}\n";
+			}
+
 			String ch_src = ch_template;
 			ch_src = ch_src.replace("/* RT_CUSTOM_FRAGMENT_GLOBALS */", entry.fragment_globals);
-			ch_src = ch_src.replace("/* RT_CUSTOM_FRAGMENT_CODE */", entry.fragment_code);
+			ch_src = ch_src.replace("/* RT_CUSTOM_FRAGMENT_CODE */", fragment_code);
 			ch_src = ch_src.replace("/* RT_CUSTOM_UNIFORM_MEMBERS */", uniform_members);
 			ch_src = ch_src.replace("/* RT_CUSTOM_TEXTURE_DEFINES */", tex_defines);
 			ch_src = ch_src.replace("/* RT_CUSTOM_VERTEX_FUNCTION */", vertex_function);
@@ -618,7 +835,7 @@ const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipel
 				continue;
 			}
 
-			// Start with base raygen + miss stages for matching set_formats.
+			// Include base raygen + miss so per-HG shader matches base `stages` bits.
 			Vector<RD::ShaderStageSPIRVData> custom_stages = base_non_hit_stages;
 			{
 				RD::ShaderStageSPIRVData sd;
@@ -630,7 +847,7 @@ const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipel
 			if (entry.uses_alpha_clip) {
 				String ah_src = ah_template;
 				ah_src = ah_src.replace("/* RT_CUSTOM_FRAGMENT_GLOBALS */", entry.fragment_globals);
-				ah_src = ah_src.replace("/* RT_CUSTOM_FRAGMENT_CODE */", entry.fragment_code);
+				ah_src = ah_src.replace("/* RT_CUSTOM_FRAGMENT_CODE */", fragment_code);
 				ah_src = ah_src.replace("/* RT_CUSTOM_UNIFORM_MEMBERS */", uniform_members);
 				ah_src = ah_src.replace("/* RT_CUSTOM_TEXTURE_DEFINES */", tex_defines);
 				ah_src = ah_src.replace("/* RT_CUSTOM_VERTEX_FUNCTION */", vertex_function);
@@ -659,6 +876,29 @@ const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipel
 				}
 			}
 
+			// Procedural HG: add intersection stage. Driver auto-promotes to PROCEDURAL_HIT_GROUP.
+			if (entry.is_procedural && !is_template.is_empty()) {
+				String is_src = is_template;
+				is_src = is_src.replace("/* RT_CUSTOM_INTERSECTION_GLOBALS */", entry.intersection_globals);
+				is_src = is_src.replace("/* RT_CUSTOM_INTERSECTION_CODE */", entry.intersection_code);
+				is_src = is_src.replace("/* RT_CUSTOM_UNIFORM_MEMBERS */", uniform_members);
+				is_src = is_src.replace("/* RT_CUSTOM_TEXTURE_DEFINES */", tex_defines);
+
+				Vector<uint8_t> is_spirv = RD::get_singleton()->shader_compile_spirv_from_source(
+						RD::SHADER_STAGE_INTERSECTION, is_src, RD::SHADER_LANGUAGE_GLSL, &error);
+				if (is_spirv.is_empty()) {
+					WARN_PRINT("Failed to compile HG" + itos(hg_i + 1) + " intersection, falling back to default material: " + error);
+					_dump_failed_shader(is_src, "hg" + itos(hg_i + 1) + "_intersection");
+					hit_groups.push_back(hg0_fallback);
+					continue;
+				}
+
+				RD::ShaderStageSPIRVData sd;
+				sd.shader_stage = RD::SHADER_STAGE_INTERSECTION;
+				sd.spirv = is_spirv;
+				custom_stages.push_back(sd);
+			}
+
 			Vector<uint8_t> custom_binary = RD::get_singleton()->shader_compile_binary_from_spirv(
 					custom_stages, "RT_hg" + itos(hg_i + 1));
 			if (custom_binary.is_empty()) {
@@ -681,6 +921,9 @@ const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipel
 			hg.closest_hit_shader = custom_ps;
 			if (entry.uses_alpha_clip) {
 				hg.any_hit_shader = custom_ps;
+			}
+			if (entry.is_procedural && !is_template.is_empty()) {
+				hg.intersection_shader = custom_ps;
 			}
 
 			hit_groups.push_back(hg);
@@ -707,6 +950,7 @@ const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipel
 	RD::HitShaderBindingTableRange sbt_range = RD::get_singleton()->hit_sbt_range_alloc(bundle.hit_sbt, sbt_size);
 	ERR_FAIL_COND_V(!sbt_range, EMPTY_BUNDLE);
 
+	// Identity SBT: slot i -> HG i, past-end -> HG 0.
 	LocalVector<uint32_t> indices;
 	indices.resize(sbt_size);
 	for (uint32_t i = 0; i < sbt_size; i++) {
@@ -772,6 +1016,7 @@ void SceneShaderRaytracing::init(const String p_defines) {
 		// Builtins.
 
 		actions.renames["TIME"] = "global_time";
+		actions.renames["PREV_TIME"] = "global_prev_time";
 		actions.renames["EXPOSURE"] = "(1.0 / scene_data_block.data.emissive_exposure_normalization)";
 		actions.renames["PI"] = String::num(Math::PI);
 		actions.renames["TAU"] = String::num(Math::TAU);
@@ -932,6 +1177,23 @@ void SceneShaderRaytracing::init(const String p_defines) {
 		actions.instance_uniform_index_variable = "instances.data[instance_index_interp].instance_uniforms_ofs";
 
 		actions.check_multiview_samplers = RendererCompositorRD::get_singleton()->is_xr_enabled(); // Make sure we check sampling multiview textures.
+
+		// Intersection stage built-in renames (must match locals in the GLSL template).
+		actions.renames["ORIGIN"] = "m_ORIGIN";
+		actions.renames["DIRECTION"] = "m_DIRECTION";
+		actions.renames["WORLD_ORIGIN"] = "m_WORLD_ORIGIN";
+		actions.renames["WORLD_DIRECTION"] = "m_WORLD_DIRECTION";
+		actions.renames["T_MIN"] = "m_T_MIN";
+		actions.renames["T_MAX"] = "m_T_MAX";
+		actions.renames["HIT_UV"] = "m_HIT_UV";
+		actions.renames["HIT_NORMAL"] = "m_HIT_NORMAL";
+		actions.renames["HIT_TANGENT"] = "m_HIT_TANGENT";
+		actions.renames["PREV_POSITION"] = "m_PREV_POSITION";
+		actions.renames["AABB_MIN"] = "m_AABB_MIN";
+		actions.renames["AABB_MAX"] = "m_AABB_MAX";
+
+		// Stage function rename: bypass _mkid prefix to match the GLSL macro.
+		actions.renames["report_intersection"] = "report_intersection";
 
 		compiler.initialize(actions);
 	}

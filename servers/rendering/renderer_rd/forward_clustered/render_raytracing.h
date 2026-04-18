@@ -79,6 +79,12 @@ struct alignas(16) RT_GeometryData {
 };
 static_assert(sizeof(RT_GeometryData) == 128, "RT_GeometryData must be 128 bytes for std430");
 
+/// Per-instance motion data for velocity computation (matches GLSL InstanceMotionData, 48 bytes).
+struct RT_InstanceMotionData {
+	float prev_object_to_world[12]; // Previous object-to-world (mat3x4, transposed 3x4).
+};
+static_assert(sizeof(RT_InstanceMotionData) == 48, "RT_InstanceMotionData must be 48 bytes");
+
 // Must match GLSL MaterialData (std430, 96 bytes).
 struct alignas(16) RT_MaterialData {
 	uint32_t albedo_texture_idx;
@@ -155,6 +161,20 @@ enum {
 
 enum {
 	RT_GEOM_FLAG_COMPRESSED = 1u,
+	RT_GEOM_FLAG_PROCEDURAL = 2u,
+};
+
+/// Per-instance state for procedural RT geometry. Heap-allocated, only exists for procedural instances.
+struct RTProceduralState {
+	AABB culling_aabb;
+	PackedFloat32Array aabb_data; // N * 6 floats (min/max per AABB). Empty = single AABB.
+	bool expose_bounds = false;
+	bool dirty = true;
+	RID blas;
+	RID gpu_buffer;
+	uint32_t gpu_buffer_capacity = 0; // Bytes, grow-only.
+	uint64_t gpu_buffer_address = 0; // BDA (0 = not exposed).
+	uint32_t aabb_count = 0;
 };
 
 struct RTSurfaceData {
@@ -216,8 +236,16 @@ class RenderRaytracing {
 	// Per-frame buffers.
 	LocalVector<RT_GeometryData> geometry_data;
 	LocalVector<RT_MaterialData> material_data;
-	RID material_buffer;
+	LocalVector<int32_t> motion_indices; ///< Per-instance: index into motion_transforms[], or -1.
+	LocalVector<RT_InstanceMotionData> motion_transforms; ///< Compact: only moving instances.
 	RID geometry_buffer;
+	uint32_t geometry_buffer_capacity = 0;
+	RID material_buffer;
+	uint32_t material_buffer_capacity = 0;
+	RID motion_index_buffer;
+	uint32_t motion_index_buffer_capacity = 0;
+	RID motion_transform_buffer;
+	uint32_t motion_transform_buffer_capacity = 0;
 	RID light_buffer;
 	RID params_buffer;
 
@@ -246,6 +274,7 @@ class RenderRaytracing {
 			const Transform3D &p_transform,
 			LocalVector<RID> &r_dirty_blas_list);
 	RTMaterialData *process_material(RID p_material_rid, uint16_t p_material_invalidation_counter);
+	void update_procedural_blas(RTProceduralState *p_state, LocalVector<RID> &r_dirty_blas_list);
 	void build_acceleration_structures(const LocalVector<RID> &p_dirty_blas_list);
 	void finalize_buffers();
 
@@ -256,7 +285,7 @@ public:
 	void prepare_frame();
 	void build_tlas(const RenderDataRD *p_render_data);
 	uint32_t gather_lights(const RenderDataRD *p_render_data, RT_LightData *r_light_data, uint32_t p_max_lights);
-	void update_uniform_set(const RenderDataRD *p_render_data);
+	void update_uniform_set(const RenderDataRD *p_render_data, uint32_t p_rt_flags);
 	void copy_output_texture(const RenderDataRD *p_render_data);
 
 	SceneShaderRaytracing *get_shader() const { return shader; }

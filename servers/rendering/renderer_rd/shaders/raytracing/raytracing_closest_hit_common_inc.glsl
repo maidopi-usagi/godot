@@ -5,7 +5,7 @@
 //   raytracing_material_eval_inc.glsl
 //
 // Required bindings (before this file):
-//   tlas, payload, scene_data_block, geometries[], materials[], bindless_textures[],
+//   tlas, payload, scene_data_block, geometries[], motion_indices[], materials[], motion_transforms[], bindless_textures[],
 //   SAMPLER_* (12 material samplers), rt_params, rt_depth_image,
 //   DLSS-RR images (ifdef DLSS_RR_ENABLED)
 
@@ -25,12 +25,14 @@ struct HitData {
 };
 
 /// Fetch vertex attributes and transform to world space.
-/// Requires hitAttributeEXT attribs and GeometryBuffer/MaterialBuffer bindings.
+/// Requires hitAttributeEXT HitAttribs and GeometryBuffer/MaterialBuffer bindings.
 HitData compute_hit_data() {
 	HitData h;
 	h.geometry_idx = gl_InstanceCustomIndexEXT;
 	GeometryData geom = geometries[h.geometry_idx];
 
+	// Custom hit groups may reference vertex color in their fragment code, so
+	// pull all attributes; default HGs can skip color for perf.
 #ifdef RT_CUSTOM_HIT_GROUP
 	VertexAttributes attrs = fetch_vertex_attributes(geom, attribs, FETCH_ALL);
 #else
@@ -45,13 +47,32 @@ HitData compute_hit_data() {
 			normalize(model_rotation[1]),
 			normalize(model_rotation[2]));
 
-	h.geometry_normal = normalize(normal_matrix * attrs.normal);
-	h.tangent = normalize(normal_matrix * attrs.tangent);
-	h.bitangent = cross(h.geometry_normal, h.tangent) * attrs.bitangent_sign;
+#ifdef ENABLE_INTERSECTION_SHADERS
+	if ((geom.flags & FLAG_PROCEDURAL) != 0u) {
+		h.uv = hit_attribs.bary_or_uv;
+		vec3 obj_normal = normalize(unpackSnorm4x8(hit_attribs.packed_normal).xyz);
+		vec3 obj_tangent = normalize(unpackSnorm4x8(hit_attribs.packed_tangent).xyz);
+		h.geometry_normal = normalize(normal_matrix * obj_normal);
+		h.tangent = normalize(normal_matrix * obj_tangent);
+		h.bitangent = cross(h.geometry_normal, h.tangent);
 
-	h.is_front_face = (gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT);
-	if (!h.is_front_face) {
-		h.geometry_normal = -h.geometry_normal;
+		h.is_front_face = (dot(h.geometry_normal, -gl_WorldRayDirectionEXT) > 0.0);
+		if (!h.is_front_face) {
+			h.geometry_normal = -h.geometry_normal;
+		}
+	} else
+#endif
+	{
+		// Triangle hit: reuse `attrs` from the top-level fetch (already has
+		// UV / TBN from FETCH_UV | FETCH_TBN or FETCH_ALL).
+		h.geometry_normal = normalize(normal_matrix * attrs.normal);
+		h.tangent = normalize(normal_matrix * attrs.tangent);
+		h.bitangent = cross(h.geometry_normal, h.tangent) * attrs.bitangent_sign;
+
+		h.is_front_face = (gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT);
+		if (!h.is_front_face) {
+			h.geometry_normal = -h.geometry_normal;
+		}
 	}
 
 	h.hit_pos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
@@ -102,6 +123,62 @@ void write_primary_hit_depth(vec3 hit_pos) {
 		float ndc_depth = clip_pos.z / clip_pos.w;
 		imageStore(rt_depth_image, ivec2(gl_LaunchIDEXT.xy), vec4(ndc_depth));
 	}
+}
+
+// ============================================================================
+// VELOCITY WRITE (primary ray only, MV-gated)
+// ============================================================================
+
+#ifdef ENABLE_INTERSECTION_SHADERS
+/// Decode the FP16-compressed PREV_POSITION delta from HitAttribs.
+vec3 decode_prev_pos_delta() {
+	uint dx_low = (hit_attribs.packed_normal >> 24u) & 0xFFu;
+	uint dx_high = (hit_attribs.packed_tangent >> 24u) & 0xFFu;
+	float delta_x = unpackHalf2x16(dx_low | (dx_high << 8u)).x;
+	vec2 delta_yz = unpackHalf2x16(hit_attribs.prev_pos_delta_yz);
+	return vec3(delta_x, delta_yz.x, delta_yz.y);
+}
+#endif
+
+/// Reconstruct previous-frame mat4 from a compact motion transform entry.
+mat4 decode_prev_object_to_world(int motion_idx) {
+	InstanceMotionData m = motion_transforms[motion_idx];
+	return transpose(mat4(
+			vec4(m.prev_xform[0], m.prev_xform[1], m.prev_xform[2], m.prev_xform[3]),
+			vec4(m.prev_xform[4], m.prev_xform[5], m.prev_xform[6], m.prev_xform[7]),
+			vec4(m.prev_xform[8], m.prev_xform[9], m.prev_xform[10], m.prev_xform[11]),
+			vec4(0.0, 0.0, 0.0, 1.0)));
+}
+
+/// Write motion vectors for primary ray hits (bounce 0, sample 0 only).
+/// Uses unjittered VP matrices matching the raster motion_vectors_store convention.
+void write_primary_hit_velocity(vec3 hit_pos) {
+	if (get_total_bounces(payload.packed_bounces_flags) != 0u || !is_sample_zero(payload.packed_bounces_flags)) {
+		return;
+	}
+
+	uint geom_idx = gl_InstanceCustomIndexEXT;
+	int mi = motion_indices[geom_idx];
+
+	// Resolve previous-frame model matrix: compact entry if moved, current transform otherwise.
+	mat4 prev_model = (mi >= 0) ? decode_prev_object_to_world(mi) : mat4(gl_ObjectToWorldEXT);
+
+	vec3 obj_pos = (mat4(gl_WorldToObjectEXT) * vec4(hit_pos, 1.0)).xyz;
+	vec3 prev_obj_pos = obj_pos;
+
+#ifdef ENABLE_INTERSECTION_SHADERS
+	GeometryData geom = geometries[geom_idx];
+	if ((geom.flags & FLAG_PROCEDURAL) != 0u) {
+		prev_obj_pos += decode_prev_pos_delta();
+	}
+#endif
+
+	vec3 prev_world_pos = (prev_model * vec4(prev_obj_pos, 1.0)).xyz;
+
+	vec2 curr_uv = project_uv(hit_pos, curr_vp_unjittered);
+	vec2 prev_uv = project_uv(prev_world_pos, prev_vp_unjittered);
+
+	imageStore(rt_velocity_image, ivec2(gl_LaunchIDEXT.xy), vec4(prev_uv - curr_uv, 0.0, 0.0));
 }
 
 // ============================================================================

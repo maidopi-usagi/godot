@@ -67,6 +67,12 @@ RenderRaytracing::~RenderRaytracing() {
 	if (material_buffer.is_valid()) {
 		RD::get_singleton()->free_rid(material_buffer);
 	}
+	if (motion_index_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(motion_index_buffer);
+	}
+	if (motion_transform_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(motion_transform_buffer);
+	}
 	if (light_buffer.is_valid()) {
 		RD::get_singleton()->free_rid(light_buffer);
 	}
@@ -203,18 +209,16 @@ void RenderRaytracing::prepare_frame() {
 	sbt_offsets.clear();
 	geometry_data.clear();
 	material_data.clear();
+	motion_indices.clear();
+	motion_transforms.clear();
+
+	// Procedural BLAS + AABB buffers now live on the geometry instance (grow-only).
+	// Nothing to free here per frame.
 
 	SceneShaderRaytracing::get_singleton()->begin_custom_shader_frame();
 
-	// Free per-frame resources
-	if (geometry_buffer.is_valid()) {
-		RD::get_singleton()->free_rid(geometry_buffer);
-		geometry_buffer = RID();
-	}
-	if (material_buffer.is_valid()) {
-		RD::get_singleton()->free_rid(material_buffer);
-		material_buffer = RID();
-	}
+	// geometry/material/motion buffers are grow-only; the TLAS is reused
+	// across frames. finalize_buffers() handles per-frame uploads.
 
 	// Reset per-frame metrics
 	cache_hits = 0;
@@ -450,17 +454,19 @@ RTSurfaceData *RenderRaytracing::process_surface(
 		}
 
 		RD::AccelerationStructureGeometry as_geom;
-		as_geom.vertex_buffer = vertex_buffer;
-		as_geom.vertex_stride = position_stride;
-		as_geom.vertex_count = vertex_count;
-		as_geom.vertex_format = pos_format;
+		// Type defaults to TYPE_TRIANGLES; set explicitly for clarity.
+		as_geom.type = RD::AccelerationStructureGeometry::TYPE_TRIANGLES;
+		as_geom.geometry.triangles.vertex_buffer = vertex_buffer;
+		as_geom.geometry.triangles.vertex_stride = position_stride;
+		as_geom.geometry.triangles.vertex_count = vertex_count;
+		as_geom.geometry.triangles.vertex_format = pos_format;
 
 		if (index_buffer.is_valid() && index_count > 0) {
-			as_geom.index_buffer = index_buffer;
-			as_geom.index_count = index_count;
+			as_geom.geometry.triangles.index_buffer = index_buffer;
+			as_geom.geometry.triangles.index_count = index_count;
 		}
 
-		surf_data->blas = RD::get_singleton()->blas_create({ &as_geom, 1 }, 0);
+		surf_data->blas = RD::get_singleton()->blas_create({ &as_geom, 1 }, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
 		if (!surf_data->blas.is_valid()) {
 			return surf_data;
 		}
@@ -731,6 +737,75 @@ static void pack_uniform(const ShaderLanguage::ShaderNode::Uniform &u, const Var
 		} break;
 		default:
 			break;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Procedural geometry processing
+// ---------------------------------------------------------------------------
+
+void RenderRaytracing::update_procedural_blas(RTProceduralState *p_state, LocalVector<RID> &r_dirty_blas_list) {
+	// Pack AABB data into a byte buffer.
+	Vector<uint8_t> aabb_bytes;
+	uint32_t aabb_count = 1;
+
+	if (p_state->aabb_data.size() >= 6 && (p_state->aabb_data.size() % 6) == 0) {
+		aabb_count = p_state->aabb_data.size() / 6;
+		aabb_bytes.resize(p_state->aabb_data.size() * sizeof(float));
+		memcpy(aabb_bytes.ptrw(), p_state->aabb_data.ptr(), aabb_bytes.size());
+	} else {
+		const AABB &a = p_state->culling_aabb;
+		float single[6] = {
+			(float)a.position.x, (float)a.position.y, (float)a.position.z,
+			(float)(a.position.x + a.size.x), (float)(a.position.y + a.size.y), (float)(a.position.z + a.size.z)
+		};
+		aabb_bytes.resize(sizeof(single));
+		memcpy(aabb_bytes.ptrw(), single, sizeof(single));
+	}
+
+	uint32_t required_bytes = aabb_bytes.size();
+	bool needs_new_blas = false;
+
+	// Grow-only: only recreate the buffer when capacity is exceeded or count changed.
+	if (required_bytes > p_state->gpu_buffer_capacity || aabb_count != p_state->aabb_count) {
+		if (p_state->blas.is_valid()) {
+			RD::get_singleton()->free_rid(p_state->blas);
+			p_state->blas = RID();
+		}
+		if (p_state->gpu_buffer.is_valid()) {
+			RD::get_singleton()->free_rid(p_state->gpu_buffer);
+		}
+		p_state->gpu_buffer = RD::get_singleton()->storage_buffer_create(required_bytes, aabb_bytes,
+				0, RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT | RD::BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT);
+		p_state->gpu_buffer_capacity = required_bytes;
+		p_state->aabb_count = aabb_count;
+		needs_new_blas = true;
+	} else {
+		// Buffer is large enough -- just update contents.
+		RD::get_singleton()->buffer_update(p_state->gpu_buffer, 0, required_bytes, aabb_bytes.ptr());
+		needs_new_blas = !p_state->blas.is_valid();
+	}
+
+	if (needs_new_blas) {
+		ERR_FAIL_COND(!p_state->gpu_buffer.is_valid());
+
+		RD::AccelerationStructureGeometry geom;
+		geom.type = RD::AccelerationStructureGeometry::TYPE_AABBS;
+		geom.geometry.aabbs.buffer = p_state->gpu_buffer;
+		geom.geometry.aabbs.count = aabb_count;
+		geom.geometry.aabbs.stride = 24; // VkAabbPositionsKHR: two float3 (min, max).
+		p_state->blas = RD::get_singleton()->blas_create({ &geom, 1 }, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
+	}
+
+	// BDA for shader access.
+	if (p_state->expose_bounds && p_state->gpu_buffer.is_valid()) {
+		p_state->gpu_buffer_address = RD::get_singleton()->buffer_get_device_address(p_state->gpu_buffer);
+	} else {
+		p_state->gpu_buffer_address = 0;
+	}
+
+	if (p_state->blas.is_valid()) {
+		r_dirty_blas_list.push_back(p_state->blas);
 	}
 }
 
@@ -1069,7 +1144,7 @@ void RenderRaytracing::build_acceleration_structures(const LocalVector<RID> &p_d
 			RD::get_singleton()->free_rid(tlas);
 		}
 		tlas_max_instances = needed * 2;
-		tlas = RD::get_singleton()->tlas_create(tlas_max_instances, 0);
+		tlas = RD::get_singleton()->tlas_create(tlas_max_instances, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
 		RD::get_singleton()->set_resource_name(tlas, "RT TLAS");
 	}
 
@@ -1089,25 +1164,33 @@ void RenderRaytracing::build_acceleration_structures(const LocalVector<RID> &p_d
 }
 
 void RenderRaytracing::finalize_buffers() {
-	// Create geometry data buffer
-	if (geometry_data.size() > 0) {
-		uint32_t buffer_size = geometry_data.size() * sizeof(RT_GeometryData);
-		Vector<uint8_t> buffer_data;
-		buffer_data.resize(buffer_size);
-		memcpy(buffer_data.ptrw(), geometry_data.ptr(), buffer_size);
-		geometry_buffer = RD::get_singleton()->storage_buffer_create(buffer_size, buffer_data);
-		RD::get_singleton()->set_resource_name(geometry_buffer, "RT Geometry Buffer");
-	}
+	// Grow-only uploads. Callers must not free these in prepare_frame().
+	auto update_or_grow = [](RID &p_buffer, uint32_t &p_capacity, const void *p_data, uint32_t p_size) {
+		if (p_size == 0) {
+			return;
+		}
+		if (p_size > p_capacity) {
+			if (p_buffer.is_valid()) {
+				RD::get_singleton()->free_rid(p_buffer);
+			}
+			p_capacity = p_size;
+			Vector<uint8_t> init;
+			init.resize(p_size);
+			memcpy(init.ptrw(), p_data, p_size);
+			p_buffer = RD::get_singleton()->storage_buffer_create(p_size, init);
+		} else {
+			RD::get_singleton()->buffer_update(p_buffer, 0, p_size, p_data);
+		}
+	};
 
-	// Create material data buffer
-	if (material_data.size() > 0) {
-		uint32_t buffer_size = material_data.size() * sizeof(RT_MaterialData);
-		Vector<uint8_t> buffer_data;
-		buffer_data.resize(buffer_size);
-		memcpy(buffer_data.ptrw(), material_data.ptr(), buffer_size);
-		material_buffer = RD::get_singleton()->storage_buffer_create(buffer_size, buffer_data);
-		RD::get_singleton()->set_resource_name(material_buffer, "RT Material Buffer");
-	}
+	update_or_grow(geometry_buffer, geometry_buffer_capacity,
+			geometry_data.ptr(), geometry_data.size() * sizeof(RT_GeometryData));
+	update_or_grow(material_buffer, material_buffer_capacity,
+			material_data.ptr(), material_data.size() * sizeof(RT_MaterialData));
+	update_or_grow(motion_index_buffer, motion_index_buffer_capacity,
+			motion_indices.ptr(), motion_indices.size() * sizeof(int32_t));
+	update_or_grow(motion_transform_buffer, motion_transform_buffer_capacity,
+			motion_transforms.ptr(), motion_transforms.size() * sizeof(RT_InstanceMotionData));
 }
 
 // ---------------------------------------------------------------------------
@@ -1147,6 +1230,72 @@ void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data) {
 		}
 		const Transform3D &instance_transform = inst->transform;
 
+		// Determine previous-frame transform for motion vectors.
+		const Transform3D &prev_instance_transform =
+				(inst->transform_status == RenderForwardClustered::GeometryInstanceForwardClustered::TransformStatus::TELEPORTED)
+				? inst->transform
+				: inst->prev_transform;
+
+		// Handle procedural RT instances (intersection shaders).
+		if (inst->rt_procedural) {
+			SceneShaderRaytracing *rt_shader = SceneShaderRaytracing::get_singleton();
+			RTProceduralState *ps = inst->rt_procedural;
+
+			// Intersection code comes from ShaderMaterial on material_override.
+			if (!inst->data || !inst->data->material_override.is_valid()) {
+				continue;
+			}
+			RID proc_material_rid = inst->data->material_override;
+			uint32_t shader_id = material_storage->material_get_shader_id(proc_material_rid);
+			if (shader_id == 0) {
+				continue;
+			}
+
+			uint32_t hg_index = rt_shader->register_procedural_shader(shader_id, proc_material_rid);
+			if (hg_index == 0) {
+				continue;
+			}
+
+			if (ps->dirty) {
+				update_procedural_blas(ps, dirty_blas_list);
+				ps->dirty = false;
+			}
+
+			if (ps->blas.is_valid()) {
+				blass.push_back(ps->blas);
+				blas_transforms.push_back(instance_transform);
+				sbt_offsets.push_back(hg_index);
+
+				RT_GeometryData geom = {};
+				geom.flags = RT_GEOM_FLAG_PROCEDURAL;
+				geom.vertex_buffer_address = ps->gpu_buffer_address;
+				geom.aabb_size_x = (float)ps->culling_aabb.size.x;
+				geom.aabb_size_y = (float)ps->culling_aabb.size.y;
+				geom.aabb_size_z = (float)ps->culling_aabb.size.z;
+				geometry_data.push_back(geom);
+
+				if (inst->transform_status == RenderForwardClustered::GeometryInstanceForwardClustered::TransformStatus::MOVED) {
+					motion_indices.push_back((int32_t)motion_transforms.size());
+					RT_InstanceMotionData motion = {};
+					RendererRD::MaterialStorage::store_transform_transposed_3x4(prev_instance_transform, motion.prev_object_to_world);
+					motion_transforms.push_back(motion);
+				} else {
+					motion_indices.push_back(-1);
+				}
+
+				// Material for procedural geometry (already validated above).
+				uint16_t proc_mat_counter = material_storage->material_get_rt_invalidation_counter(proc_material_rid);
+				RTMaterialData *proc_mat_data = process_material(proc_material_rid, proc_mat_counter);
+				material_data.push_back(proc_mat_data->data);
+
+				// Procedural instances disable triangle culling and are opaque.
+				uint32_t inst_flags = RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT |
+						RD::ACCELERATION_STRUCTURE_INSTANCE_FORCE_OPAQUE_BIT;
+				instance_flags.push_back(inst_flags);
+			}
+			continue;
+		}
+
 		// Walk the surface cache linked list.
 		const RenderForwardClustered::GeometryInstanceSurfaceDataCache *surf = inst->surface_caches;
 		while (surf) {
@@ -1161,6 +1310,19 @@ void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data) {
 
 			blass.push_back(surf_data->blas);
 			geometry_data.push_back(surf_data->geometry);
+
+			if (inst->transform_status == RenderForwardClustered::GeometryInstanceForwardClustered::TransformStatus::MOVED) {
+				motion_indices.push_back((int32_t)motion_transforms.size());
+				RT_InstanceMotionData motion = {};
+				Transform3D prev_final = prev_instance_transform;
+				if (surf_data->is_compressed) {
+					prev_final = prev_instance_transform * surf_data->aabb_transform;
+				}
+				RendererRD::MaterialStorage::store_transform_transposed_3x4(prev_final, motion.prev_object_to_world);
+				motion_transforms.push_back(motion);
+			} else {
+				motion_indices.push_back(-1);
+			}
 
 #ifdef TOOLS_ENABLED
 			if (collect_render_info) {
@@ -1418,7 +1580,7 @@ uint32_t RenderRaytracing::gather_lights(const RenderDataRD *p_render_data, RT_L
 // Uniform set update
 // ---------------------------------------------------------------------------
 
-void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data) {
+void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uint32_t p_rt_flags) {
 	if (uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(uniform_set)) {
 		RD::get_singleton()->free_rid(uniform_set);
 	}
@@ -1437,6 +1599,24 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data) {
 	}
 
 	// === SET 0: Core raytracing bindings ===
+	// Binding layout (keep in sync with raytracing_common_inc.glsl, scene_raytracing_raygen.glsl,
+	// raytracing_samplers_inc.glsl and any hit-group shader headers):
+	//    0     Output image (rgba32f)
+	//    1     TLAS
+	//    2     SceneDataBlock (UBO, current + previous frame)
+	//    3     GeometryBuffer (SSBO)
+	//    4     MotionIndexBuffer (SSBO, int32 per TLAS instance; -1 = no motion)
+	//    5     MaterialBuffer (SSBO)
+	//    6     RaytracingParams (UBO, params + unjittered VP matrices)
+	//    7     radiance_octmap (texture2D)
+	//    8     radiance_sampler (sampler)
+	//    9-12  DLSS RR images (diffuse/specular albedo, normal-roughness, specular hit dist)
+	//    13    LightBuffer (SSBO)
+	//    14    Velocity output image (rg16f)
+	//    15    RT depth output image (r32f)
+	//    16-27 Default material samplers (currently 12 filter/repeat combinations)
+	//    28-31 Reserved for sampler-block growth (4 slots of headroom).
+	//    32    MotionTransforms (SSBO, compact per-moving-instance previous transforms)
 	Vector<RD::Uniform> uniforms;
 
 	{
@@ -1478,6 +1658,34 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data) {
 		uniforms.push_back(u);
 	}
 
+	// Binding 4: Per-instance motion index buffer (int32 per TLAS instance, -1 = no motion).
+	{
+		RD::Uniform u;
+		u.binding = 4;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		if (motion_index_buffer.is_valid()) {
+			u.append_id(motion_index_buffer);
+		} else {
+			u.append_id(RendererRD::MeshStorage::get_singleton()->get_default_rd_storage_buffer());
+		}
+		uniforms.push_back(u);
+	}
+
+	// Binding 32: Compact motion transform buffer (only moving instances).
+	// Placed past a 4-slot reservation (28-31) so the sampler block at 16-27 has
+	// room to grow without colliding.
+	{
+		RD::Uniform u;
+		u.binding = 32;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		if (motion_transform_buffer.is_valid()) {
+			u.append_id(motion_transform_buffer);
+		} else {
+			u.append_id(RendererRD::MeshStorage::get_singleton()->get_default_rd_storage_buffer());
+		}
+		uniforms.push_back(u);
+	}
+
 	// Binding 5: Material buffer.
 	{
 		RD::Uniform u;
@@ -1491,31 +1699,46 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data) {
 		uniforms.push_back(u);
 	}
 
-	// Binding 6: Raytracing params (16 floats from environment settings).
+	// Binding 6: Raytracing params + unjittered VP matrices.
 	{
-		// Get params from environment
-		float rt_params_data[16] = { 0 };
+		struct {
+			float params[16];
+			float prev_vp_unjittered[16];
+			float curr_vp_unjittered[16];
+		} rt_ubo = {};
+		static_assert(sizeof(rt_ubo) == 48 * sizeof(float));
+
 		if (p_render_data && p_render_data->environment.is_valid()) {
 			const float *env_params = RendererEnvironmentStorage::get_singleton()->environment_get_pathtracing_params_ptr(p_render_data->environment);
 			if (env_params) {
-				memcpy(rt_params_data, env_params, sizeof(float) * 16);
+				memcpy(rt_ubo.params, env_params, sizeof(float) * 16);
 			}
 		}
 
 		// rt_params layout (see RaytracingParamIndex enum):
 		// [0] = VIS_MODE, [1] = SAMPLE_COUNT, [2] = MAX_BOUNCES,
 		// [3] = DLSS_RR_ENABLED, [14] = LIGHT_COUNT, [15] = FRAME_INDEX
-		rt_params_data[SceneShaderRaytracing::RT_PARAM_FRAME_INDEX] = float(frame_counter++);
+		rt_ubo.params[SceneShaderRaytracing::RT_PARAM_FRAME_INDEX] = float(frame_counter++);
+
+		// Unjittered VP for motion vectors (matches raster convention).
+		{
+			Projection correction;
+			correction.set_depth_correction(true);
+
+			Projection prev_vp = (correction * p_render_data->scene_data->prev_cam_projection) * Projection(p_render_data->scene_data->prev_cam_transform.affine_inverse());
+			RendererRD::MaterialStorage::store_camera(prev_vp, rt_ubo.prev_vp_unjittered);
+
+			Projection curr_vp = (correction * p_render_data->scene_data->cam_projection) * Projection(p_render_data->scene_data->cam_transform.affine_inverse());
+			RendererRD::MaterialStorage::store_camera(curr_vp, rt_ubo.curr_vp_unjittered);
+		}
 
 		// --- Light gathering ---
-		// Collect lights from the render data using LightStorage's pre-built data.
-		// Split budget: directional always, frustum positional, then out-of-frustum positional.
 		uint32_t rt_light_count = 0;
 		RT_LightData rt_light_data[RT_LIGHTS_MAX] = {};
 
 		rt_light_count = gather_lights(p_render_data, rt_light_data, RT_LIGHTS_MAX);
 
-		rt_params_data[SceneShaderRaytracing::RT_PARAM_LIGHT_COUNT] = float(rt_light_count);
+		rt_ubo.params[SceneShaderRaytracing::RT_PARAM_LIGHT_COUNT] = float(rt_light_count);
 
 		// Upload light buffer.
 		{
@@ -1527,12 +1750,11 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data) {
 			RD::get_singleton()->buffer_update(light_buffer, 0, buf_size, rt_light_data);
 		}
 
-		// Create/update uniform buffer
 		if (!params_buffer.is_valid()) {
-			params_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(float) * 16);
+			params_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(rt_ubo));
 			RD::get_singleton()->set_resource_name(params_buffer, "RT Params Buffer");
 		}
-		RD::get_singleton()->buffer_update(params_buffer, 0, sizeof(float) * 16, rt_params_data);
+		RD::get_singleton()->buffer_update(params_buffer, 0, sizeof(rt_ubo), &rt_ubo);
 
 		RD::Uniform u;
 		u.binding = 6;
@@ -1655,8 +1877,19 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data) {
 	// Bindings 16-27: Material samplers (12 filter/repeat combinations for custom shaders).
 	RendererRD::MaterialStorage::get_singleton()->samplers_rd_get_default().append_uniforms(uniforms, 16);
 
-	uint32_t rt_flags = dlss_rr_enabled ? SceneShaderRaytracing::RT_FLAG_DLSS_RR_ENABLED : SceneShaderRaytracing::RT_FLAG_NONE;
-	RID shader_rd = shader ? shader->get_pipeline_base_shader(rt_flags) : RID();
+	// Binding 28: Velocity output (RG16F). Past the 16-27 sampler range.
+	{
+		Ref<RenderSceneBuffersRD> rb = p_render_data->render_buffers;
+		rb->ensure_velocity();
+		RD::Uniform u;
+		u.binding = 28;
+		u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+		u.append_id(rb->get_velocity_buffer(false));
+		uniforms.push_back(u);
+	}
+
+	// Use the pipeline-side shader so UniformSetFormat matches at bind time.
+	RID shader_rd = shader ? shader->get_pipeline_shader_rd(p_rt_flags) : RID();
 
 	if (shader_rd.is_valid()) {
 		uniform_set = RD::get_singleton()->uniform_set_create(

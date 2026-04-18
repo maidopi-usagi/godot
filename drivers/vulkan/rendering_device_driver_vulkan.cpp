@@ -6257,7 +6257,7 @@ static_assert(ENUM_MEMBERS_EQUAL(RDD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_B
 static_assert(ENUM_MEMBERS_EQUAL(RDD::ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR));
 static_assert(ENUM_MEMBERS_EQUAL(RDD::ACCELERATION_STRUCTURE_LOW_MEMORY_BIT, VK_BUILD_ACCELERATION_STRUCTURE_LOW_MEMORY_BIT_KHR));
 
-// RDD::AccelerationStructureGeometryBits == VkGeometryFlagsKHR.
+// RDD::AccelerationStructureGeometryFlagBits == VkGeometryFlagsKHR.
 static_assert(ENUM_MEMBERS_EQUAL(RDD::ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT, VK_GEOMETRY_OPAQUE_BIT_KHR));
 static_assert(ENUM_MEMBERS_EQUAL(RDD::ACCELERATION_STRUCTURE_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT, VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR));
 
@@ -6277,25 +6277,40 @@ RDD::AccelerationStructureID RenderingDeviceDriverVulkan::blas_create(VectorView
 		VkAccelerationStructureGeometryKHR &vk_geometry = accel_info->geometries[i];
 		vk_geometry = {};
 		vk_geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
-		vk_geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
 		vk_geometry.flags = geometry.flags;
 
-		vk_geometry.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
-		vk_geometry.geometry.triangles.vertexFormat = RD_TO_VK_FORMAT[geometry.vertex_format];
-		vk_geometry.geometry.triangles.vertexData.deviceAddress = buffer_get_device_address(geometry.vertex_buffer) + geometry.vertex_offset;
-		vk_geometry.geometry.triangles.vertexStride = geometry.vertex_stride;
-		// Number of vertices in vertexData minus one, aka max vertex index.
-		vk_geometry.geometry.triangles.maxVertex = (geometry.vertex_count ? (geometry.vertex_count - 1) : 0);
+		uint32_t primitive_count = 0;
+		switch (geometry.type) {
+			case AccelerationStructureGeometry::TYPE_TRIANGLES: {
+				const AccelerationStructureGeometry::Triangles &t = geometry.geometry.triangles;
+				vk_geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+				vk_geometry.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+				vk_geometry.geometry.triangles.vertexFormat = RD_TO_VK_FORMAT[t.vertex_format];
+				vk_geometry.geometry.triangles.vertexData.deviceAddress = buffer_get_device_address(t.vertex_buffer) + t.vertex_offset;
+				vk_geometry.geometry.triangles.vertexStride = t.vertex_stride;
+				// Number of vertices in vertexData minus one, aka max vertex index.
+				vk_geometry.geometry.triangles.maxVertex = (t.vertex_count ? (t.vertex_count - 1) : 0);
 
-		// Info for building BLAS.
-		uint32_t primitive_count;
-		if (geometry.index_buffer != BufferID()) {
-			vk_geometry.geometry.triangles.indexType = (geometry.index_format == INDEX_BUFFER_FORMAT_UINT16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
-			vk_geometry.geometry.triangles.indexData.deviceAddress = buffer_get_device_address(geometry.index_buffer) + geometry.index_offset;
-			primitive_count = geometry.index_count / 3;
-		} else {
-			vk_geometry.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
-			primitive_count = geometry.vertex_count / 3;
+				if (t.index_buffer != BufferID()) {
+					vk_geometry.geometry.triangles.indexType = (t.index_format == INDEX_BUFFER_FORMAT_UINT16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+					vk_geometry.geometry.triangles.indexData.deviceAddress = buffer_get_device_address(t.index_buffer) + t.index_offset;
+					primitive_count = t.index_count / 3;
+				} else {
+					vk_geometry.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+					primitive_count = t.vertex_count / 3;
+				}
+			} break;
+
+			case AccelerationStructureGeometry::TYPE_AABBS: {
+				const AccelerationStructureGeometry::Aabbs &a = geometry.geometry.aabbs;
+				ERR_FAIL_COND_V_MSG(a.stride < 24, AccelerationStructureID(), "AABB stride must be at least 24 bytes (two float3: min, max).");
+				vk_geometry.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+				vk_geometry.geometry.aabbs.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
+				vk_geometry.geometry.aabbs.pNext = nullptr;
+				vk_geometry.geometry.aabbs.data.deviceAddress = buffer_get_device_address(a.buffer) + a.offset;
+				vk_geometry.geometry.aabbs.stride = a.stride;
+				primitive_count = a.count;
+			} break;
 		}
 
 		VkAccelerationStructureBuildRangeInfoKHR &vk_range_info = accel_info->range_infos[i];

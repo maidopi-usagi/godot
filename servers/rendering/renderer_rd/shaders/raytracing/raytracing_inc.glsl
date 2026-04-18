@@ -110,6 +110,7 @@ bool is_shadow_ray(uint packed) {
 // ============================================================================
 const uint OFFSET_NONE = 0xFFFFFFFFu;
 const uint FLAG_COMPRESSED = 1u;
+const uint FLAG_PROCEDURAL = 2u;
 
 // ============================================================================
 // RANDOM NUMBER GENERATION - PCG (Permuted Congruential Generator)
@@ -142,8 +143,22 @@ vec2 rand2(inout uint state) {
 
 // ============================================================================
 // RAY ORIGIN OFFSET (prevents self-intersection)
-// Simple geometry normal offset - works better than complex integer math
+// Wachter-Binder method: offsets in integer float representation so the
+// displacement scales naturally with position magnitude.
 // ============================================================================
+float _offset_component(float p, float n_comp, int of_comp) {
+	const float origin = 1.0 / 32.0;
+	const float float_scale = 1.0 / 65536.0;
+	int shifted = floatBitsToInt(p) + ((p >= 0.0) ? of_comp : -of_comp);
+	float p_i = intBitsToFloat(shifted);
+	return (abs(p) < origin) ? (p + float_scale * n_comp) : p_i;
+}
+
 vec3 offset_ray_origin(vec3 p, vec3 n) {
-	return p + n * 0.001;
+	const float int_scale = 256.0;
+	ivec3 of = ivec3(int_scale * n);
+	return vec3(
+			_offset_component(p.x, n.x, of.x),
+			_offset_component(p.y, n.y, of.y),
+			_offset_component(p.z, n.z, of.z));
 }

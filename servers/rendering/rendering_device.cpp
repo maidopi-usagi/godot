@@ -308,7 +308,7 @@ void RenderingDevice::_tlas_remove_blas_dependencies(AccelerationStructure *p_tl
 RID RenderingDevice::blas_create(Span<AccelerationStructureGeometry> p_geometries, BitField<AccelerationStructureFlagBits> p_flags) {
 	ERR_FAIL_COND_V_MSG(!has_feature(SUPPORTS_RAYTRACING_PIPELINE) && !has_feature(SUPPORTS_RAY_QUERY), RID(), "The current rendering device has neither raytracing pipeline nor ray query support.");
 
-	thread_local LocalVector<RDD::AccelerationStructureGeometry> rdd_geometries;
+	LocalVector<RDD::AccelerationStructureGeometry> rdd_geometries;
 	rdd_geometries.resize(p_geometries.size());
 
 	Vector<RDG::ResourceTracker *> draw_trackers;
@@ -316,56 +316,96 @@ RID RenderingDevice::blas_create(Span<AccelerationStructureGeometry> p_geometrie
 
 	for (uint64_t i = 0; i < p_geometries.size(); i++) {
 		const AccelerationStructureGeometry &rd_geometry = p_geometries[i];
-		if (rd_geometry.index_buffer.is_valid()) {
-			ERR_FAIL_COND_V_MSG((rd_geometry.index_count % 3) != 0, RID(), "An indexed geometry must have an index count that is a multiple of 3.");
-		} else {
-			ERR_FAIL_COND_V_MSG((rd_geometry.vertex_count % 3) != 0, RID(), "A non-indexed geometry must have a vertex count that is a multiple of 3.");
-		}
 
 		RDD::AccelerationStructureGeometry &rdd_geometry = rdd_geometries[i];
-		rdd_geometry = {};
 		rdd_geometry.flags = rd_geometry.flags;
 
-		Buffer *vertex_buffer = vertex_buffer_owner.get_or_null(rd_geometry.vertex_buffer);
-		ERR_FAIL_NULL_V(vertex_buffer, RID());
+		switch (rd_geometry.type) {
+			case AccelerationStructureGeometry::TYPE_TRIANGLES: {
+				const AccelerationStructureGeometry::Triangles &t_in = rd_geometry.geometry.triangles;
+				RDD::AccelerationStructureGeometry::Triangles &t_out = rdd_geometry.geometry.triangles;
 
-		ERR_FAIL_COND_V_MSG((rd_geometry.vertex_offset + rd_geometry.vertex_count * rd_geometry.vertex_stride) > vertex_buffer->size, RID(), "The specified vertex offset and count are outside the range of the vertex buffer.");
-		ERR_FAIL_COND_V_MSG(rd_geometry.vertex_format >= DataFormat::DATA_FORMAT_MAX, RID(), "An invalid vertex format was specified.");
+				if (t_in.index_buffer.is_valid()) {
+					ERR_FAIL_COND_V_MSG((t_in.index_count % 3) != 0, RID(), "An indexed geometry must have an index count that is a multiple of 3.");
+				} else {
+					ERR_FAIL_COND_V_MSG((t_in.vertex_count % 3) != 0, RID(), "A non-indexed geometry must have a vertex count that is a multiple of 3.");
+				}
 
-		rdd_geometry.vertex_buffer = vertex_buffer->driver_id;
-		rdd_geometry.vertex_offset = rd_geometry.vertex_offset;
-		rdd_geometry.vertex_stride = rd_geometry.vertex_stride;
-		rdd_geometry.vertex_count = rd_geometry.vertex_count;
-		rdd_geometry.vertex_format = rd_geometry.vertex_format;
+				Buffer *vertex_buffer = vertex_buffer_owner.get_or_null(t_in.vertex_buffer);
+				ERR_FAIL_NULL_V(vertex_buffer, RID());
 
-		if (vertex_buffer->draw_tracker != nullptr) {
-			draw_trackers.push_back(vertex_buffer->draw_tracker);
-		} else {
-			untracked_buffers.insert(rd_geometry.vertex_buffer);
-		}
+				ERR_FAIL_COND_V_MSG((t_in.vertex_offset + t_in.vertex_count * t_in.vertex_stride) > vertex_buffer->size, RID(), "The specified vertex offset and count are outside the range of the vertex buffer.");
+				ERR_FAIL_COND_V_MSG(t_in.vertex_format >= DataFormat::DATA_FORMAT_MAX, RID(), "An invalid vertex format was specified.");
 
-		_check_transfer_worker_buffer(vertex_buffer);
+				rdd_geometry.type = RDD::AccelerationStructureGeometry::TYPE_TRIANGLES;
+				t_out.vertex_buffer = vertex_buffer->driver_id;
+				t_out.vertex_offset = t_in.vertex_offset;
+				t_out.vertex_stride = t_in.vertex_stride;
+				t_out.vertex_count = t_in.vertex_count;
+				t_out.vertex_format = t_in.vertex_format;
 
-		if (rd_geometry.index_buffer.is_valid()) {
-			IndexBuffer *index_buffer = index_buffer_owner.get_or_null(rd_geometry.index_buffer);
-			ERR_FAIL_NULL_V(index_buffer, RID());
+				if (vertex_buffer->draw_tracker != nullptr) {
+					draw_trackers.push_back(vertex_buffer->draw_tracker);
+				} else {
+					untracked_buffers.insert(t_in.vertex_buffer);
+				}
 
-			uint32_t index_stride = (index_buffer->format == INDEX_BUFFER_FORMAT_UINT32 ? sizeof(uint32_t) : sizeof(uint16_t));
-			ERR_FAIL_COND_V_MSG((rd_geometry.index_offset + rd_geometry.index_count * index_stride) > index_buffer->size, RID(), "The specified index offset and count are outside the range of the index buffer.");
-			ERR_FAIL_COND_V_MSG(index_buffer->max_index >= rd_geometry.vertex_count, RID(), "The index buffer contains an index that is outside the specified vertex range.");
+				_check_transfer_worker_buffer(vertex_buffer);
 
-			rdd_geometry.index_buffer = index_buffer->driver_id;
-			rdd_geometry.index_offset = rd_geometry.index_offset;
-			rdd_geometry.index_count = rd_geometry.index_count;
-			rdd_geometry.index_format = index_buffer->format;
+				if (t_in.index_buffer.is_valid()) {
+					IndexBuffer *index_buffer = index_buffer_owner.get_or_null(t_in.index_buffer);
+					ERR_FAIL_NULL_V(index_buffer, RID());
 
-			if (index_buffer->draw_tracker != nullptr) {
-				draw_trackers.push_back(index_buffer->draw_tracker);
-			} else {
-				untracked_buffers.insert(rd_geometry.index_buffer);
-			}
+					uint32_t index_stride = (index_buffer->format == INDEX_BUFFER_FORMAT_UINT32 ? sizeof(uint32_t) : sizeof(uint16_t));
+					ERR_FAIL_COND_V_MSG((t_in.index_offset + t_in.index_count * index_stride) > index_buffer->size, RID(), "The specified index offset and count are outside the range of the index buffer.");
+					ERR_FAIL_COND_V_MSG(index_buffer->max_index >= t_in.vertex_count, RID(), "The index buffer contains an index that is outside the specified vertex range.");
 
-			_check_transfer_worker_buffer(index_buffer);
+					t_out.index_buffer = index_buffer->driver_id;
+					t_out.index_offset = t_in.index_offset;
+					t_out.index_count = t_in.index_count;
+					t_out.index_format = index_buffer->format;
+
+					if (index_buffer->draw_tracker != nullptr) {
+						draw_trackers.push_back(index_buffer->draw_tracker);
+					} else {
+						untracked_buffers.insert(t_in.index_buffer);
+					}
+
+					_check_transfer_worker_buffer(index_buffer);
+				} else {
+					// Non-indexed: clear index fields to avoid undefined data.
+					t_out.index_buffer = RDD::BufferID();
+					t_out.index_offset = 0;
+					t_out.index_count = 0;
+					t_out.index_format = {};
+				}
+			} break;
+
+			case AccelerationStructureGeometry::TYPE_AABBS: {
+				const AccelerationStructureGeometry::Aabbs &a_in = rd_geometry.geometry.aabbs;
+				RDD::AccelerationStructureGeometry::Aabbs &a_out = rdd_geometry.geometry.aabbs;
+
+				ERR_FAIL_COND_V_MSG(a_in.count == 0, RID(), "An AABB geometry must have at least one AABB.");
+				ERR_FAIL_COND_V_MSG(a_in.stride < 24, RID(), "AABB stride must be at least 24 bytes (two float3: min, max).");
+
+				Buffer *aabb_buffer = storage_buffer_owner.get_or_null(a_in.buffer);
+				ERR_FAIL_NULL_V_MSG(aabb_buffer, RID(), "The AABB buffer must be a valid storage buffer.");
+				ERR_FAIL_COND_V_MSG((a_in.offset + a_in.count * a_in.stride) > aabb_buffer->size, RID(), "The specified AABB offset/count/stride are outside the range of the AABB buffer.");
+
+				rdd_geometry.type = RDD::AccelerationStructureGeometry::TYPE_AABBS;
+				a_out.buffer = aabb_buffer->driver_id;
+				a_out.offset = a_in.offset;
+				a_out.stride = a_in.stride;
+				a_out.count = a_in.count;
+
+				if (aabb_buffer->draw_tracker != nullptr) {
+					draw_trackers.push_back(aabb_buffer->draw_tracker);
+				} else {
+					untracked_buffers.insert(a_in.buffer);
+				}
+
+				_check_transfer_worker_buffer(aabb_buffer);
+			} break;
 		}
 	}
 
@@ -389,10 +429,16 @@ RID RenderingDevice::blas_create(Span<AccelerationStructureGeometry> p_geometrie
 
 	for (uint32_t i = 0; i < p_geometries.size(); i++) {
 		const AccelerationStructureGeometry &geometry = p_geometries[i];
-		_add_dependency(id, geometry.vertex_buffer);
-
-		if (geometry.index_buffer.is_valid()) {
-			_add_dependency(id, geometry.index_buffer);
+		switch (geometry.type) {
+			case AccelerationStructureGeometry::TYPE_TRIANGLES: {
+				_add_dependency(id, geometry.geometry.triangles.vertex_buffer);
+				if (geometry.geometry.triangles.index_buffer.is_valid()) {
+					_add_dependency(id, geometry.geometry.triangles.index_buffer);
+				}
+			} break;
+			case AccelerationStructureGeometry::TYPE_AABBS: {
+				_add_dependency(id, geometry.geometry.aabbs.buffer);
+			} break;
 		}
 	}
 

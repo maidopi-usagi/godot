@@ -1,5 +1,6 @@
 // Shared defines and common bindings for all RT shader stages.
 // Include AFTER raytracing_inc.glsl and scene_data_inc.glsl.
+// The includer must set exactly one of RT_STAGE_{RAYGEN,MISS,CLOSEST_HIT,ANY_HIT,INTERSECTION}.
 
 // Specialization constant (bits 0-7: flags, 8-15: samples, 16-18: bounces).
 layout(constant_id = 0) const uint RT_FLAGS = 0u;
@@ -21,6 +22,7 @@ layout(constant_id = 0) const uint RT_FLAGS = 0u;
 
 layout(set = 0, binding = 2, std140) uniform SceneDataBlock {
 	SceneData data;
+	SceneData prev_data;
 }
 scene_data_block;
 
@@ -33,10 +35,18 @@ global_shader_uniforms;
 
 layout(set = 0, binding = 6, std140) uniform RaytracingParams {
 	vec4 rt_params[4];
+	mat4 prev_vp_unjittered;
+	mat4 curr_vp_unjittered;
 };
 
 float get_rt_param(uint idx) {
 	return rt_params[idx >> 2u][idx & 3u];
+}
+
+/// Project a world-space point to UV through an unjittered VP.
+vec2 project_uv(vec3 world_pos, mat4 vp) {
+	vec4 clip = vp * vec4(world_pos, 1.0);
+	return clip.xy / clip.w * 0.5 + 0.5;
 }
 
 #ifdef DLSS_RR_ENABLED
@@ -46,6 +56,24 @@ layout(set = 0, binding = 11, rgba16f) uniform image2D dlss_rr_normal_roughness;
 layout(set = 0, binding = 12, r16f) uniform image2D dlss_rr_specular_hit_dist;
 #endif
 
+// Binding 14 is reserved for GlobalShaderUniformData (declared above).
+// Samplers occupy 16-27 (see raytracing_samplers_inc.glsl); velocity sits at
+// the first free slot past them so we do not collide with either.
+layout(set = 0, binding = 28, rg16f) uniform image2D rt_velocity_image;
 layout(set = 0, binding = 15, r32f) uniform image2D rt_depth_image;
 
 #endif // !RT_STAGE_ANY_HIT
+
+// Shared hitAttributeEXT layout for all hit-group stages.
+// Vulkan requires every shader in a hit group to agree on this layout.
+#if defined(RT_STAGE_CLOSEST_HIT) || defined(RT_STAGE_ANY_HIT) || defined(RT_STAGE_INTERSECTION)
+struct HitAttribs {
+	vec2 bary_or_uv;
+#ifdef ENABLE_INTERSECTION_SHADERS
+	uint packed_normal;     // xyz: snorm8 normal,  w: delta.x FP16 low byte.
+	uint packed_tangent;    // xyz: snorm8 tangent, w: delta.x FP16 high byte.
+	uint prev_pos_delta_yz; // packHalf2x16(delta.y, delta.z).
+#endif
+};
+hitAttributeEXT HitAttribs hit_attribs;
+#endif

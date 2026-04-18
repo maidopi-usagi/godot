@@ -1358,16 +1358,47 @@ private:
 	RID_Owner<AccelerationStructure, true> acceleration_structure_owner;
 
 public:
+	// RD-layer BLAS geometry entry. Mirrors RDD::AccelerationStructureGeometry
+	// but uses RIDs instead of BufferIDs, and tracks dependencies on those
+	// resources so the BLAS is invalidated / recreated appropriately.
 	struct AccelerationStructureGeometry {
+		enum Type {
+			TYPE_TRIANGLES,
+			TYPE_AABBS,
+		};
+
+		struct Triangles {
+			RID vertex_buffer;
+			uint32_t vertex_offset = 0;
+			uint32_t vertex_stride = 0;
+			uint32_t vertex_count = 0;
+			DataFormat vertex_format = DATA_FORMAT_MAX;
+			RID index_buffer;
+			uint32_t index_offset = 0;
+			uint32_t index_count = 0;
+		};
+
+		// Procedural geometry: buffer of float3 (min, max) AABB pairs.
+		struct Aabbs {
+			RID buffer;
+			uint32_t offset = 0;
+			uint32_t stride = 24;
+			uint32_t count = 0;
+		};
+
+		// RIDs have a non-trivial destructor, so the variants live in parallel
+		// fields (not a C-style union). Only the fields matching `type` are
+		// read by `blas_create()`. Kept inside a `Geometry` sub-struct so the
+		// access syntax (`g.geometry.triangles.*`) matches the driver-layer
+		// AccelerationStructureGeometry::geometry union.
+		struct Geometry {
+			Triangles triangles;
+			Aabbs aabbs;
+		};
+
+		Type type = TYPE_TRIANGLES;
 		BitField<AccelerationStructureGeometryFlagBits> flags = {};
-		RID vertex_buffer;
-		uint32_t vertex_offset = 0;
-		uint32_t vertex_stride = 0;
-		uint32_t vertex_count = 0;
-		DataFormat vertex_format = DATA_FORMAT_MAX;
-		RID index_buffer;
-		uint32_t index_offset = 0;
-		uint32_t index_count = 0;
+		Geometry geometry;
 	};
 
 	RID blas_create(Span<AccelerationStructureGeometry> p_geometries, BitField<AccelerationStructureFlagBits> p_flags);

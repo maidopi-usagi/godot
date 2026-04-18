@@ -110,7 +110,7 @@ void BindlessBlock::finalize(RID p_shader, uint32_t p_set_index) {
 	ERR_FAIL_COND_MSG(!is_initialized(), "BindlessBlock not initialized.");
 	ERR_FAIL_COND_MSG(textures.is_empty(), "BindlessBlock has no textures.");
 
-	if (is_finalized() && !needs_refinalize) {
+	if (is_finalized() && !needs_refinalize && rd->uniform_set_is_valid(uniform_set)) {
 		return;
 	}
 

@@ -743,17 +743,48 @@ public:
 
 	// ----- ACCELERATION STRUCTURE -----
 
+	// BLAS geometry entry. Describes one triangle set or one AABB set that
+	// contributes to a BLAS. A single BLAS can combine multiple entries; each
+	// entry must pick exactly one variant via `type` and populate the matching
+	// fields of the `geometry` union. The variant members have no default
+	// initializers so the union stays trivially default-constructible; the
+	// active fields are always written explicitly by the caller.
 	struct AccelerationStructureGeometry {
+		enum Type {
+			TYPE_TRIANGLES,
+			TYPE_AABBS,
+		};
+
+		struct Triangles {
+			BufferID vertex_buffer;
+			uint32_t vertex_offset;
+			uint32_t vertex_stride;
+			uint32_t vertex_count;
+			DataFormat vertex_format;
+			BufferID index_buffer;
+			uint32_t index_offset;
+			uint32_t index_count;
+			IndexBufferFormat index_format;
+		};
+
+		// Procedural geometry: each AABB is two float3 (min, max), packed
+		// tightly by default (stride = sizeof(VkAabbPositionsKHR) = 24).
+		struct Aabbs {
+			BufferID buffer;
+			uint32_t offset;
+			uint32_t stride;
+			uint32_t count;
+		};
+
+		union Geometry {
+			Triangles triangles;
+			Aabbs aabbs;
+			Geometry() {}
+		};
+
+		Type type = TYPE_TRIANGLES;
 		BitField<AccelerationStructureGeometryFlagBits> flags = {};
-		BufferID vertex_buffer;
-		uint32_t vertex_offset = 0;
-		uint32_t vertex_stride = 0;
-		uint32_t vertex_count = 0;
-		DataFormat vertex_format = DATA_FORMAT_MAX;
-		BufferID index_buffer;
-		uint32_t index_offset = 0;
-		uint32_t index_count = 0;
-		IndexBufferFormat index_format = {};
+		Geometry geometry;
 	};
 
 	virtual AccelerationStructureID blas_create(VectorView<AccelerationStructureGeometry> p_geometries, BitField<AccelerationStructureFlagBits> p_flags) = 0;

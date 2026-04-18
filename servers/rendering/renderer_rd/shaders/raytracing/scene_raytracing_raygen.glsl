@@ -14,6 +14,8 @@
 #pragma shader_stage(raygen)
 #extension GL_EXT_ray_tracing : enable
 
+#define GLSL 1
+#define RT_STAGE_RAYGEN 1
 #include "raytracing_common_inc.glsl"
 
 layout(set = 0, binding = 0, rgba32f) uniform image2D image;
@@ -72,6 +74,7 @@ void main() {
 #extension GL_EXT_ray_tracing : enable
 
 #define GLSL 1
+#define RT_STAGE_MISS 1
 
 // clang-format off
 #include "raytracing_inc.glsl"
@@ -108,13 +111,21 @@ void main() {
 		}
 	}
 
-	// Primary ray miss: write depth and DLSS RR defaults (sample 0 only).
+	// Primary ray miss: write depth, velocity, and DLSS RR defaults (sample 0 only).
 	{
 		uint total_bounces = get_total_bounces(ps.packed_bounces_flags);
 		if (total_bounces == 0u && is_sample_zero(ps.packed_bounces_flags)) {
 			ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
 
 			imageStore(rt_depth_image, pixel, vec4(0.0));
+
+			// Sky velocity: reproject a far-plane point using unjittered VPs.
+			{
+				vec3 far_world = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * 10000.0;
+				vec2 curr_uv = project_uv(far_world, curr_vp_unjittered);
+				vec2 prev_uv = project_uv(far_world, prev_vp_unjittered);
+				imageStore(rt_velocity_image, pixel, vec4(prev_uv - curr_uv, 0.0, 0.0));
+			}
 
 #ifdef DLSS_RR_ENABLED
 			imageStore(dlss_rr_diffuse_albedo, pixel, vec4(0.0));
@@ -179,6 +190,7 @@ void main() {
 #extension GL_EXT_nonuniform_qualifier : require
 
 #define GLSL 1
+#define RT_STAGE_CLOSEST_HIT 1
 
 // clang-format off
 #include "raytracing_inc.glsl"
@@ -188,7 +200,7 @@ void main() {
 #include "raytracing_common_inc.glsl"
 // clang-format on
 
-hitAttributeEXT vec2 attribs;
+#define attribs hit_attribs.bary_or_uv
 #define RT_HIT_ATTRIBS_DECLARED
 
 #include "raytracing_hit_inc.glsl"
@@ -204,11 +216,19 @@ layout(set = 0, binding = 3, std430) readonly buffer GeometryBuffer {
 	GeometryData geometries[];
 };
 
+layout(set = 0, binding = 4, std430) readonly buffer MotionIndexBuffer {
+	int motion_indices[];
+};
+
 layout(set = 0, binding = 5, std430) readonly buffer MaterialBuffer {
 	MaterialData materials[];
 };
 
 #include "raytracing_lights_inc.glsl"
+
+layout(set = 0, binding = 32, std430) readonly buffer MotionTransforms {
+	InstanceMotionData motion_transforms[];
+};
 
 layout(set = 0, binding = 7) uniform texture2D radiance_octmap;
 layout(set = 0, binding = 8) uniform sampler radiance_sampler;
@@ -342,6 +362,7 @@ void debug_visualize(
 void main() {
 	HitData h = compute_hit_data();
 	write_primary_hit_depth(h.hit_pos);
+	write_primary_hit_velocity(h.hit_pos);
 
 #ifdef RT_CUSTOM_HIT_GROUP
 	uint rt_geometry_idx = h.geometry_idx;
@@ -454,7 +475,7 @@ void main() {
 #extension GL_EXT_nonuniform_qualifier : require
 
 #define GLSL 1
-#define RT_STAGE_ANY_HIT
+#define RT_STAGE_ANY_HIT 1
 
 // clang-format off
 #include "raytracing_inc.glsl"
@@ -463,7 +484,7 @@ void main() {
 #include "raytracing_common_inc.glsl"
 // clang-format on
 
-hitAttributeEXT vec2 attribs;
+#define attribs hit_attribs.bary_or_uv
 #define RT_HIT_ATTRIBS_DECLARED
 
 #include "raytracing_hit_inc.glsl"
@@ -474,6 +495,10 @@ layout(set = 0, binding = 3, std430) readonly buffer GeometryBuffer {
 	GeometryData geometries[];
 };
 
+layout(set = 0, binding = 4, std430) readonly buffer MotionIndexBuffer {
+	int motion_indices[];
+};
+
 layout(set = 0, binding = 5, std430) readonly buffer MaterialBuffer {
 	MaterialData materials[];
 };
@@ -481,6 +506,10 @@ layout(set = 0, binding = 5, std430) readonly buffer MaterialBuffer {
 layout(set = 1, binding = 0) uniform texture2D bindless_textures[];
 
 #include "raytracing_samplers_inc.glsl"
+
+layout(set = 0, binding = 32, std430) readonly buffer MotionTransforms {
+	InstanceMotionData motion_transforms[];
+};
 
 // ============================================================================
 // CUSTOM SHADER GLOBALS (injected for per-HG any-hit)
@@ -536,5 +565,129 @@ void main() {
 	if (alpha < 0.5) {
 		ignoreIntersectionEXT;
 	}
+#endif
+}
+
+#[intersection]
+
+#version 460
+
+#VERSION_DEFINES
+
+#pragma shader_stage(intersection)
+#extension GL_EXT_ray_tracing : enable
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_ARB_gpu_shader_int64 : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+#define GLSL 1
+#define RT_STAGE_INTERSECTION 1
+
+// clang-format off
+#include "raytracing_inc.glsl"
+#include "../scene_data_inc.glsl"
+#include "raytracing_data_inc.glsl"
+#include "raytracing_common_inc.glsl"
+// clang-format on
+
+// Write all attributes and report the intersection. Transparently delta-compresses
+// PREV_POSITION into spare .w bytes of packed_normal/tangent + prev_pos_delta_yz.
+#define report_intersection(t_hit, kind) { \
+	vec3 _obj_hit = gl_ObjectRayOriginEXT + gl_ObjectRayDirectionEXT * (t_hit); \
+	vec3 _delta = any(isnan(m_PREV_POSITION)) ? vec3(0.0) : (m_PREV_POSITION - _obj_hit); \
+	uint _n4 = packSnorm4x8(vec4(m_HIT_NORMAL, 0.0)); \
+	uint _t4 = packSnorm4x8(vec4(m_HIT_TANGENT, 0.0)); \
+	uint _dx = packHalf2x16(vec2(_delta.x, 0.0)); \
+	hit_attribs.bary_or_uv = m_HIT_UV; \
+	hit_attribs.packed_normal = (_n4 & 0x00FFFFFFu) | ((_dx & 0xFFu) << 24u); \
+	hit_attribs.packed_tangent = (_t4 & 0x00FFFFFFu) | (((_dx >> 8u) & 0xFFu) << 24u); \
+	hit_attribs.prev_pos_delta_yz = packHalf2x16(vec2(_delta.y, _delta.z)); \
+	reportIntersectionEXT(t_hit, kind); \
+}
+
+#ifdef RT_CUSTOM_HIT_GROUP
+
+layout(set = 0, binding = 3, std430) readonly buffer GeometryBuffer {
+	GeometryData geometries[];
+};
+
+layout(set = 0, binding = 5, std430) readonly buffer MaterialBuffer {
+	MaterialData materials[];
+};
+
+layout(set = 1, binding = 0) uniform texture2D bindless_textures[];
+
+#include "raytracing_samplers_inc.glsl"
+
+layout(buffer_reference, std140) readonly buffer CustomMaterialUniforms {
+	/* RT_CUSTOM_UNIFORM_MEMBERS */
+};
+
+/* RT_CUSTOM_TEXTURE_DEFINES */
+
+// File-scope built-ins accessible from user helper functions in globals.
+float global_time = scene_data_block.data.time;
+float global_prev_time = 0.0;
+mat4 read_model_matrix = mat4(0.0);
+mat4 m_INV_MODEL_MATRIX = mat4(0.0);
+mat4 read_view_matrix = transpose(mat4(scene_data_block.data.view_matrix[0], scene_data_block.data.view_matrix[1], scene_data_block.data.view_matrix[2], vec4(0.0, 0.0, 0.0, 1.0)));
+mat4 inv_view_matrix = transpose(mat4(scene_data_block.data.inv_view_matrix[0], scene_data_block.data.inv_view_matrix[1], scene_data_block.data.inv_view_matrix[2], vec4(0.0, 0.0, 0.0, 1.0)));
+mat4 projection_matrix = scene_data_block.data.projection_matrix;
+mat4 inv_projection_matrix = scene_data_block.data.inv_projection_matrix;
+vec2 read_viewport_size = scene_data_block.data.viewport_size;
+float m_Z_NEAR = scene_data_block.data.z_near;
+float m_Z_FAR = scene_data_block.data.z_far;
+
+uint64_t _rt_material_address;
+#define material CustomMaterialUniforms(_rt_material_address)
+
+/* RT_CUSTOM_INTERSECTION_GLOBALS */
+
+#endif
+
+void main() {
+#ifdef RT_CUSTOM_HIT_GROUP
+	// Writable outputs.
+	vec2 m_HIT_UV = vec2(0.0);
+	vec3 m_HIT_NORMAL = vec3(0.0, 1.0, 0.0);
+	vec3 m_HIT_TANGENT = vec3(1.0, 0.0, 0.0);
+	vec3 m_PREV_POSITION = vec3(uintBitsToFloat(0x7FC00000u)); // NaN sentinel = not set.
+
+	// Per-invocation built-ins (require RT intrinsics, only available in main).
+	vec3 m_ORIGIN = gl_ObjectRayOriginEXT;
+	vec3 m_DIRECTION = gl_ObjectRayDirectionEXT;
+	vec3 m_WORLD_ORIGIN = gl_WorldRayOriginEXT;
+	vec3 m_WORLD_DIRECTION = gl_WorldRayDirectionEXT;
+	float m_T_MIN = gl_RayTminEXT;
+	float m_T_MAX = gl_RayTmaxEXT;
+	read_model_matrix = mat4(gl_ObjectToWorldEXT);
+	m_INV_MODEL_MATRIX = mat4(gl_WorldToObjectEXT);
+	global_prev_time = scene_data_block.prev_data.time;
+
+	// Resolve custom material uniforms via BDA (assigns file-scope address).
+	uint rt_geometry_idx = gl_InstanceCustomIndexEXT;
+	MaterialData rt_mat = materials[rt_geometry_idx];
+	_rt_material_address = rt_mat.uniform_address;
+
+	// Per-primitive AABB bounds (available when expose_aabb_bounds is enabled).
+	GeometryData rt_geom = geometries[rt_geometry_idx];
+	vec3 m_AABB_MIN = vec3(0.0);
+	vec3 m_AABB_MAX = vec3(0.0);
+	if (rt_geom.vertex_address != 0ul) {
+		FloatBuffer aabb_buf = FloatBuffer(rt_geom.vertex_address);
+		int base = int(gl_PrimitiveID) * 6;
+		m_AABB_MIN = vec3(aabb_buf.v[base + 0], aabb_buf.v[base + 1], aabb_buf.v[base + 2]);
+		m_AABB_MAX = vec3(aabb_buf.v[base + 3], aabb_buf.v[base + 4], aabb_buf.v[base + 5]);
+	}
+
+/* RT_CUSTOM_INTERSECTION_CODE */
+
+#else
+	// Base-variant fallback: never executed at runtime (the intersection
+	// stage is always rebuilt per-HG with RT_CUSTOM_HIT_GROUP defined).
+	// Only touch unconditional HitAttribs fields so the base variant parses.
+	hit_attribs.bary_or_uv = vec2(0.0);
+	reportIntersectionEXT(gl_RayTminEXT, 0u);
 #endif
 }

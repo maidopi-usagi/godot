@@ -126,6 +126,7 @@ layout(set = MATERIAL_UNIFORM_SET, binding = 0, std140) uniform MaterialUniforms
 #endif
 
 float global_time;
+float global_prev_time;
 
 #ifdef MODE_DUAL_PARABOLOID
 
@@ -844,6 +845,7 @@ void main() {
 
 	// Current vertex.
 	global_time = scene_data_block.data.time;
+	global_prev_time = scene_data_block.prev_data.time;
 	vertex_shader(vertex,
 #ifdef NORMAL_USED
 			normal,
@@ -1018,6 +1020,7 @@ layout(location = 14) in vec2 point_coord_interp;
 #endif
 
 #define global_time scene_data_block.data.time
+#define global_prev_time scene_data_block.prev_data.time
 
 #if defined(ENABLE_SSS) && defined(ENABLE_TRANSMITTANCE)
 //both required for transmittance to be enabled

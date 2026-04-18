@@ -103,6 +103,10 @@ public:
 		return result;
 	}
 
+	// Build the full packed rt_flags from pathtracing environment params.
+	// `p_env_params` may be null (RT active with no pathtracing environment).
+	static uint32_t compute_rt_flags(const float *p_env_params, bool p_fog_enabled);
+
 	struct ShaderSpecialization {
 		union {
 			struct {
@@ -355,12 +359,15 @@ public:
 		String vertex_code;
 		String fragment_code;
 		String fragment_globals;
+		String intersection_code;
+		String intersection_globals;
 		String uniform_members; // GLSL struct members for uniform buffer
 		uint32_t uniform_total_size = 0;
 		Vector<uint32_t> uniform_offsets;
 		HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> uniforms;
 		Vector<TextureUniformInfo> texture_uniforms; // Sampler2D packed as bindless indices after UBO
 		bool uses_alpha_clip = false; // Writes ALPHA_SCISSOR_THRESHOLD; needs per-HG any-hit
+		bool is_procedural = false; // Uses intersection shader instead of triangle geometry
 	};
 
 	HashMap<uint32_t, CustomShaderEntry> compilation_cache;
@@ -369,14 +376,17 @@ public:
 	LocalVector<CustomShaderEntry> frame_custom_shaders;
 	HashMap<uint32_t, uint32_t> frame_shader_id_to_hg;
 	uint64_t active_custom_shaders_hash = 0;
+	bool has_intersection_shaders = false;
 
 	uint32_t register_custom_shader(uint32_t p_shader_id, RID p_material);
+	uint32_t register_procedural_shader(uint32_t p_shader_id, RID p_material);
 
 	void begin_custom_shader_frame();
 
 	void finalize_custom_shaders();
 
 	const CustomShaderEntry *get_custom_shader_entry(uint32_t p_hg_index) const;
+	uint32_t get_active_custom_shader_count() const { return active_custom_shaders.size(); }
 
 	/// Lazily creates (or returns cached) the full pipeline bundle for the given flags.
 	const PipelineBundle &ensure_pipeline_bundle(uint32_t p_rt_flags);
@@ -384,6 +394,10 @@ public:
 	RID get_raytracing_pipeline(uint32_t p_rt_flags) { return ensure_pipeline_bundle(p_rt_flags).pipeline; }
 	RID get_hit_sbt(uint32_t p_rt_flags) { return ensure_pipeline_bundle(p_rt_flags).hit_sbt; }
 	RID get_pipeline_base_shader(uint32_t p_rt_flags) { return ensure_pipeline_bundle(p_rt_flags).base_shader; }
+
+	// Pipeline-matching shader for uniform set creation. In the bundle
+	// architecture this is the same as base_shader.
+	RID get_pipeline_shader_rd(uint32_t p_rt_flags) { return ensure_pipeline_bundle(p_rt_flags).base_shader; }
 
 	void invalidate_pipeline_bundles();
 

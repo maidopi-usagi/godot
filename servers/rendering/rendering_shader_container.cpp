@@ -475,11 +475,20 @@ Error RenderingShaderContainer::reflect_spirv(const String &p_shader_name, Span<
 								ERR_FAIL_COND_V_MSG(reflection.uniform_sets[set][k].type != uniform.type, FAILED,
 										"On shader stage '" + String(RDC::SHADER_STAGE_NAMES[stage]) + "', uniform '" + binding.name + "' trying to reuse location for set=" + itos(set) + ", binding=" + itos(uniform.binding) + " with different uniform type.");
 
-								// Also, verify that it's the same size (unless unbounded).
+								// RT hit-group stages share descriptor layouts but may compile
+								// unsized arrays to different inferred sizes. Trust the first
+								// registration and just append the stage mask.
+								if (is_rt_hit_stage && (reflection.uniform_sets[set][k].length != uniform.length || reflection.uniform_sets[set][k].unbounded != uniform.unbounded)) {
+									reflection.uniform_sets[set][k].stages.set_flag(stage_flag);
+									exists = true;
+									break;
+								}
+
+								// Verify that it's the same size (unless unbounded).
 								ERR_FAIL_COND_V_MSG(reflection.uniform_sets[set][k].length != uniform.length && !uniform.unbounded, FAILED,
 										"On shader stage '" + String(RDC::SHADER_STAGE_NAMES[stage]) + "', uniform '" + binding.name + "' trying to reuse location for set=" + itos(set) + ", binding=" + itos(uniform.binding) + " with different uniform size.");
 
-								// Also, verify that it has the same unbounded status.
+								// Verify that it has the same unbounded status.
 								ERR_FAIL_COND_V_MSG(reflection.uniform_sets[set][k].unbounded != uniform.unbounded, FAILED,
 										"On shader stage '" + String(RDC::SHADER_STAGE_NAMES[stage]) + "', uniform '" + binding.name + "' trying to reuse location for set=" + itos(set) + ", binding=" + itos(uniform.binding) + " with different unbounded status.");
 

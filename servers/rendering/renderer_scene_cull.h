@@ -1052,6 +1052,9 @@ public:
 
 	virtual void instance_set_custom_aabb(RID p_instance, AABB p_aabb);
 
+	virtual void instance_set_rt_procedural(RID p_instance, bool p_procedural, AABB p_aabb);
+	virtual void instance_set_rt_procedural_bounds(RID p_instance, const PackedFloat32Array &p_aabb_data, bool p_expose_bounds);
+
 	virtual void instance_attach_skeleton(RID p_instance, RID p_skeleton);
 
 	virtual void instance_set_extra_visibility_margin(RID p_instance, real_t p_margin);

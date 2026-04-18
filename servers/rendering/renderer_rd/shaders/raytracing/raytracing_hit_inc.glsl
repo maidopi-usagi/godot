@@ -1,74 +1,7 @@
 // Shared utilities for hit shaders (closest_hit, any_hit)
 // Requires: GL_EXT_buffer_reference, GL_ARB_gpu_shader_int64, oct_inc.glsl, raytracing_inc.glsl
 
-// ============================================================================
-// BUFFER REFERENCES
-// ============================================================================
-layout(buffer_reference, std430) readonly buffer FloatBuffer {
-	float v[];
-};
-layout(buffer_reference, std430) readonly buffer Uint32Buffer {
-	uint v[];
-};
-
-// ============================================================================
-// GEOMETRY DATA (matches C++ RT_GeometryData, 128 bytes)
-// ============================================================================
-struct GeometryData {
-	uint64_t vertex_address;
-	uint64_t attribute_address;
-	uint64_t index_address;
-
-	uint vertex_count;
-	uint position_stride;
-	uint normal_byte_offset;
-	uint normal_stride;
-	uint tangent_byte_offset;
-	uint tangent_stride;
-
-	uint attribute_stride;
-	uint uv_byte_offset;
-
-	float uv_scale_x;
-	float uv_scale_y;
-
-	uint index_format;
-	uint primitive_count;
-	uint flags;
-
-	float aabb_size_x;
-	float aabb_size_y;
-	float aabb_size_z;
-
-	uint color_byte_offset;
-	uint _pad[9];
-};
-
-// ============================================================================
-// MATERIAL DATA (matches C++ layout, 96 bytes)
-// ============================================================================
-struct MaterialData {
-	uint albedo_texture_idx;
-	uint normal_texture_idx;
-	uint orm_texture_idx;
-	uint emission_texture_idx;
-
-	vec4 albedo_color;
-	vec3 emission_color;
-	float emission_strength;
-
-	float metallic;
-	float roughness;
-	float ao_strength;
-	uint flags; // Bit 0: has_normal_map, Bit 1: has_emission
-
-	vec2 uv1_scale; // UV1 scale (default 1,1)
-	vec2 uv1_offset; // UV1 offset (default 0,0)
-
-	float normal_map_depth; // Normal map strength (default 1.0)
-	float _pad0;
-	uint64_t uniform_address; // BDA for custom shader uniform buffer (0 = none)
-};
+#include "raytracing_data_inc.glsl"
 
 // ============================================================================
 // VERTEX ATTRIBUTES

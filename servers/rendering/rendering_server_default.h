@@ -952,6 +952,9 @@ public:
 
 	FUNC2(instance_set_custom_aabb, RID, AABB)
 
+	FUNC3(instance_set_rt_procedural, RID, bool, AABB)
+	FUNC3(instance_set_rt_procedural_bounds, RID, const PackedFloat32Array &, bool)
+
 	FUNC2(instance_attach_skeleton, RID, RID)
 
 	FUNC2(instance_set_extra_visibility_margin, RID, real_t)

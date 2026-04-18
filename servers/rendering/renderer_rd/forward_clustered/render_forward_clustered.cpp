@@ -1002,7 +1002,7 @@ _FORCE_INLINE_ static uint32_t _indices_to_primitives(RSE::PrimitiveType p_primi
 	static const uint32_t subtractor[RSE::PRIMITIVE_MAX] = { 0, 0, 1, 0, 2 };
 	return (p_indices - subtractor[p_primitive]) / divisor[p_primitive];
 }
-void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi, bool p_using_opaque_gi, bool p_using_motion_pass, bool p_append, bool p_motion_alpha_only) {
+void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi, bool p_using_opaque_gi, bool p_using_motion_pass, bool p_append, bool p_alpha_only) {
 	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
 	uint64_t frame = RSG::rasterizer->get_frame_number();
 
@@ -1090,20 +1090,30 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 				}
 			}
 
-			// Early-out: when skipping opaque, only instances with alpha, motion, or fading
-			// surfaces need further processing. Skip purely-opaque static instances entirely.
-			if (p_motion_alpha_only && !uses_motion && fade_alpha >= FADE_ALPHA_PASS_THRESHOLD) {
-				bool has_relevant_surface = false;
+			// Age out prev_transform: if the instance moved once but has been
+			// static for >=2 frames, snap prev_transform back to current so
+			// motion-vector consumers (raster or RT) see zero velocity. Must
+			// run BEFORE the alpha-only early-out, or skipped instances never
+			// get reset and keep reporting huge stale motion deltas.
+			if (unlikely(inst->transform_status != GeometryInstanceForwardClustered::TransformStatus::NONE && frame > inst->prev_transform_change_frame + 1 && inst->prev_transform_change_frame)) {
+				inst->prev_transform = inst->transform;
+				inst->transform_status = GeometryInstanceForwardClustered::TransformStatus::NONE;
+			}
+
+			// Early-out for alpha-only mode (RT path): skip instances that have
+			// no transparent or fading surfaces to contribute. Opaque geometry
+			// is handled by the TLAS, not by any raster list.
+			if (p_alpha_only && fade_alpha >= FADE_ALPHA_PASS_THRESHOLD) {
+				bool has_alpha_surface = false;
 				const GeometryInstanceSurfaceDataCache *s = inst->surface_caches;
 				while (s) {
-					if ((s->flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA) ||
-							(s->flags & GeometryInstanceSurfaceDataCache::FLAG_USES_MOTION_VECTOR)) {
-						has_relevant_surface = true;
+					if (s->flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA) {
+						has_alpha_surface = true;
 						break;
 					}
 					s = s->next;
 				}
-				if (!has_relevant_surface) {
+				if (!has_alpha_surface) {
 					continue;
 				}
 			}
@@ -1197,11 +1207,6 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 			lod_distance = surface_distance.length();
 		}
 
-		if (unlikely(inst->transform_status != GeometryInstanceForwardClustered::TransformStatus::NONE && frame > inst->prev_transform_change_frame + 1 && inst->prev_transform_change_frame)) {
-			inst->prev_transform = inst->transform;
-			inst->transform_status = GeometryInstanceForwardClustered::TransformStatus::NONE;
-		}
-
 		while (surf) {
 			surf->sort.uses_forward_gi = 0;
 			surf->sort.uses_lightmap = 0;
@@ -1210,7 +1215,7 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 			if (p_render_data->scene_data->screen_mesh_lod_threshold > 0.0 && mesh_storage->mesh_surface_has_lod(surf->surface)) {
 				uint32_t indices = 0;
 				surf->sort.lod_index = mesh_storage->mesh_surface_get_lod(surf->surface, inst->lod_model_scale * inst->lod_bias, lod_distance * p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, indices);
-				if (p_render_data->render_info && !p_motion_alpha_only) {
+				if (p_render_data->render_info && !p_alpha_only) {
 					indices = _indices_to_primitives(surf->primitive, indices);
 					if (p_render_list == RENDER_LIST_OPAQUE) { //opaque
 						p_render_data->render_info->info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE][RSE::VIEWPORT_RENDER_INFO_PRIMITIVES_IN_FRAME] += indices;
@@ -1220,7 +1225,7 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 				}
 			} else {
 				surf->sort.lod_index = 0;
-				if (p_render_data->render_info && !p_motion_alpha_only) {
+				if (p_render_data->render_info && !p_alpha_only) {
 					// This does not include primitives rendered via indirect draw calls.
 					uint32_t to_draw = mesh_storage->mesh_surface_get_vertices_drawn_count(surf->surface);
 					to_draw = _indices_to_primitives(surf->primitive, to_draw);
@@ -1245,7 +1250,7 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 					force_alpha = true;
 				}
 
-				if (!p_motion_alpha_only && !force_alpha && (surf->flags & (GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH | GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE))) {
+				if (!p_alpha_only && !force_alpha && (surf->flags & (GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH | GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE))) {
 					rl->add_element(surf);
 				}
 
@@ -1962,7 +1967,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	Vector<Color> depth_pass_clear;
 	bool using_separate_specular = false;
 	bool reverse_cull = p_render_data->scene_data->cam_transform.basis.determinant() < 0;
-	bool using_motion_pass = rb_data.is_valid() && (using_upscaling || using_taa);
+	// Rasterized motion vectors are only needed when an upscaler/TAA consumes
+	// them AND nothing else is producing them. When RT is enabled, the path
+	// tracer writes velocity itself (rt_velocity_image in the RT uniform set).
+	bool using_motion_pass = rb_data.is_valid() && (using_upscaling || using_taa) && !scene_features.rt;
 
 	if (is_reflection_probe) {
 		uint32_t resolution = light_storage->reflection_probe_instance_get_resolution(p_render_data->reflection_probe);
@@ -2059,20 +2067,16 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	// May have changed due to the above (light buffer enlarged, as an example).
 	_update_render_base_uniform_set();
 
-	// _fill_render_list always populates MOTION and ALPHA as side-effects of the OPAQUE pass.
-	// When RT is enabled the TLAS is built from rt_instances (in _rt_tlas_create), so we only
-	// need the render list for MOTION (rasterized per-object motion vectors) and ALPHA.
+	// With RT on we skip OPAQUE (TLAS is built from rt_instances) and
+	// using_motion_pass is off (RT writes velocity itself), so the last arg
+	// collapses the side-effect population to ALPHA only.
 	_fill_render_list(RENDER_LIST_OPAQUE, p_render_data, PASS_MODE_COLOR, using_sdfgi, using_sdfgi || using_voxelgi, using_motion_pass, false, scene_features.rt);
 
 	int *render_info = p_render_data->render_info ? p_render_data->render_info->info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE] : (int *)nullptr;
 
 	if (scene_features.rt) {
-		// RT path: skip opaque sort/instance data -- only motion + alpha are rasterized.
-		// TLAS transforms come from rt_instances via _rt_tlas_create, not the render list.
-		render_list[RENDER_LIST_MOTION].sort_by_key();
+		// RT path: skip opaque sort/instance data -- TLAS transforms come from
 		render_list[RENDER_LIST_ALPHA].sort_by_reverse_depth_and_priority();
-
-		_fill_instance_data(RENDER_LIST_MOTION, render_info);
 		_fill_instance_data(RENDER_LIST_ALPHA, render_info);
 	} else {
 		// Rasterization path: all lists needed.
@@ -2085,17 +2089,20 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		_fill_instance_data(RENDER_LIST_ALPHA, render_info);
 	}
 
+	// RT pipeline flags (packed with sample count / max bounces). Computed
+	// once here and reused at trace-dispatch time below so the uniform set
+	// and the pipeline agree on spec-constant values.
+	uint32_t rt_flags = SceneShaderRaytracing::RT_FLAG_NONE;
+
 	// Create TLAS for raytracing if enabled
 	if (scene_features.rt && rb_data.is_valid() && raytracing && raytracing->get_shader()) {
-		// Create or destroy DLSS RR buffers based on denoiser selection.
-		// This must happen BEFORE update_uniform_set so the correct buffers are bound.
-		bool dlss_rr_enabled = false;
-		if (p_render_data && p_render_data->environment.is_valid()) {
-			const float *env_params = RendererEnvironmentStorage::get_singleton()->environment_get_pathtracing_params_ptr(p_render_data->environment);
-			if (env_params) {
-				dlss_rr_enabled = ((uint32_t)env_params[SceneShaderRaytracing::RT_PARAM_DENOISER] == RSE::PT_DENOISER_DLSS_RAY_RECONSTRUCTION);
-			}
-		}
+		const float *env_params = (p_render_data && p_render_data->environment.is_valid())
+				? RendererEnvironmentStorage::get_singleton()->environment_get_pathtracing_params_ptr(p_render_data->environment)
+				: nullptr;
+		const bool fog_enabled = p_render_data && p_render_data->environment.is_valid() && environment_get_fog_enabled(p_render_data->environment);
+		rt_flags = SceneShaderRaytracing::compute_rt_flags(env_params, fog_enabled);
+
+		const bool dlss_rr_enabled = (rt_flags & SceneShaderRaytracing::RT_FLAG_DLSS_RR_ENABLED) != 0;
 		if (dlss_rr_enabled) {
 			rb_data->dlss_rr_ensure_buffers();
 			scene_features.set(SCENE_FEATURE_DEPTH_RECONSTRUCT);
@@ -2104,7 +2111,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		}
 
 		raytracing->build_tlas(p_render_data);
-		raytracing->update_uniform_set(p_render_data);
+		raytracing->update_uniform_set(p_render_data, rt_flags);
 	} else if (rb_data.is_valid() && rb_data->dlss_rr_has_buffers()) {
 		// RT disabled: free DLSS RR buffers so DLSS falls back to SR.
 		rb_data->dlss_rr_free_buffers();
@@ -2398,7 +2405,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_OPAQUE, p_render_data, radiance_texture, samplers, opaque_pass_uniform_buffer_index, true);
 
 		{
-			bool render_motion_pass = !render_list[RENDER_LIST_MOTION].elements.is_empty(); // RT handles motion pass itself
+			bool render_motion_pass = !render_list[RENDER_LIST_MOTION].elements.is_empty();
 
 			{
 				Vector<Color> c;
@@ -2460,36 +2467,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		// Ensure raytracing output textures exist
 		rb_data->rt_ensure_textures();
 
-		// Determine RT pipeline flags based on current settings
-		uint32_t rt_flags = SceneShaderRaytracing::RT_FLAG_NONE;
-		uint32_t sample_count = 1;
-		uint32_t max_bounces = 3;
-
-		// Check environment settings for VIS_MODE, sample count, max bounces, and DLSS RR
-		if (p_render_data && p_render_data->environment.is_valid()) {
-			const float *env_params = RendererEnvironmentStorage::get_singleton()->environment_get_pathtracing_params_ptr(p_render_data->environment);
-			if (env_params) {
-				if (env_params[SceneShaderRaytracing::RT_PARAM_VIS_MODE] != 0.0f) {
-					rt_flags |= SceneShaderRaytracing::RT_FLAG_DEBUG_VIS_ENABLED;
-				}
-				sample_count = MAX(1u, (uint32_t)env_params[SceneShaderRaytracing::RT_PARAM_SAMPLE_COUNT]);
-				max_bounces = MAX(1u, MIN(8u, (uint32_t)env_params[SceneShaderRaytracing::RT_PARAM_MAX_BOUNCES]));
-				// Buffer creation/destruction is handled earlier in the frame (before uniform set creation)
-				if ((uint32_t)env_params[SceneShaderRaytracing::RT_PARAM_DENOISER] == RSE::PT_DENOISER_DLSS_RAY_RECONSTRUCTION) {
-					rt_flags |= SceneShaderRaytracing::RT_FLAG_DLSS_RR_ENABLED;
-				}
-			}
-
-			if (environment_get_fog_enabled(p_render_data->environment)) {
-				rt_flags |= SceneShaderRaytracing::RT_FLAG_FOG_ENABLED;
-			}
-		}
-
 		RENDER_TIMESTAMP("Pathtracer");
 
-		// Pack sample count and max bounces into flags
-		rt_flags = SceneShaderRaytracing::rt_flags_pack(rt_flags, sample_count, max_bounces);
-
+		// rt_flags was computed at TLAS-build time above and matches what
+		// update_uniform_set used, so pipeline + uniform set stay in sync.
 		RID rt_pipeline = raytracing->get_shader()->get_raytracing_pipeline(rt_flags);
 		if (!rt_pipeline.is_valid()) {
 			ERR_PRINT_ONCE_ED("Failed to get raytracing pipeline. Aborting render.");
@@ -2498,15 +2479,24 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RD::RaytracingListID raytracing_list = RD::get_singleton()->raytracing_list_begin();
 		RD::get_singleton()->raytracing_list_bind_raytracing_pipeline(raytracing_list, rt_pipeline);
 		RD::get_singleton()->raytracing_list_bind_uniform_set(raytracing_list, raytracing->get_uniform_set(), 0);
-		RD::get_singleton()->raytracing_list_bind_uniform_set(raytracing_list, raytracing->get_bindless_uniform_set(), 1);
+		// Bindless set 1 can legitimately be unset when no bindless textures
+		// are live (e.g. first frame, no materials referencing textures yet);
+		// skip binding it in that case instead of tripping validation.
+		RID bindless_set = raytracing->get_bindless_uniform_set();
+		if (bindless_set.is_valid()) {
+			RD::get_singleton()->raytracing_list_bind_uniform_set(raytracing_list, bindless_set, 1);
+		}
+
+		// Raytracing dispatches at internal (pre-upscale) size because the RT
+		// output texture is allocated at that resolution; FSR/upscaler runs
+		// afterward as a separate compute pass.
 		Size2i rt_size = rb->get_internal_size();
 		RD::get_singleton()->raytracing_list_trace_rays(raytracing_list, 0, raytracing->get_shader()->get_hit_sbt(rt_flags), rt_size.width, rt_size.height, 1);
 		RD::get_singleton()->raytracing_list_end();
 
 		RD::get_singleton()->draw_command_end_label();
 
-		// Copy RT depth (R32F storage image) to D32F depth buffer immediately after tracing,
-		// before motion vectors — motion_vectors_store->process() reads depth for camera motion.
+		// Copy RT depth (R32F storage image) to D32F depth buffer after tracing.
 		if (rb_data.is_valid() && rb_data->rt_has_depth_texture()) {
 			RENDER_TIMESTAMP("Copy RT Depth (R32F -> D32F)");
 			RD::get_singleton()->draw_command_begin_label("Copy RT Depth");
@@ -2514,38 +2504,9 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			RD::get_singleton()->draw_command_end_label();
 		}
 
-		// Generate motion vectors for temporal effects.
-		// First fill the entire velocity buffer with depth-based camera motion,
-		// then render the motion pass on top to overwrite with per-object motion vectors.
-		// Note: Motion pass writes to color buffer too, but we overwrite it with RT output afterward.
-		if (using_motion_pass) {
-			rb->ensure_velocity();
+		// Motion vectors are fully generated by the RT raygen/closest-hit/miss shaders
+		// (written to rt_velocity_image). No raster motion pass needed.
 
-			// Fill velocity buffer with depth-based motion vectors.
-			motion_vectors_store->process(rb,
-					p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform,
-					p_render_data->scene_data->prev_cam_projection, p_render_data->scene_data->prev_cam_transform);
-
-			// Render motion pass to overwrite with per-object motion vectors for moving objects.
-			// This also writes to color buffer, but we'll overwrite that with RT output next.
-			bool render_motion_pass = !render_list[RENDER_LIST_MOTION].elements.is_empty();
-			if (render_motion_pass) {
-				RD::get_singleton()->draw_command_begin_label("Render Motion Pass (RT)");
-
-				RENDER_TIMESTAMP("Render Motion Pass (RT)");
-
-				uint32_t rt_motion_pass_uniform_buffer_index = _setup_environment(p_render_data, is_reflection_probe, screen_size, screen_size, p_default_bg_color, true, using_motion_pass);
-				RID rp_uniform_set_motion = _setup_render_pass_uniform_set(RENDER_LIST_MOTION, p_render_data, radiance_texture, samplers, rt_motion_pass_uniform_buffer_index);
-
-				RenderListParameters render_list_params(render_list[RENDER_LIST_MOTION].elements.ptr(), render_list[RENDER_LIST_MOTION].element_info.ptr(), render_list[RENDER_LIST_MOTION].elements.size(), reverse_cull, PASS_MODE_COLOR, color_pass_flags, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set_motion, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, base_specialization);
-				_render_list_with_draw_list(&render_list_params, color_framebuffer);
-
-				RD::get_singleton()->draw_command_end_label();
-			}
-		}
-
-		// Copy raytracing output to the main color buffer AFTER motion pass.
-		// This overwrites any color written by the motion pass while preserving motion vectors.
 		raytracing->copy_output_texture(p_render_data);
 	}
 
@@ -5360,12 +5321,55 @@ void RenderForwardClustered::GeometryInstanceForwardClustered::set_lightmap_capt
 	_mark_dirty();
 }
 
+RTProceduralState *RenderForwardClustered::GeometryInstanceForwardClustered::_ensure_procedural_state() {
+	if (!rt_procedural) {
+		rt_procedural = memnew(RTProceduralState);
+	}
+	return rt_procedural;
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::set_rt_procedural(bool p_procedural, const AABB &p_aabb) {
+	if (p_procedural) {
+		RTProceduralState *s = _ensure_procedural_state();
+		if (s->culling_aabb != p_aabb) {
+			s->dirty = true;
+		}
+		s->culling_aabb = p_aabb;
+	} else if (rt_procedural) {
+		_free_procedural_state();
+	}
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::set_rt_procedural_bounds(const Vector<float> &p_aabb_data, bool p_expose_bounds) {
+	RTProceduralState *s = _ensure_procedural_state();
+	if (s->aabb_data != p_aabb_data || s->expose_bounds != p_expose_bounds) {
+		s->dirty = true;
+	}
+	s->aabb_data = p_aabb_data;
+	s->expose_bounds = p_expose_bounds;
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::_free_procedural_state() {
+	if (!rt_procedural) {
+		return;
+	}
+	if (rt_procedural->blas.is_valid()) {
+		RD::get_singleton()->free_rid(rt_procedural->blas);
+	}
+	if (rt_procedural->gpu_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(rt_procedural->gpu_buffer);
+	}
+	memdelete(rt_procedural);
+	rt_procedural = nullptr;
+}
+
 void RenderForwardClustered::geometry_instance_free(RenderGeometryInstance *p_geometry_instance) {
 	GeometryInstanceForwardClustered *ginstance = static_cast<GeometryInstanceForwardClustered *>(p_geometry_instance);
 	ERR_FAIL_NULL(ginstance);
 	if (ginstance->lightmap_sh != nullptr) {
 		geometry_instance_lightmap_sh.free(ginstance->lightmap_sh);
 	}
+	ginstance->_free_procedural_state();
 	GeometryInstanceSurfaceDataCache *surf = ginstance->surface_caches;
 	while (surf) {
 		GeometryInstanceSurfaceDataCache *next = surf->next;

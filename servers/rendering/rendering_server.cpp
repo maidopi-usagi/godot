@@ -3233,6 +3233,9 @@ void RenderingServer::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("instance_set_custom_aabb", "instance", "aabb"), &RenderingServer::instance_set_custom_aabb);
 
+	ClassDB::bind_method(D_METHOD("instance_set_rt_procedural", "instance", "procedural", "aabb"), &RenderingServer::instance_set_rt_procedural);
+	ClassDB::bind_method(D_METHOD("instance_set_rt_procedural_bounds", "instance", "aabb_data", "expose_bounds"), &RenderingServer::instance_set_rt_procedural_bounds);
+
 	ClassDB::bind_method(D_METHOD("instance_attach_skeleton", "instance", "skeleton"), &RenderingServer::instance_attach_skeleton);
 	ClassDB::bind_method(D_METHOD("instance_set_extra_visibility_margin", "instance", "margin"), &RenderingServer::instance_set_extra_visibility_margin);
 	ClassDB::bind_method(D_METHOD("instance_set_visibility_parent", "instance", "parent"), &RenderingServer::instance_set_visibility_parent);
