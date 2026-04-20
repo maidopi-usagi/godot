@@ -237,7 +237,7 @@ void RenderRaytracing::prepare_frame() {
 RTSurfaceData *RenderRaytracing::process_surface(
 		const void *p_surf,
 		void *p_mesh_surface,
-		uint16_t p_surface_invalidation_counter,
+		uint32_t p_surface_invalidation_counter,
 		const Transform3D &p_transform,
 		LocalVector<RID> &r_dirty_blas_list) {
 	const RenderForwardClustered::GeometryInstanceSurfaceDataCache *surf =
@@ -1300,7 +1300,7 @@ void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data) {
 		const RenderForwardClustered::GeometryInstanceSurfaceDataCache *surf = inst->surface_caches;
 		while (surf) {
 			void *mesh_surface = surf->surface;
-			uint16_t surface_counter = mesh_storage->mesh_surface_get_rt_invalidation_counter(mesh_surface);
+			uint32_t surface_counter = mesh_storage->mesh_surface_get_rt_invalidation_counter(mesh_surface);
 
 			RTSurfaceData *surf_data = process_surface(surf, mesh_surface, surface_counter, instance_transform, dirty_blas_list);
 			if (!surf_data || !surf_data->blas.is_valid()) {

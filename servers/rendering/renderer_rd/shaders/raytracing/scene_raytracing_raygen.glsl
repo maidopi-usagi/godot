@@ -126,13 +126,6 @@ void main() {
 				vec2 prev_uv = project_uv(far_world, prev_vp_unjittered);
 				imageStore(rt_velocity_image, pixel, vec4(prev_uv - curr_uv, 0.0, 0.0));
 			}
-
-#ifdef DLSS_RR_ENABLED
-			imageStore(dlss_rr_diffuse_albedo, pixel, vec4(0.0));
-			imageStore(dlss_rr_specular_albedo, pixel, vec4(0.0));
-			imageStore(dlss_rr_normal_roughness, pixel, vec4(-gl_WorldRayDirectionEXT, 0.0));
-			imageStore(dlss_rr_specular_hit_dist, pixel, vec4(-1.0));
-#endif
 		}
 	}
 
@@ -158,6 +151,19 @@ void main() {
 
 		sky_color = mix(sky_color, fog_color, scene_data_block.data.fog_sky_affect);
 	}
+
+#ifdef DLSS_RR_ENABLED
+	{
+		uint total_bounces = get_total_bounces(ps.packed_bounces_flags);
+		if (total_bounces == 0u && is_sample_zero(ps.packed_bounces_flags)) {
+			ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+			imageStore(dlss_rr_diffuse_albedo, pixel, vec4(sky_color, 1.0));
+			imageStore(dlss_rr_specular_albedo, pixel, vec4(0.0));
+			imageStore(dlss_rr_normal_roughness, pixel, vec4(-gl_WorldRayDirectionEXT, 0.0));
+			imageStore(dlss_rr_specular_hit_dist, pixel, vec4(-1.0));
+		}
+	}
+#endif
 
 	if ((RT_FLAGS & RT_FLAG_DEBUG_VIS_ENABLED) != 0u) {
 		int VIS_MODE = int(get_rt_param(RT_PARAM_VIS_MODE));

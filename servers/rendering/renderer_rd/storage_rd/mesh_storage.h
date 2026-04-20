@@ -141,7 +141,7 @@ private:
 
 			RID material;
 
-			uint16_t rt_invalidation_counter = 0; // Bump on geometry changes for RT cache invalidation.
+			uint32_t rt_invalidation_counter = 0; // Bump on geometry changes for RT cache invalidation.
 
 			uint32_t render_index = 0;
 			uint64_t render_pass = 0;
@@ -545,7 +545,7 @@ public:
 		}
 	}
 
-	_FORCE_INLINE_ uint16_t mesh_surface_get_rt_invalidation_counter(void *p_surface) const {
+	_FORCE_INLINE_ uint32_t mesh_surface_get_rt_invalidation_counter(void *p_surface) const {
 		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
 		return s->rt_invalidation_counter;
 	}

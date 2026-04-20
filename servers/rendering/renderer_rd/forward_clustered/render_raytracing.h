@@ -200,7 +200,7 @@ struct RTMaterialData {
 struct RTCacheEntry {
 	RTSurfaceData *ptr = nullptr;
 	uint32_t last_used_frame = 0;
-	uint16_t cached_counter = 0;
+	uint32_t cached_counter = 0;
 	uint32_t cached_rid_version = 0;
 	uint8_t failed_attempts = 0;
 	uint64_t size_bytes = 0;
@@ -270,7 +270,7 @@ class RenderRaytracing {
 	RTSurfaceData *process_surface(
 			const void *p_surf,
 			void *p_mesh_surface,
-			uint16_t p_surface_invalidation_counter,
+			uint32_t p_surface_invalidation_counter,
 			const Transform3D &p_transform,
 			LocalVector<RID> &r_dirty_blas_list);
 	RTMaterialData *process_material(RID p_material_rid, uint16_t p_material_invalidation_counter);

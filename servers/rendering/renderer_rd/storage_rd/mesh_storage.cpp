@@ -369,7 +369,9 @@ void MeshStorage::mesh_add_surface(RID p_mesh, const RenderingServerTypes::Surfa
 	}
 #endif
 
+	static uint32_t s_next_rt_invalidation_counter = 1; // Monotonic counter is required so that new surfaces are also invalidated.
 	Mesh::Surface *s = memnew(Mesh::Surface);
+	s->rt_invalidation_counter = s_next_rt_invalidation_counter++;
 
 	s->format = new_surface.format;
 	s->primitive = new_surface.primitive;
