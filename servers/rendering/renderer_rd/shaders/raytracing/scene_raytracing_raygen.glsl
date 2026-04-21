@@ -402,7 +402,7 @@ void main() {
 	m.roughness = roughness;
 	m.metalness = metallic;
 	m.emissive = emission * scene_data_block.data.emissive_exposure_normalization;
-	m.normal = normal;
+	m.normal = normalize(mat3(inv_view_matrix) * normal); // view space -> world space
 
 	// Apply normal map if it was written.
 	if (normal_map != vec3(0.5, 0.5, 1.0)) {
