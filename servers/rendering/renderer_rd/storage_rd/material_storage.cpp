@@ -2297,6 +2297,13 @@ void MaterialStorage::shader_set_code(RID p_shader, const String &p_code) {
 	}
 }
 
+void MaterialStorage::shader_set_raw_code(RID p_shader, const String &p_raw_code) {
+	Shader *shader = shader_owner.get_or_null(p_shader);
+	ERR_FAIL_NULL(shader);
+	shader->raw_code = p_raw_code;
+	shader->raw_code_hash = p_raw_code.is_empty() ? 0 : p_raw_code.hash64();
+}
+
 void MaterialStorage::shader_set_path_hint(RID p_shader, const String &p_path) {
 	Shader *shader = shader_owner.get_or_null(p_shader);
 	ERR_FAIL_NULL(shader);
@@ -2546,6 +2553,28 @@ String MaterialStorage::material_get_shader_code(RID p_material) const {
 		return material->shader->code;
 	}
 	return String();
+}
+
+String MaterialStorage::material_get_shader_raw_code(RID p_material) const {
+	const Material *material = material_owner.get_or_null(p_material);
+	if (material && material->shader) {
+		if (!material->shader->raw_code.is_empty()) {
+			return material->shader->raw_code;
+		}
+		return material->shader->code;
+	}
+	return String();
+}
+
+uint64_t MaterialStorage::material_get_shader_raw_code_hash(RID p_material) const {
+	const Material *material = material_owner.get_or_null(p_material);
+	if (material && material->shader) {
+		if (material->shader->raw_code_hash != 0) {
+			return material->shader->raw_code_hash;
+		}
+		return material->shader->code.hash64();
+	}
+	return 0;
 }
 
 void MaterialStorage::material_set_param(RID p_material, const StringName &p_param, const Variant &p_value) {

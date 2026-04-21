@@ -267,6 +267,8 @@ private:
 	struct Shader {
 		ShaderData *data = nullptr;
 		String code;
+		String raw_code;
+		uint64_t raw_code_hash = 0;
 		String path_hint;
 		ShaderType type;
 		HashMap<StringName, HashMap<int, RID>> default_texture_parameter;
@@ -470,6 +472,7 @@ public:
 	virtual void shader_free(RID p_rid) override;
 
 	virtual void shader_set_code(RID p_shader, const String &p_code) override;
+	virtual void shader_set_raw_code(RID p_shader, const String &p_raw_code) override;
 	virtual void shader_set_path_hint(RID p_shader, const String &p_path) override;
 	virtual String shader_get_code(RID p_shader) const override;
 	virtual void get_shader_parameter_list(RID p_shader, List<PropertyInfo> *p_param_list) const override;
@@ -499,8 +502,9 @@ public:
 	virtual void material_set_shader(RID p_material, RID p_shader) override;
 	ShaderData *material_get_shader_data(RID p_material);
 
-	/// Returns the shader source code for the given material (empty if none).
 	String material_get_shader_code(RID p_material) const;
+	String material_get_shader_raw_code(RID p_material) const;
+	uint64_t material_get_shader_raw_code_hash(RID p_material) const;
 
 	virtual void material_set_param(RID p_material, const StringName &p_param, const Variant &p_value) override;
 	virtual Variant material_get_param(RID p_material, const StringName &p_param) const override;

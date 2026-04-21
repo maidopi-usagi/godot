@@ -57,6 +57,7 @@ void Shader::_check_shader_rid() const {
 	MutexLock lock(shader_rid_mutex);
 	if (shader_rid.is_null() && !preprocessed_code.is_empty()) {
 		shader_rid = RenderingServer::get_singleton()->shader_create_from_code(preprocessed_code, get_path());
+		RenderingServer::get_singleton()->shader_set_raw_code(shader_rid, code);
 		preprocessed_code = String();
 	}
 }
@@ -132,6 +133,7 @@ void Shader::set_code(const String &p_code) {
 
 	if (shader_rid.is_valid()) {
 		RenderingServer::get_singleton()->shader_set_code(shader_rid, preprocessed_code);
+		RenderingServer::get_singleton()->shader_set_raw_code(shader_rid, code);
 		preprocessed_code = String();
 	}
 

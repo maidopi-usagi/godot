@@ -39,6 +39,7 @@
 #include "servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h"
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
+#include "servers/rendering/shader_preprocessor.h"
 
 using namespace RendererSceneRenderImplementation;
 
@@ -351,16 +352,25 @@ uint32_t SceneShaderRaytracing::register_custom_shader(uint32_t p_shader_id, RID
 	}
 
 	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
-	String code = material_storage->material_get_shader_code(p_material);
-	if (code.is_empty()) {
-		// ShaderMaterial without a Shader, silently fall back to default material
+	uint64_t code_hash = material_storage->material_get_shader_raw_code_hash(p_material);
+	if (code_hash == 0) {
 		frame_shader_id_to_hg[p_shader_id] = 0;
 		return 0;
 	}
-	uint64_t code_hash = code.hash64();
 
 	HashMap<uint32_t, CustomShaderEntry>::Iterator cache_it = compilation_cache.find(p_shader_id);
 	if (cache_it == compilation_cache.end() || cache_it->value.source_hash != code_hash) {
+		String raw_code = material_storage->material_get_shader_raw_code(p_material);
+		ShaderPreprocessor preprocessor;
+		preprocessor.add_define("RT", "1");
+		String code;
+		Error pp_err = preprocessor.preprocess(raw_code, String(), code);
+		if (pp_err != OK || code.is_empty()) {
+			WARN_PRINT("RT: Failed to preprocess custom shader with RT=1 (shader_id=" + itos(p_shader_id) + ").");
+			frame_shader_id_to_hg[p_shader_id] = 0;
+			return 0;
+		}
+
 		ShaderCompiler::IdentifierActions actions;
 		actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_VERTEX;
 		actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_FRAGMENT;
@@ -480,11 +490,21 @@ uint32_t SceneShaderRaytracing::register_procedural_shader(uint32_t p_shader_id,
 	}
 
 	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
-	String code = material_storage->material_get_shader_code(p_material);
-	uint64_t code_hash = code.hash64();
+	uint64_t code_hash = material_storage->material_get_shader_raw_code_hash(p_material);
 
 	HashMap<uint32_t, CustomShaderEntry>::Iterator cache_it = compilation_cache.find(p_shader_id);
 	if (cache_it == compilation_cache.end() || cache_it->value.source_hash != code_hash) {
+		String raw_code = material_storage->material_get_shader_raw_code(p_material);
+		ShaderPreprocessor preprocessor;
+		preprocessor.add_define("RT", "1");
+		String code;
+		Error pp_err = preprocessor.preprocess(raw_code, String(), code);
+		if (pp_err != OK || code.is_empty()) {
+			WARN_PRINT_ONCE("RT: Failed to preprocess procedural shader with RT=1 (shader_id=" + itos(p_shader_id) + ").");
+			frame_shader_id_to_hg[p_shader_id] = 0;
+			return 0;
+		}
+
 		ShaderCompiler::IdentifierActions actions;
 		actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_VERTEX;
 		actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_FRAGMENT;

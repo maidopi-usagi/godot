@@ -5516,6 +5516,7 @@ bool RenderForwardClustered::_setup_rt() {
 		raytracing->initialize(this);
 		raytracing->shader = SceneShaderRaytracing::get_singleton();
 		String rt_defines;
+		rt_defines += "\n#define RT 1\n";
 		rt_defines += "\n#define MAX_ROUGHNESS_LOD " + itos(get_roughness_layers() - 1) + ".0\n";
 		raytracing->shader->init(rt_defines);
 	}
