@@ -827,6 +827,7 @@ RTMaterialData *RenderRaytracing::process_material(RID p_material_rid, uint16_t 
 		s_default_mat.data.emission_color[2] = 0.0f;
 		s_default_mat.data.emission_strength = 0.0f;
 		s_default_mat.data.roughness = 1.0f;
+		s_default_mat.data.specular = 0.5f;
 		s_default_mat.data.ao_strength = 1.0f;
 		s_default_mat.data.uv1_scale[0] = 1.0f;
 		s_default_mat.data.uv1_scale[1] = 1.0f;
@@ -884,6 +885,7 @@ RTMaterialData *RenderRaytracing::process_material(RID p_material_rid, uint16_t 
 	mat.emission_strength = 0.0f;
 	mat.metallic = 0.0f;
 	mat.roughness = 1.0f;
+	mat.specular = 0.5f;
 	mat.ao_strength = 1.0f;
 	mat.flags = 0;
 	mat.albedo_texture_idx = 0;
@@ -1077,6 +1079,11 @@ RTMaterialData *RenderRaytracing::process_material(RID p_material_rid, uint16_t 
 	Variant roughness_var = material_storage->material_get_param(p_material_rid, "roughness");
 	if (roughness_var.get_type() == Variant::FLOAT) {
 		mat.roughness = roughness_var;
+	}
+
+	Variant specular_var = material_storage->material_get_param(p_material_rid, "specular");
+	if (specular_var.get_type() == Variant::FLOAT) {
+		mat.specular = specular_var;
 	}
 
 	Variant emission_var = material_storage->material_get_param(p_material_rid, "emission");

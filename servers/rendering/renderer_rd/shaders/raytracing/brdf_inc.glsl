@@ -249,7 +249,7 @@ struct MaterialProperties {
 
 	float3 emissive;
 	float roughness;
-
+	float dielectricF0; // Base reflectance for dielectrics (e.g. 0.04 for default 4% reflectance).
 	float transmissivness;
 	float opacity;
 };
@@ -312,8 +312,8 @@ float luminance(float3 rgb) {
 	return dot(rgb, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
-float3 baseColorToSpecularF0(float3 baseColor, float metalness) {
-	return lerp(float3(MIN_DIELECTRICS_F0, MIN_DIELECTRICS_F0, MIN_DIELECTRICS_F0), baseColor, metalness);
+float3 baseColorToSpecularF0(float3 baseColor, float metalness, float dielectricF0) {
+	return lerp(float3(dielectricF0, dielectricF0, dielectricF0), baseColor, metalness);
 }
 
 float3 baseColorToDiffuseReflectance(float3 baseColor, float metalness) {
@@ -933,7 +933,7 @@ BrdfData prepareBRDFData(float3 N, float3 L, float3 V, MaterialProperties materi
 	data.VdotH = saturate(dot(V, data.H));
 
 	// Unpack material properties
-	data.specularF0 = baseColorToSpecularF0(material.baseColor, material.metalness);
+	data.specularF0 = baseColorToSpecularF0(material.baseColor, material.metalness, material.dielectricF0);
 	data.diffuseReflectance = baseColorToDiffuseReflectance(material.baseColor, material.metalness);
 
 	// Unpack 'perceptively linear' -> 'linear' -> 'squared' roughness
@@ -1062,8 +1062,8 @@ float3 DLSSRR_computeDiffuseAlbedo(float3 baseColor, float metalness) {
 	return baseColor * (1.0f - metalness);
 }
 
-float3 DLSSRR_computeSpecularAlbedo(float3 baseColor, float metalness, float roughness, float NdotV) {
-	float3 F0 = baseColorToSpecularF0(baseColor, metalness);
+float3 DLSSRR_computeSpecularAlbedo(float3 baseColor, float metalness, float dielectricF0, float roughness, float NdotV) {
+	float3 F0 = baseColorToSpecularF0(baseColor, metalness, dielectricF0);
 	return DLSSRR_envBRDFApprox(F0, roughness, NdotV);
 }
 

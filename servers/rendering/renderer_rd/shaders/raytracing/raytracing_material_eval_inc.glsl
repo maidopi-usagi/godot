@@ -6,6 +6,7 @@ struct MaterialResult {
 	float alpha;
 	float roughness;
 	float metalness;
+	float specular; // Dielectric specular reflectance control [0..1], default 0.5 -> F0 = 0.04.
 	vec3 emissive;
 	vec3 normal; // Final shading normal (world space, after normal mapping).
 };
@@ -17,6 +18,7 @@ MaterialResult default_material_result(vec3 geometry_normal) {
 	r.alpha = 1.0;
 	r.roughness = 0.5;
 	r.metalness = 0.0;
+	r.specular = 0.5;
 	r.emissive = vec3(0.0);
 	r.normal = geometry_normal;
 	return r;

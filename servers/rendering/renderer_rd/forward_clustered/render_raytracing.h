@@ -101,7 +101,7 @@ struct alignas(16) RT_MaterialData {
 	float uv1_scale[2];
 	float uv1_offset[2];
 	float normal_map_depth; // Strength [0..N], default 1.0 (not Z-depth).
-	float _pad0;
+	float specular; // Dielectric specular [0..1], default 0.5 -> F0 = 0.04.
 	uint64_t uniform_address; // BDA for custom shader uniform buffer (0 = none).
 };
 static_assert(sizeof(RT_MaterialData) == 96, "RT_MaterialData must be 96 bytes for std430");

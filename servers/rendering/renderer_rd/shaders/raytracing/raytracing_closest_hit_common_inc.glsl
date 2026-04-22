@@ -233,6 +233,11 @@ void apply_segment_fog(float segment_dist, inout vec3 radiance, inout vec3 throu
 	throughput *= (1.0 - fog.a);
 }
 
+/// Converts specular parameter [0..1] to dielectric F0.
+float specular_to_f0(float specular) {
+	return 0.16 * specular * specular;
+}
+
 // ============================================================================
 // SHADE AND BOUNCE
 // ============================================================================
@@ -265,11 +270,12 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 	brdf_mat.baseColor = m.albedo;
 	brdf_mat.metalness = m.metalness;
 	brdf_mat.roughness = m.roughness;
+	brdf_mat.dielectricF0 = specular_to_f0(m.specular);
 	brdf_mat.emissive = m.emissive;
 	brdf_mat.transmissivness = 0.0;
 	brdf_mat.opacity = 1.0;
 
-	vec3 specularF0 = baseColorToSpecularF0(brdf_mat.baseColor, brdf_mat.metalness);
+	vec3 specularF0 = baseColorToSpecularF0(brdf_mat.baseColor, brdf_mat.metalness, brdf_mat.dielectricF0);
 	vec3 diffuseReflectance = baseColorToDiffuseReflectance(brdf_mat.baseColor, brdf_mat.metalness);
 
 	// =================================================================
@@ -282,7 +288,7 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 		vec3 diffuse_albedo = DLSSRR_computeDiffuseAlbedo(m.albedo, m.metalness);
 		imageStore(dlss_rr_diffuse_albedo, pixel, vec4(diffuse_albedo, 1.0));
 
-		vec3 specular_albedo = DLSSRR_computeSpecularAlbedo(m.albedo, m.metalness, m.roughness, NdotV);
+		vec3 specular_albedo = DLSSRR_computeSpecularAlbedo(m.albedo, m.metalness, brdf_mat.dielectricF0, m.roughness, NdotV);
 		imageStore(dlss_rr_specular_albedo, pixel, vec4(specular_albedo, 1.0));
 
 		imageStore(dlss_rr_normal_roughness, pixel, vec4(m.normal, m.roughness));

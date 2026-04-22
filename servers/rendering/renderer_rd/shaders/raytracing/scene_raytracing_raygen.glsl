@@ -259,6 +259,7 @@ void debug_visualize(
 		vec3 orm,
 		float metalness,
 		float roughness,
+		float specular,
 		vec3 V,
 		float NdotV) {
 	PathState ps = path_unpack(payload);
@@ -294,7 +295,7 @@ void debug_visualize(
 	} else if (vis_mode == 10) {
 		ps.radiance = DLSSRR_computeDiffuseAlbedo(albedo, metalness);
 	} else if (vis_mode == 11) {
-		ps.radiance = DLSSRR_computeSpecularAlbedo(albedo, metalness, roughness, NdotV);
+		ps.radiance = DLSSRR_computeSpecularAlbedo(albedo, metalness, specular_to_f0(specular), roughness, NdotV);
 	} else if (vis_mode == 12) {
 		ps.radiance = (final_normal * 0.5 + 0.5) * (1.0 - roughness * 0.5);
 	} else if (vis_mode == 13) {
@@ -339,10 +340,10 @@ void debug_visualize(
 		ps.radiance = normalize(world_to_view * final_normal) * 0.5 + 0.5;
 	} else if (vis_mode == 17) {
 		vec3 diffuse_albedo = DLSSRR_computeDiffuseAlbedo(albedo, metalness);
-		vec3 specular_albedo = DLSSRR_computeSpecularAlbedo(albedo, metalness, roughness, NdotV);
+		vec3 specular_albedo = DLSSRR_computeSpecularAlbedo(albedo, metalness, specular_to_f0(specular), roughness, NdotV);
 		ps.radiance = mix(diffuse_albedo, specular_albedo, metalness);
 	} else if (vis_mode == 18) {
-		ps.radiance = baseColorToSpecularF0(albedo, metalness);
+		ps.radiance = baseColorToSpecularF0(albedo, metalness, specular_to_f0(specular));
 	} else if (vis_mode == 19) {
 		bool is_front_face = (gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT);
 		ps.radiance = is_front_face ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
@@ -401,6 +402,7 @@ void main() {
 	m.alpha = alpha;
 	m.roughness = roughness;
 	m.metalness = metallic;
+	m.specular = specular;
 	m.emissive = emission * scene_data_block.data.emissive_exposure_normalization;
 	m.normal = normalize(mat3(inv_view_matrix) * normal); // view space -> world space
 
@@ -447,6 +449,7 @@ void main() {
 	m.alpha = albedo_tex.a * mat.albedo_color.a;
 	m.roughness = roughness;
 	m.metalness = metalness;
+	m.specular = mat.specular;
 	m.emissive = emissive;
 	m.normal = final_normal;
 
@@ -460,7 +463,7 @@ void main() {
 		vec3 V = -gl_WorldRayDirectionEXT;
 		float NdotV = max(dot(m.normal, V), 0.0001);
 		debug_visualize(VIS_MODE, h.geometry_normal, final_normal, tangent_space_normal,
-				h.tangent, h.bitangent, uv, albedo, orm, metalness, roughness, V, NdotV);
+				h.tangent, h.bitangent, uv, albedo, orm, metalness, roughness, mat.specular, V, NdotV);
 	} else {
 		shade_and_bounce(h, m);
 	}
