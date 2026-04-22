@@ -829,8 +829,7 @@ void RendererSceneRenderRD::_render_buffers_post_process_and_tonemap(const Rende
 			}
 
 			tonemap.dest_texture_size = texture_storage->render_target_get_size(render_target);
-			// Upscalers (DLSS, FSR2, etc.) already output at target resolution — use nearest
-			tonemap.bilinear_filtering = !use_upscaled_texture && (scale_mode != RSE::VIEWPORT_SCALING_3D_MODE_NEAREST);
+			tonemap.bilinear_filtering = scale_mode != RSE::VIEWPORT_SCALING_3D_MODE_NEAREST;
 		}
 
 		tonemap.debanding_mode = RendererRD::ToneMapper::TonemapSettings::DebandingMode::DEBANDING_MODE_DISABLED;
