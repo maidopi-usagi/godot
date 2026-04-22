@@ -173,6 +173,7 @@
 #include "scene/resources/packed_scene.h"
 #include "scene/resources/portable_compressed_texture.h"
 #include "scene/theme/theme_db.h"
+#include "servers/audio/audio_server.h"
 #include "servers/display/display_server.h"
 #include "servers/navigation_2d/navigation_server_2d.h"
 #include "servers/navigation_3d/navigation_server_3d.h"
@@ -6041,6 +6042,26 @@ String EditorNode::_get_system_info() const {
 	const String processor_name = OS::get_singleton()->get_processor_name();
 	const int processor_count = OS::get_singleton()->get_processor_count();
 
+	const String audio_driver_name = AudioServer::get_singleton()->get_driver_name();
+	const float mix_rate = AudioServer::get_singleton()->get_mix_rate();
+
+	AudioServer::SpeakerMode speaker_mode = AudioServer::get_singleton()->get_speaker_mode();
+	String speaker_mode_string;
+	switch (speaker_mode) {
+		case AudioServer::SpeakerMode::SPEAKER_MODE_STEREO:
+			speaker_mode_string = "Stereo/mono";
+			break;
+		case AudioServer::SpeakerMode::SPEAKER_SURROUND_31:
+			speaker_mode_string = "Surround 3.1";
+			break;
+		case AudioServer::SpeakerMode::SPEAKER_SURROUND_51:
+			speaker_mode_string = "Surround 5.1";
+			break;
+		case AudioServer::SpeakerMode::SPEAKER_SURROUND_71:
+			speaker_mode_string = "Surround 7.1";
+			break;
+	}
+
 	// Prettify
 	if (rendering_method == "forward_plus") {
 		rendering_method = "Forward+";
@@ -6122,6 +6143,8 @@ String EditorNode::_get_system_info() const {
 		// If the memory info is available, display it.
 		info.push_back(vformat("%s memory", String::humanize_size(system_ram)));
 	}
+
+	info.push_back(vformat("%s (%d Hz, %s)", audio_driver_name, int(mix_rate), speaker_mode_string));
 
 	return String(" - ").join(info);
 }
@@ -6365,11 +6388,21 @@ void EditorNode::_save_window_settings_to_config(Ref<ConfigFile> p_layout, const
 	if (w) {
 		p_layout->set_value(p_section, "screen", w->get_current_screen());
 
+		Size2i win_size = w->get_size();
+
+		if (DisplayServer::get_singleton()->has_feature(DisplayServerEnums::FEATURE_SELF_FITTING_WINDOWS)) {
+			// Work around logical size issues with HiDPI on Wayland. See GH-110643.
+			float win_scale = DisplayServer::get_singleton()->window_get_scale(w->get_window_id());
+
+			win_size.width /= win_scale;
+			win_size.height /= win_scale;
+		}
+
 		Window::Mode mode = w->get_mode();
 		switch (mode) {
 			case Window::MODE_WINDOWED:
 				p_layout->set_value(p_section, "mode", "windowed");
-				p_layout->set_value(p_section, "size", w->get_size());
+				p_layout->set_value(p_section, "size", win_size);
 				break;
 			case Window::MODE_FULLSCREEN:
 			case Window::MODE_EXCLUSIVE_FULLSCREEN:
@@ -7470,6 +7503,7 @@ void EditorNode::reload_instances_with_path_in_edited_scenes() {
 
 			// Replace the original node with the instantiated version.
 			original_node->replace_by(instantiated_node, false);
+			instantiated_node->set_unique_scene_id(original_node->get_unique_scene_id());
 
 			// Mark the old node for deletion.
 			original_node->queue_free();
@@ -8953,7 +8987,7 @@ EditorNode::EditorNode() {
 	ED_SHORTCUT_AND_COMMAND("editor/editor_3d", TTRC("Open 3D Workspace"), KeyModifierMask::CTRL | Key::F2);
 	ED_SHORTCUT_AND_COMMAND("editor/editor_script", TTRC("Open Script Editor"), KeyModifierMask::CTRL | Key::F3);
 	ED_SHORTCUT_AND_COMMAND("editor/editor_game", TTRC("Open Game View"), KeyModifierMask::CTRL | Key::F4);
-	ED_SHORTCUT_AND_COMMAND("editor/editor_assetlib", TTRC("Open Asset Library"), KeyModifierMask::CTRL | Key::F5);
+	ED_SHORTCUT_AND_COMMAND("editor/editor_assetlib", TTRC("Open Asset Store"), KeyModifierMask::CTRL | Key::F5);
 
 	ED_SHORTCUT_OVERRIDE("editor/editor_2d", "macos", KeyModifierMask::META | KeyModifierMask::CTRL | Key::KEY_1);
 	ED_SHORTCUT_OVERRIDE("editor/editor_3d", "macos", KeyModifierMask::META | KeyModifierMask::CTRL | Key::KEY_2);
@@ -9358,7 +9392,7 @@ EditorNode::EditorNode() {
 	if (AssetLibraryEditorPlugin::is_available()) {
 		add_editor_plugin(memnew(AssetLibraryEditorPlugin));
 	} else {
-		print_verbose("Asset Library not available (due to using Web editor, or SSL support disabled).");
+		print_verbose("Asset Store not available (due to using Web editor, or SSL support disabled).");
 	}
 
 	// More visually meaningful to have this later.

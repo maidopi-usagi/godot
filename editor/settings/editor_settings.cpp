@@ -59,7 +59,6 @@
 #include "scene/gui/file_dialog.h"
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
-#include "scene/main/window.h"
 #include "scene/resources/animation.h"
 #include "servers/display/display_server.h"
 
@@ -456,7 +455,7 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
 		EDITOR_SETTING_USAGE(Variant::STRING, PROPERTY_HINT_ENUM, "interface/editor/localization/editor_language", "auto", lang_hint, PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_RESTART_IF_CHANGED | PROPERTY_USAGE_EDITOR_BASIC_SETTING);
 	}
 
-	// Asset library
+	// Asset store
 	_initial_set("asset_library/use_threads", true);
 
 	/* Interface */
@@ -2024,7 +2023,7 @@ float EditorSettings::get_auto_display_scale() {
 
 String EditorSettings::get_language() const {
 	const String language = has_setting("interface/editor/localization/editor_language") ? get("interface/editor/localization/editor_language") : "auto";
-	if (language != "auto") {
+	if (language != "auto" && !language.is_empty()) {
 		return language;
 	}
 
