@@ -846,7 +846,7 @@ static SpvReflectResult ParseNodes(SpvReflectPrvParser* p_parser) {
       case SpvOpTypeAccelerationStructureKHR:
       case SpvOpTypeRayQueryKHR:
       case SpvOpTypeHitObjectNV:
-	  case SpvOpTypeHitObjectEXT:
+	    case SpvOpTypeHitObjectEXT:
       case SpvOpTypeCooperativeVectorNV:
       case SpvOpTypeCooperativeMatrixNV:
       case SpvOpTypeCooperativeMatrixKHR: {

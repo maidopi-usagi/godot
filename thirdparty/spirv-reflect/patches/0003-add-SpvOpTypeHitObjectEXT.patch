@@ -6,7 +6,7 @@ index cca1f68fda..41a0906f4a 100644
        case SpvOpTypeAccelerationStructureKHR:
        case SpvOpTypeRayQueryKHR:
        case SpvOpTypeHitObjectNV:
-+         case SpvOpTypeHitObjectEXT:
++       case SpvOpTypeHitObjectEXT:
        case SpvOpTypeCooperativeVectorNV:
        case SpvOpTypeCooperativeMatrixNV:
        case SpvOpTypeCooperativeMatrixKHR: {

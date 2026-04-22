@@ -68,22 +68,21 @@ public:
 	};
 
 	// Raytracing specialization constant flags (must match shader RT_FLAG_* defines).
-	// Bits 0-7:   Feature flags
-	// Bits 8-15:  Sample count
-	// Bits 16-18: Max bounce count (offset by 1: 0=1 bounce, 7=8 bounces)
+	// Bits 0-20:  Feature flags
+	// Bits 21-28: Sample count
+	// Bits 29-31: Max bounce count (offset by 1: 0=1 bounce, 7=8 bounces)
 	enum RaytracingFlags {
 		RT_FLAG_NONE = 0,
 		RT_FLAG_DEBUG_VIS_ENABLED = (1 << 0),
 		RT_FLAG_DLSS_RR_ENABLED = (1 << 1),
 		RT_FLAG_FOG_ENABLED = (1 << 2),
-		// TODO: Remove once SER benchmarking is complete, should probably be always on
 		RT_FLAG_SER_ENABLED = (1 << 3),
 	};
 
-	constexpr static uint32_t RT_SAMPLE_COUNT_SHIFT = 8;
+	constexpr static uint32_t RT_SAMPLE_COUNT_SHIFT = 21;
 	constexpr static uint32_t RT_SAMPLE_COUNT_MASK = 0xFF;
 
-	constexpr static uint32_t RT_MAX_BOUNCES_SHIFT = 16;
+	constexpr static uint32_t RT_MAX_BOUNCES_SHIFT = 29;
 	constexpr static uint32_t RT_MAX_BOUNCES_MASK = 0x7;
 
 	// RT pipeline limits (must match GLSL payload/hit attribute struct sizes).

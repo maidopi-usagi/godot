@@ -3809,8 +3809,6 @@ void RenderingServer::init() {
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/limits/spatial_indexer/threaded_cull_minimum_instances", PROPERTY_HINT_RANGE, "32,65536,1"), 1000);
 
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/limits/cluster_builder/max_clustered_elements", PROPERTY_HINT_RANGE, "32,8192,1"), 512);
-
-	// TODO: Remove this setting once SER benchmarking is complete, we prob want to always enable it
 	GLOBAL_DEF("rendering/pathtracer/use_shader_execution_reordering", true);
 
 	// OpenGL limits

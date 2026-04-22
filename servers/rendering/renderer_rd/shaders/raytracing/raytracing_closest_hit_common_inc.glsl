@@ -290,7 +290,7 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 		imageStore(dlss_rr_diffuse_albedo, pixel, vec4(diffuse_albedo, 1.0));
 
 		vec3 specular_albedo = DLSSRR_computeSpecularAlbedo(m.albedo, m.metalness, brdf_mat.dielectricF0, m.roughness, NdotV);
-		imageStore(dlss_rr_specular_albedo, pixel, vec4(specular_albedo, 1.0));
+		imageStore(dlss_rr_specular_albedo, pixel, vec4(clamp(specular_albedo, vec3(0.0), vec3(1.0)), 1.0)); // match UNORM8 like before - fixes some issues with garbling..
 
 		imageStore(dlss_rr_normal_roughness, pixel, vec4(m.normal, m.roughness));
 
@@ -376,8 +376,12 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 	}
 
 	// Hand the next ray back to raygen. PATH_TERMINATED_FLAG stays clear so
-	// the raygen loop continues with (next_ray_origin, next_ray_dir).
-	ps.next_ray_origin = offset_ray_origin(h.hit_pos, h.geometry_normal);
+	// the raygen loop continues with the reconstructed origin and next_ray_dir.
+	// Raygen rebuilds origin as offset_ray_origin(ray_origin + ray_dir * hit_t,
+	// offset_normal); passing the normal lets raygen apply the Wachter-Binder
+	// self-intersection offset without round-tripping an fp32 position.
+	ps.hit_t = gl_HitTEXT;
+	ps.offset_normal = h.geometry_normal;
 	ps.next_ray_dir = next_dir;
 	path_pack(payload, ps);
 }

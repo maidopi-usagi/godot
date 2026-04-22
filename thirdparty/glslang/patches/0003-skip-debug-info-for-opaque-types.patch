@@ -16,7 +16,7 @@ index 0e4237fb8a..2feba23465 100644
 -        else {
 -            createDebugGlobalVariable(getDebugType(type), name, inst->getResultId());
 -        }
-+        // skip debug info for opaque types
++        // Skip debug info for opaque types
 +        Id debugType = getDebugType(type);
 +        if (debugType) {
 +            // For debug info, we prefer respecting how the variable is declared in source code.

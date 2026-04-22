@@ -1,5 +1,6 @@
 // Shared definitions for raytracing shaders (raygen, miss, closest_hit, any_hit).
 // Must be included before scene_data_inc.glsl since it defines MAX_VIEWS.
+#include "../oct_inc.glsl"
 
 #include "../oct_inc.glsl"
 
@@ -23,19 +24,24 @@
 #define RT_PARAM_FRAME_INDEX 15 // rt_params[3].w - Frame counter for temporal variation
 
 // ============================================================================
-// PATHTRACING PAYLOAD (40 bytes, fp16-packed)
+// PATHTRACING PAYLOAD (32 bytes, fp16/unorm-packed)
 // ============================================================================
 // Radiance (r) and throughput (T) interleaved as fp16 into 3 uints:
 //   [0]=rg, [1]=bR, [2]=GB  (packHalf2x16 pairs).
+// The next-bounce origin is not stored: raygen reconstructs it from the
+// current ray and hit_t as `offset_ray_origin(ray_origin + ray_dir * hit_t,
+// offset_normal)`. The offset normal and next direction are stored as
+// 16-bit unorm octahedral pairs (effective angular error <~0.001 deg,
+// below the 8-bit normal quantization baked into offset_ray_origin).
 // Use PathState + path_pack/path_unpack for fp32 working copies.
 
-// FIXME: check if we need to adjust the payload size in cpp as well!
 struct PathPayload {
 	uint packed_rt[3]; // 12 bytes - radiance+throughput interleaved as fp16
 	uint packed_bounces_flags; //  4 bytes - [flags:8][unused:8][diffuse:8][total:8]
 	uint rng_state; //  4 bytes - RNG state for PCG
-	vec3 next_ray_origin; // 12 bytes - fp32 origin for the next bounce
-	vec2 oct_next_dir; //  8 bytes - octahedral-encoded direction (fp32)
+	float hit_t; //  4 bytes - ray distance, used by raygen to rebuild origin
+	uint oct_offset_nrm; //  4 bytes - packUnorm2x16(vec3_to_oct(offset normal))
+	uint oct_next_dir; //  4 bytes - packUnorm2x16(vec3_to_oct(next direction))
 };
 
 /// Unpacked fp32 working copy of the payload.
@@ -44,7 +50,8 @@ struct PathState {
 	vec3 throughput;
 	uint packed_bounces_flags;
 	uint rng_state;
-	vec3 next_ray_origin;
+	float hit_t;
+	vec3 offset_normal;
 	vec3 next_ray_dir;
 };
 
@@ -57,8 +64,9 @@ PathState path_unpack(PathPayload p) {
 	s.throughput = max(vec3(bR.y, GB.x, GB.y), vec3(0.0));
 	s.packed_bounces_flags = p.packed_bounces_flags;
 	s.rng_state = p.rng_state;
-	s.next_ray_origin = p.next_ray_origin;
-	s.next_ray_dir = oct_to_vec3(p.oct_next_dir * 2.0 - 1.0);
+	s.hit_t = p.hit_t;
+	s.offset_normal = oct_to_vec3(unpackUnorm2x16(p.oct_offset_nrm) * 2.0 - 1.0);
+	s.next_ray_dir = oct_to_vec3(unpackUnorm2x16(p.oct_next_dir) * 2.0 - 1.0);
 	return s;
 }
 
@@ -71,8 +79,9 @@ void path_pack(inout PathPayload p, PathState s) {
 	p.packed_rt[2] = packHalf2x16(vec2(t.g, t.b));
 	p.packed_bounces_flags = s.packed_bounces_flags;
 	p.rng_state = s.rng_state;
-	p.next_ray_origin = s.next_ray_origin;
-	p.oct_next_dir = vec3_to_oct(s.next_ray_dir);
+	p.hit_t = s.hit_t;
+	p.oct_offset_nrm = packUnorm2x16(vec3_to_oct(s.offset_normal));
+	p.oct_next_dir = packUnorm2x16(vec3_to_oct(s.next_ray_dir));
 }
 
 // Bounce count helpers (bits 0-7: total, bits 8-15: diffuse)

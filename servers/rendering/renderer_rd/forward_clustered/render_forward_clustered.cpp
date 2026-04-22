@@ -122,7 +122,7 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::dlss_rr_ensure_bu
 			RD::TEXTURE_USAGE_SAMPLING_BIT |
 			RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 
-	// Diffuse Albedo: RGB surface color for non-metals (RGBA8 yields better results than RGBA16F here).
+	// Diffuse Albedo: RGB surface color for non-metals (RGBA8; fixes warbling on some surfaces).
 	render_buffers->create_texture(
 			RB_SCOPE_DLSS_RR,
 			RB_TEX_DLSS_RR_DIFFUSE_ALBEDO,
@@ -130,11 +130,11 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::dlss_rr_ensure_bu
 			usage_bits,
 			RD::TEXTURE_SAMPLES_1);
 
-	// Specular Albedo: RGB specular reflection color (RGBA8).
+	// Specular Albedo: RGB specular reflection color (RGBA16F; needs the accuracy, fixes banding artifacts).
 	render_buffers->create_texture(
 			RB_SCOPE_DLSS_RR,
 			RB_TEX_DLSS_RR_SPECULAR_ALBEDO,
-			RD::DATA_FORMAT_R8G8B8A8_UNORM,
+			RD::DATA_FORMAT_R16G16B16A16_SFLOAT,
 			usage_bits,
 			RD::TEXTURE_SAMPLES_1);
 

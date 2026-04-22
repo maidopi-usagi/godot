@@ -2,18 +2,18 @@
 // Include AFTER raytracing_inc.glsl and scene_data_inc.glsl.
 // The includer must set exactly one of RT_STAGE_{RAYGEN,MISS,CLOSEST_HIT,ANY_HIT,INTERSECTION}.
 
-// Specialization constant (bits 0-7: flags, 8-15: samples, 16-18: bounces).
+// Specialization constant (bits 0-20: flags, 21-28: samples, 29-31: bounces).
 layout(constant_id = 0) const uint RT_FLAGS = 0u;
 
 #define RT_FLAG_DEBUG_VIS_ENABLED (1u << 0)
 #define RT_FLAG_DLSS_RR_ENABLED (1u << 1)
 #define RT_FLAG_FOG_ENABLED (1u << 2)
 
-#define RT_SAMPLE_COUNT_SHIFT 8u
+#define RT_SAMPLE_COUNT_SHIFT 21u
 #define RT_SAMPLE_COUNT_MASK 0xFFu
 #define RT_GET_SAMPLE_COUNT() max(1u, (RT_FLAGS >> RT_SAMPLE_COUNT_SHIFT) & RT_SAMPLE_COUNT_MASK)
 
-#define RT_MAX_BOUNCES_SHIFT 16u
+#define RT_MAX_BOUNCES_SHIFT 29u
 #define RT_MAX_BOUNCES_MASK 0x7u
 #define RT_GET_MAX_BOUNCES() (((RT_FLAGS >> RT_MAX_BOUNCES_SHIFT) & RT_MAX_BOUNCES_MASK) + 1u)
 
@@ -70,8 +70,8 @@ layout(set = 0, binding = 15, r32f) uniform image2D rt_depth_image;
 struct HitAttribs {
 	vec2 bary_or_uv;
 #ifdef ENABLE_INTERSECTION_SHADERS
-	uint packed_normal;     // xyz: snorm8 normal,  w: delta.x FP16 low byte.
-	uint packed_tangent;    // xyz: snorm8 tangent, w: delta.x FP16 high byte.
+	uint packed_normal; // xyz: snorm8 normal,  w: delta.x FP16 low byte.
+	uint packed_tangent; // xyz: snorm8 tangent, w: delta.x FP16 high byte.
 	uint prev_pos_delta_yz; // packHalf2x16(delta.y, delta.z).
 #endif
 };

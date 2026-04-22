@@ -73,7 +73,7 @@ void main() {
 			// Reorder with a coherence hint that has 8 bits
 			uint hint = 0;
 			if (hitObjectIsHitEXT(hitObject)) {
-				// TODO: This hint barely does anyhting. There is a lot of untapped potential here.
+				// TODO: This hint barely does anything. There is a lot of untapped potential here.
 				hint = hitObjectGetInstanceIdEXT(hitObject);
 			}
 			reorderThreadEXT(hitObject, hint, 8);
@@ -87,7 +87,9 @@ void main() {
 			if (is_path_terminated(ps.packed_bounces_flags)) {
 				break;
 			}
-			ray_origin = ps.next_ray_origin;
+			// Reconstruct the next ray origin from the current ray + hit distance, apply bias
+			vec3 hit_pos = ray_origin + ray_dir * ps.hit_t;
+			ray_origin = offset_ray_origin(hit_pos, ps.offset_normal);
 			ray_dir = ps.next_ray_dir;
 		}
 
@@ -308,10 +310,9 @@ void debug_visualize(
 	if (vis_mode == 1) {
 		if (get_total_bounces(ps.packed_bounces_flags) == 0u) {
 			ps.packed_bounces_flags = inc_total_bounce(ps.packed_bounces_flags);
-			vec3 hit_pos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
-			vec3 reflect_dir = reflect(gl_WorldRayDirectionEXT, geometry_normal);
-			ps.next_ray_origin = hit_pos + geometry_normal * 0.01;
-			ps.next_ray_dir = reflect_dir;
+			ps.hit_t = gl_HitTEXT;
+			ps.offset_normal = geometry_normal;
+			ps.next_ray_dir = reflect(gl_WorldRayDirectionEXT, geometry_normal);
 			path_pack(payload, ps);
 			return;
 		} else {
@@ -344,10 +345,9 @@ void debug_visualize(
 			if (roughness < MAX_DENOISER_SPECULAR_HIT_THRESHOLD) {
 				ps.packed_bounces_flags = inc_total_bounce(ps.packed_bounces_flags);
 				ps.radiance = vec3(0.1, 0.1, 0.4);
-				vec3 hit_pos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
-				vec3 reflect_dir = reflect(gl_WorldRayDirectionEXT, final_normal);
-				ps.next_ray_origin = hit_pos + final_normal * 0.01;
-				ps.next_ray_dir = reflect_dir;
+				ps.hit_t = gl_HitTEXT;
+				ps.offset_normal = final_normal;
+				ps.next_ray_dir = reflect(gl_WorldRayDirectionEXT, final_normal);
 				path_pack(payload, ps);
 				return;
 			} else {
@@ -420,7 +420,6 @@ void main() {
 	bool rt_front_face = h.is_front_face;
 
 #include "raytracing_custom_fragment_inc.glsl"
-
 
 	// Build MaterialResult from fragment outputs.
 	MaterialResult m;

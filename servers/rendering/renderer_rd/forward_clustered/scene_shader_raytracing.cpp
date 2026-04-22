@@ -993,9 +993,8 @@ void SceneShaderRaytracing::init(const String p_defines) {
 	// Shader variants (compiled on-demand):
 	// Variant 0: Base
 	// Variant 1: DLSS RR
-	// Variant 2: SER
-	// Variant 3: SER + DLSS RR
-	// TODO: Remove SER variants once SER benchmarking is complete, keep them always enabled.
+	// Variant 2: Shader Execution Reordering
+	// Variant 3: Shader Execution Reordering + DLSS RR
 	Vector<String> modes;
 	modes.push_back("\n");
 	modes.push_back("\n#define DLSS_RR_ENABLED\n");

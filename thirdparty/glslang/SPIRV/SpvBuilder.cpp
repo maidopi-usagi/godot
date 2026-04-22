@@ -2865,7 +2865,7 @@ Id Builder::createVariable(Decoration precision, StorageClass storageClass, Id t
 
     if (emitNonSemanticShaderDebugInfo && !compilerGenerated)
     {
-		// skip debug info for opaque types
+		// Skip debug info for opaque types
 		Id debugType = getDebugType(type);
 		if (debugType) {
 			// For debug info, we prefer respecting how the variable is declared in source code.
