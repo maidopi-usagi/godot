@@ -486,8 +486,10 @@ void RendererSceneRenderRD::_render_buffers_post_process_and_tonemap(const Rende
 		}
 	}
 
+	// SMAA causes issues when enabled with temporal upscalers.
+	bool temporal_upscaler_active = scale_mode == RSE::VIEWPORT_SCALING_3D_MODE_DLSS || scale_mode == RSE::VIEWPORT_SCALING_3D_MODE_FSR2 || scale_mode == RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL;
 	bool use_fxaa = rb->get_screen_space_aa() == RSE::VIEWPORT_SCREEN_SPACE_AA_FXAA;
-	bool use_smaa = smaa && rb->get_screen_space_aa() == RSE::VIEWPORT_SCREEN_SPACE_AA_SMAA;
+	bool use_smaa = smaa && rb->get_screen_space_aa() == RSE::VIEWPORT_SCREEN_SPACE_AA_SMAA && !temporal_upscaler_active;
 	// If doing bilinear or nearest scaling + FXAA / SMAA, the framebuffer must be scaled in a framebuffer copy after AA is applied.
 	bool using_scaling_pass = spatial_upscaler || ((use_fxaa || use_smaa) && (scale_mode == RSE::VIEWPORT_SCALING_3D_MODE_BILINEAR || scale_mode == RSE::VIEWPORT_SCALING_3D_MODE_NEAREST));
 
@@ -827,7 +829,8 @@ void RendererSceneRenderRD::_render_buffers_post_process_and_tonemap(const Rende
 			}
 
 			tonemap.dest_texture_size = texture_storage->render_target_get_size(render_target);
-			tonemap.bilinear_filtering = scale_mode != RSE::VIEWPORT_SCALING_3D_MODE_NEAREST;
+			// Upscalers (DLSS, FSR2, etc.) already output at target resolution — use nearest
+			tonemap.bilinear_filtering = !use_upscaled_texture && (scale_mode != RSE::VIEWPORT_SCALING_3D_MODE_NEAREST);
 		}
 
 		tonemap.debanding_mode = RendererRD::ToneMapper::TonemapSettings::DebandingMode::DEBANDING_MODE_DISABLED;
