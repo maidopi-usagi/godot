@@ -2957,7 +2957,7 @@ void RenderForwardClustered::_render_buffers_debug_draw(const RenderDataRD *p_re
 		Size2i rtsize = texture_storage->render_target_get_size(render_target);
 		RID fb = texture_storage->render_target_get_rd_framebuffer(render_target);
 		RID depth_tex = rb->get_texture(RB_SCOPE_BUFFERS, RB_TEX_RECONSTRUCTED_DEPTH);
-		copy_effects->copy_to_fb_rect(depth_tex, fb, Rect2(Vector2(), rtsize), false, true, false, false, RID(), false, false, false, false, Rect2(), 1.0, RendererRD::CopyEffects::COPY_TO_FB_FLAG_MODE_LOG_LUMINANCE);
+		copy_effects->copy_to_fb_rect(depth_tex, fb, Rect2(Vector2(), rtsize), false, true, false, false, RID(), false, false, false, false, Rect2(), 1.0, true, RendererRD::CopyEffects::COPY_TO_FB_FLAG_MODE_LOG_LUMINANCE);
 	}
 }
 
