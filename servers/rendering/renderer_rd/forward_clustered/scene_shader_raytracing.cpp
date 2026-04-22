@@ -53,6 +53,46 @@ static void _dump_failed_shader(const String &p_source, const String &p_label) {
 	}
 }
 
+namespace {
+
+struct RaygenShaderOption {
+	uint32_t rt_flag_mask;
+	const char *define_snippet;
+};
+
+// Variant index is a uint32 bitmask: bit i selects RAYGEN_SHADER_OPTIONS[i].
+// Add entries here to grow the raygen permutation set (2^N variants).
+static constexpr RaygenShaderOption RAYGEN_SHADER_OPTIONS[] = {
+	{ SceneShaderRaytracing::RT_FLAG_DLSS_RR_ENABLED, "#define DLSS_RR_ENABLED\n" },
+	{ SceneShaderRaytracing::RT_FLAG_SER_ENABLED, "#define USE_SER\n" },
+};
+
+static constexpr uint32_t RAYGEN_SHADER_OPTION_COUNT = sizeof(RAYGEN_SHADER_OPTIONS) / sizeof(RAYGEN_SHADER_OPTIONS[0]);
+
+static uint32_t _raygen_variant_from_rt_flags(uint32_t p_rt_flags) {
+	uint32_t variant = 0;
+	for (uint32_t i = 0; i < RAYGEN_SHADER_OPTION_COUNT; i++) {
+		if (p_rt_flags & RAYGEN_SHADER_OPTIONS[i].rt_flag_mask) {
+			variant |= (1u << i);
+		}
+	}
+	return variant;
+}
+
+// Returns the GLSL preamble for the variant identified by p_variant_mask.
+// Each set bit i activates RAYGEN_SHADER_OPTIONS[i].define_snippet.
+static String _raygen_variant_preamble(uint32_t p_variant_mask) {
+	String preamble = "\n";
+	for (uint32_t opt = 0; opt < RAYGEN_SHADER_OPTION_COUNT; opt++) {
+		if (p_variant_mask & (1u << opt)) {
+			preamble += RAYGEN_SHADER_OPTIONS[opt].define_snippet;
+		}
+	}
+	return preamble;
+}
+
+} // namespace
+
 void SceneShaderRaytracing::ShaderData::set_code(const String &p_code) {
 	code = p_code;
 
@@ -702,9 +742,7 @@ const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipel
 
 	ERR_FAIL_COND_V(!raygen_shader_version.is_valid(), EMPTY_BUNDLE);
 
-	int dlss_bit = (p_rt_flags & RT_FLAG_DLSS_RR_ENABLED) ? 1 : 0;
-	int ser_bit = (p_rt_flags & RT_FLAG_SER_ENABLED) ? 1 : 0;
-	int variant = ser_bit * 2 + dlss_bit;
+	int variant = (int)_raygen_variant_from_rt_flags(p_rt_flags);
 
 	Vector<String> sources = raygen_shader.version_build_variant_stage_sources(raygen_shader_version, variant);
 	ERR_FAIL_COND_V(sources.is_empty(), EMPTY_BUNDLE);
@@ -990,16 +1028,14 @@ const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipel
 void SceneShaderRaytracing::init(const String p_defines) {
 	// For raytracing: The raygen shader has embedded code via setup_raytracing() in its constructor
 	// setup_raytracing() set pipeline_type = RAYTRACING, so initialize() will use raytracing stages
-	// Shader variants (compiled on-demand):
-	// Variant 0: Base
-	// Variant 1: DLSS RR
-	// Variant 2: Shader Execution Reordering
-	// Variant 3: Shader Execution Reordering + DLSS RR
+	// Shader variants: one per bitmask of RAYGEN_SHADER_OPTIONS (see file-local table above).
+	const uint32_t variant_count = 1u << RAYGEN_SHADER_OPTION_COUNT;
 	Vector<String> modes;
-	modes.push_back("\n");
-	modes.push_back("\n#define DLSS_RR_ENABLED\n");
-	modes.push_back("\n#define USE_SER\n");
-	modes.push_back("\n#define DLSS_RR_ENABLED\n#define USE_SER\n");
+	modes.resize((int)variant_count);
+	String *modes_ptr = modes.ptrw();
+	for (uint32_t mask = 0; mask < variant_count; mask++) {
+		modes_ptr[mask] = _raygen_variant_preamble(mask);
+	}
 	raygen_shader.initialize(modes, p_defines);
 
 	// Now create a version to access the embedded raytracing shader
