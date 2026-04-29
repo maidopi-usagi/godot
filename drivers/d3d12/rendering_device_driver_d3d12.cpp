@@ -36,6 +36,8 @@
 #include "drivers/d3d12/d3d12_hooks.h"
 #include "drivers/d3d12/rendering_context_driver_d3d12.h"
 #include "drivers/streamline/streamline.h"
+#include "drivers/aftermath/aftermath.h"
+#include "drivers/aftermath/aftermath_context.h"
 
 #include <drivers/d3d12/godot_d3d12ma.h>
 #include <drivers/d3d12/godot_nir.h>
@@ -5351,6 +5353,13 @@ RDD::PipelineID RenderingDeviceDriverD3D12::render_pipeline_create(
 		(SIZE_T)final_stages_bytecode[SHADER_STAGE_FRAGMENT].size()
 	};
 
+	// Register each DXIL stage blob with Aftermath for crash-dump correlation.
+	for (const KeyValue<ShaderStage, Vector<uint8_t>> &E : final_stages_bytecode) {
+		if (E.value.size() > 0) {
+			Aftermath::get_singleton()->register_shader(AFTERMATH_SHADER_DXIL, E.value.ptr(), E.value.size());
+		}
+	}
+
 	ComPtr<ID3D12Device2> device_2;
 	device->QueryInterface(device_2.GetAddressOf());
 	ComPtr<ID3D12PipelineState> pso;
@@ -5491,6 +5500,14 @@ RDD::PipelineID RenderingDeviceDriverD3D12::compute_pipeline_create(ShaderID p_s
 		final_stages_bytecode[SHADER_STAGE_COMPUTE].ptr(),
 		(SIZE_T)final_stages_bytecode[SHADER_STAGE_COMPUTE].size()
 	};
+
+	// Register the compute DXIL blob with Aftermath for crash-dump correlation.
+	{
+		const Vector<uint8_t> &cs_bytes = final_stages_bytecode[SHADER_STAGE_COMPUTE];
+		if (cs_bytes.size() > 0) {
+			Aftermath::get_singleton()->register_shader(AFTERMATH_SHADER_DXIL, cs_bytes.ptr(), cs_bytes.size());
+		}
+	}
 
 	ComPtr<ID3D12Device2> device_2;
 	device->QueryInterface(device_2.GetAddressOf());
@@ -5968,6 +5985,7 @@ RenderingDeviceDriverD3D12::~RenderingDeviceDriverD3D12() {
 	if (Streamline::get_singleton()) {
 		Streamline::get_singleton()->emit_marker(STREAMLINE_MARKER_BEFORE_DEVICE_DESTROY);
 	}
+	Aftermath::get_singleton()->emit_marker(AFTERMATH_MARKER_BEFORE_DEVICE_DESTROY);
 
 	if (D3D12Hooks::get_singleton() != nullptr) {
 		D3D12Hooks::get_singleton()->cleanup_device();
@@ -6421,6 +6439,9 @@ Error RenderingDeviceDriverD3D12::initialize(uint32_t p_device_index, uint32_t p
 	ERR_FAIL_COND_V(err != OK, ERR_CANT_CREATE);
 
 	Streamline::get_singleton()->set_internal_parameter("d3d12_device", (void *)device.Get());
+
+	Aftermath::get_singleton()->emit_marker(AFTERMATH_MARKER_INITIALIZE_D3D12);
+	AftermathContext::get().initialize_d3d12((void *)device.Get());
 
 	err = _check_capabilities();
 	ERR_FAIL_COND_V(err != OK, ERR_CANT_CREATE);

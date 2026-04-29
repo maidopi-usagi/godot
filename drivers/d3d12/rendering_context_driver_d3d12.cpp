@@ -35,6 +35,7 @@
 #include "core/string/ustring.h"
 #include "core/templates/local_vector.h"
 #include "drivers/streamline/streamline.h"
+#include "drivers/aftermath/aftermath.h"
 
 GODOT_GCC_WARNING_PUSH_AND_IGNORE("-Wnon-virtual-dtor")
 GODOT_CLANG_WARNING_PUSH_AND_IGNORE("-Wnon-virtual-dtor")

@@ -157,6 +157,7 @@
 #endif // MODULE_GDSCRIPT_ENABLED
 
 #include "drivers/streamline/streamline.h"
+#include "drivers/aftermath/aftermath.h"
 
 /* Static members */
 
@@ -199,6 +200,7 @@ static PhysicsServer3D *physics_server_3d = nullptr;
 static XRServer *xr_server = nullptr;
 #endif // XR_DISABLED
 static Streamline *streamline = nullptr;
+static Aftermath *aftermath = nullptr;
 // We error out if setup2() doesn't turn this true
 static bool _start_success = false;
 
@@ -1084,6 +1086,9 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	/* create streamline and register singleton */
 	streamline = memnew(Streamline);
 	Streamline::register_singleton();
+
+	/* create aftermath singleton (no project settings; DLL loaded on demand) */
+	aftermath = memnew(Aftermath);
 
 	/* argument parsing and main creation */
 	List<String> args;
@@ -2663,11 +2668,13 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	}
 #endif
 
-	// start streamline now that we know the API.
+	// start streamline and aftermath now that we know the API.
 	if (rendering_driver == "vulkan") {
 		Streamline::get_singleton()->emit_marker(STREAMLINE_MARKER_INITIALIZE_VULKAN);
+		Aftermath::get_singleton()->emit_marker(AFTERMATH_MARKER_INITIALIZE_VULKAN);
 	} else if (rendering_driver == "d3d12") {
 		Streamline::get_singleton()->emit_marker(STREAMLINE_MARKER_INITIALIZE_D3D12);
+		Aftermath::get_singleton()->emit_marker(AFTERMATH_MARKER_INITIALIZE_D3D12);
 	}
 
 	if (use_custom_res) {
@@ -2956,6 +2963,10 @@ error:
 	if (streamline) {
 		memdelete(streamline);
 		streamline = nullptr;
+	}
+	if (aftermath) {
+		memdelete(aftermath);
+		aftermath = nullptr;
 	}
 
 	EngineDebugger::deinitialize();
@@ -5345,6 +5356,9 @@ void Main::cleanup(bool p_force) {
 
 	if (streamline) {
 		memdelete(streamline);
+	}
+	if (aftermath) {
+		memdelete(aftermath);
 	}
 	if (input) {
 		memdelete(input);

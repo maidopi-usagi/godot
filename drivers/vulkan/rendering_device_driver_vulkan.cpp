@@ -42,6 +42,9 @@
 #include "drivers/streamline/streamline.h"
 #endif
 
+#include "drivers/aftermath/aftermath.h"
+#include "drivers/aftermath/aftermath_context.h"
+
 #if defined(SWAPPY_FRAME_PACING_ENABLED)
 #include "platform/android/java_godot_wrapper.h"
 #include "platform/android/os_android.h"
@@ -599,6 +602,12 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 
 	if (Engine::get_singleton()->is_generate_spirv_debug_info_enabled()) {
 		_register_requested_device_extension(VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME, true);
+	}
+
+	// Aftermath requires these two NV extensions when active.
+	if (Aftermath::get_singleton()->is_active()) {
+		_register_requested_device_extension(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME, false);
+		_register_requested_device_extension(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME, false);
 	}
 
 #if defined(VK_TRACK_DEVICE_MEMORY)
@@ -1465,6 +1474,15 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 			multiview_features.multiviewGeometryShader = multiview_capabilities.geometry_shader_is_supported;
 			multiview_features.multiviewTessellationShader = multiview_capabilities.tessellation_shader_is_supported;
 			create_info_next = &multiview_features;
+		}
+	}
+
+	if (Aftermath::get_singleton()->is_active() &&
+			enabled_device_extension_names.has(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME)) {
+		void *diag_config = Aftermath::get_singleton()->get_internal_parameter(AFTERMATH_INTERNAL_PARAM_VK_DEVICE_DIAGNOSTICS_CONFIG);
+		if (diag_config) {
+			static_cast<VkBaseOutStructure *>(diag_config)->pNext = static_cast<VkBaseOutStructure *>(create_info_next);
+			create_info_next = diag_config;
 		}
 	}
 
@@ -4384,6 +4402,8 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 		shader_info.spirv_stage_bytes.push_back(decoded_spirv);
 #endif
 
+		Aftermath::get_singleton()->register_shader(AFTERMATH_SHADER_SPIRV, decoded_spirv.ptr(), decoded_spirv.size());
+
 		VkShaderModuleCreateInfo shader_module_create_info = {};
 		shader_module_create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
 		shader_module_create_info.codeSize = decoded_spirv.size();
@@ -6174,6 +6194,8 @@ RDD::PipelineID RenderingDeviceDriverVulkan::render_pipeline_create(
 #endif
 
 					// Create the shader module with the optimized output.
+					Aftermath::get_singleton()->register_shader(AFTERMATH_SHADER_SPIRV,
+							reinterpret_cast<const uint8_t *>(respv_optimized_data.data()), respv_optimized_data.size());
 					VkShaderModule shader_module = VK_NULL_HANDLE;
 					VkShaderModuleCreateInfo shader_module_create_info = {};
 					shader_module_create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -6952,6 +6974,8 @@ void *RenderingDeviceDriverVulkan::command_buffer_get_native_handle(CommandBuffe
 }
 
 void RenderingDeviceDriverVulkan::on_device_lost() const {
+	Aftermath::get_singleton()->emit_marker(AFTERMATH_MARKER_ON_DEVICE_LOST);
+
 	if (device_functions.GetDeviceFaultInfoEXT == nullptr) {
 		_err_print_error(FUNCTION_STR, __FILE__, __LINE__, "VK_EXT_device_fault not available.");
 		return;
@@ -7515,6 +7539,7 @@ RenderingDeviceDriverVulkan::~RenderingDeviceDriverVulkan() {
 		Streamline::get_singleton()->emit_marker(STREAMLINE_MARKER_BEFORE_DEVICE_DESTROY);
 	}
 #endif
+	Aftermath::get_singleton()->emit_marker(AFTERMATH_MARKER_BEFORE_DEVICE_DESTROY);
 
 #if defined(DEBUG_ENABLED) || defined(DEV_ENABLED)
 	if (breadcrumb_buffer != BufferID()) {
