@@ -239,6 +239,117 @@ float specular_to_f0(float specular) {
 }
 
 // ============================================================================
+// DEBUG VISUALIZATION
+// ============================================================================
+
+#ifdef RT_DEBUG_ENABLED
+void debug_visualize(
+		int vis_mode,
+		vec3 geometry_normal,
+		vec3 final_normal,
+		vec3 tangent_space_normal,
+		vec3 world_tangent,
+		vec3 world_bitangent,
+		vec2 uv,
+		vec3 albedo,
+		vec3 orm,
+		float metalness,
+		float roughness,
+		float specular,
+		vec3 emissive,
+		vec3 V,
+		float NdotV) {
+	PathState ps = path_unpack(payload);
+
+	if (vis_mode == 1) {
+		if (get_total_bounces(ps.packed_bounces_flags) == 0u) {
+			ps.packed_bounces_flags = inc_total_bounce(ps.packed_bounces_flags);
+			ps.hit_t = gl_HitTEXT;
+			ps.offset_normal = geometry_normal;
+			ps.next_ray_dir = reflect(gl_WorldRayDirectionEXT, geometry_normal);
+			path_pack(payload, ps);
+			return;
+		} else {
+			ps.radiance = geometry_normal * 0.5 + 0.5;
+		}
+	} else if (vis_mode == 2) {
+		ps.radiance = geometry_normal * 0.5 + 0.5;
+	} else if (vis_mode == 3) {
+		ps.radiance = final_normal * 0.5 + 0.5;
+	} else if (vis_mode == 4) {
+		ps.radiance = tangent_space_normal * 0.5 + 0.5;
+	} else if (vis_mode == 5) {
+		ps.radiance = world_tangent * 0.5 + 0.5;
+	} else if (vis_mode == 6) {
+		ps.radiance = world_bitangent * 0.5 + 0.5;
+	} else if (vis_mode == 7) {
+		ps.radiance = vec3(fract(uv), 0.0);
+	} else if (vis_mode == 8) {
+		ps.radiance = albedo;
+	} else if (vis_mode == 9) {
+		ps.radiance = orm;
+	} else if (vis_mode == 10) {
+		ps.radiance = DLSSRR_computeDiffuseAlbedo(albedo, metalness);
+	} else if (vis_mode == 11) {
+		ps.radiance = DLSSRR_computeSpecularAlbedo(albedo, metalness, specular_to_f0(specular), roughness, NdotV);
+	} else if (vis_mode == 12) {
+		ps.radiance = (final_normal * 0.5 + 0.5) * (1.0 - roughness * 0.5);
+	} else if (vis_mode == 13) {
+		if (get_total_bounces(ps.packed_bounces_flags) == 0u) {
+			if (roughness < MAX_DENOISER_SPECULAR_HIT_THRESHOLD) {
+				ps.packed_bounces_flags = inc_total_bounce(ps.packed_bounces_flags);
+				ps.radiance = vec3(0.1, 0.1, 0.4);
+				ps.hit_t = gl_HitTEXT;
+				ps.offset_normal = final_normal;
+				ps.next_ray_dir = reflect(gl_WorldRayDirectionEXT, final_normal);
+				path_pack(payload, ps);
+				return;
+			} else {
+				ps.radiance = vec3(0.1, 0.1, 0.4);
+			}
+		} else {
+			float spec_hit_t = gl_HitTEXT;
+			float v = clamp(log(spec_hit_t + 1.0) / log(1000.0), 0.0, 1.0);
+			vec3 color;
+			if (v < 0.33) {
+				color = mix(vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), v * 3.0);
+			} else if (v < 0.66) {
+				color = mix(vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), (v - 0.33) * 3.0);
+			} else {
+				color = mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 1.0, 1.0), (v - 0.66) * 3.0);
+			}
+			ps.radiance = color;
+		}
+	} else if (vis_mode == 14) {
+		ps.radiance = vec3(metalness);
+	} else if (vis_mode == 15) {
+		ps.radiance = vec3(roughness);
+	} else if (vis_mode == 16) {
+		mat3 world_to_view = mat3(scene_data_block.data.inv_view_matrix);
+		ps.radiance = normalize(world_to_view * final_normal) * 0.5 + 0.5;
+	} else if (vis_mode == 17) {
+		vec3 diffuse_albedo = DLSSRR_computeDiffuseAlbedo(albedo, metalness);
+		vec3 specular_albedo = DLSSRR_computeSpecularAlbedo(albedo, metalness, specular_to_f0(specular), roughness, NdotV);
+		ps.radiance = mix(diffuse_albedo, specular_albedo, metalness);
+	} else if (vis_mode == 18) {
+		ps.radiance = baseColorToSpecularF0(albedo, metalness, specular_to_f0(specular));
+	} else if (vis_mode == 19) {
+		bool is_front_face = (gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT);
+		ps.radiance = is_front_face ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+	} else if (vis_mode == 20) {
+		float depth_range = scene_data_block.data.z_far - scene_data_block.data.z_near;
+		float d = clamp(gl_HitTEXT / depth_range, 0.0, 1.0);
+		ps.radiance = vec3(d);
+	} else if (vis_mode == 21) {
+		ps.radiance = emissive;
+	}
+
+	ps.packed_bounces_flags = set_path_terminated(ps.packed_bounces_flags);
+	path_pack(payload, ps);
+}
+#endif // RT_DEBUG_ENABLED
+
+// ============================================================================
 // SHADE AND BOUNCE
 // ============================================================================
 
@@ -377,9 +488,6 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 
 	// Hand the next ray back to raygen. PATH_TERMINATED_FLAG stays clear so
 	// the raygen loop continues with the reconstructed origin and next_ray_dir.
-	// Raygen rebuilds origin as offset_ray_origin(ray_origin + ray_dir * hit_t,
-	// offset_normal); passing the normal lets raygen apply the Wachter-Binder
-	// self-intersection offset without round-tripping an fp32 position.
 	ps.hit_t = gl_HitTEXT;
 	ps.offset_normal = h.geometry_normal;
 	ps.next_ray_dir = next_dir;

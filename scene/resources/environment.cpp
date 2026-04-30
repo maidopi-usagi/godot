@@ -1504,7 +1504,7 @@ void Environment::_bind_methods() {
 
 	ADD_GROUP("Pathtracing", "pathtracing_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pathtracing_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_pathtracing_enabled", "is_pathtracing_enabled");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "pathtracing_debug_mode", PROPERTY_HINT_ENUM, "Disabled,Mirror Reflection,Geometry Normals,Final Normals,Normal Map,Tangent,Bitangent,UV,Albedo,ORM,Diffuse Albedo,Specular Albedo,Normal+Roughness,Specular Hit Dist,Metalness,Roughness,View Normals,Diffuse+Specular,Fresnel F0,Front/Back Face,Depth"), "set_pathtracing_debug_mode", "get_pathtracing_debug_mode");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "pathtracing_debug_mode", PROPERTY_HINT_ENUM, "Disabled,Mirror Reflection,Geometry Normals,Final Normals,Normal Map,Tangent,Bitangent,UV,Albedo,ORM,Diffuse Albedo,Specular Albedo,Normal+Roughness,Specular Hit Dist,Metalness,Roughness,View Normals,Diffuse+Specular,Fresnel F0,Front/Back Face,Depth,Emissive"), "set_pathtracing_debug_mode", "get_pathtracing_debug_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "pathtracing_samples_per_pixel", PROPERTY_HINT_RANGE, "1,16,1"), "set_pathtracing_samples_per_pixel", "get_pathtracing_samples_per_pixel");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "pathtracing_max_bounces", PROPERTY_HINT_RANGE, "1,8,1"), "set_pathtracing_max_bounces", "get_pathtracing_max_bounces");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "pathtracing_denoiser", PROPERTY_HINT_ENUM, "None,DLSS Ray Reconstruction"), "set_pathtracing_denoiser", "get_pathtracing_denoiser");
@@ -1725,6 +1725,8 @@ void Environment::_bind_methods() {
 	BIND_ENUM_CONSTANT(RT_DEBUG_DIFFUSE_SPECULAR_SPLIT);
 	BIND_ENUM_CONSTANT(RT_DEBUG_FRESNEL_F0);
 	BIND_ENUM_CONSTANT(RT_DEBUG_FRONT_BACK_FACE);
+	BIND_ENUM_CONSTANT(RT_DEBUG_DEPTH);
+	BIND_ENUM_CONSTANT(RT_DEBUG_EMISSIVE);
 
 	BIND_ENUM_CONSTANT(FOG_MODE_EXPONENTIAL);
 	BIND_ENUM_CONSTANT(FOG_MODE_DEPTH);

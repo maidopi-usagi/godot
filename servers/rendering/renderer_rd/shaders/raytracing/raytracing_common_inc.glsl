@@ -5,7 +5,6 @@
 // Specialization constant (bits 0-20: flags, 21-28: samples, 29-31: bounces).
 layout(constant_id = 0) const uint RT_FLAGS = 0u;
 
-#define RT_FLAG_DEBUG_VIS_ENABLED (1u << 0)
 #define RT_FLAG_DLSS_RR_ENABLED (1u << 1)
 #define RT_FLAG_FOG_ENABLED (1u << 2)
 

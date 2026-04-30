@@ -727,21 +727,30 @@ const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipel
 	Vector<String> sources = raygen_shader.version_build_variant_stage_sources(raygen_shader_version, variant);
 	ERR_FAIL_COND_V(sources.is_empty(), EMPTY_BUNDLE);
 
-	// Procedural instances need full HitAttribs (normal/tangent).
-	if (has_intersection_shaders) {
-		static const String is_define = "#define ENABLE_INTERSECTION_SHADERS\n";
-		for (int i = 0; i < sources.size(); i++) {
-			if (sources[i].is_empty()) {
+	// Helper: inject a #define into the line after #version in every non-empty stage source.
+	auto inject_define = [](Vector<String> &p_sources, const String &p_define) {
+		for (int i = 0; i < p_sources.size(); i++) {
+			if (p_sources[i].is_empty()) {
 				continue;
 			}
-			int ver_pos = sources[i].find("#version");
+			int ver_pos = p_sources[i].find("#version");
 			if (ver_pos >= 0) {
-				int nl = sources[i].find("\n", ver_pos);
+				int nl = p_sources[i].find("\n", ver_pos);
 				if (nl >= 0) {
-					sources.write[i] = sources[i].insert(nl + 1, is_define);
+					p_sources.write[i] = p_sources[i].insert(nl + 1, p_define);
 				}
 			}
 		}
+	};
+
+	// Procedural instances need full HitAttribs (normal/tangent).
+	if (has_intersection_shaders) {
+		inject_define(sources, "#define ENABLE_INTERSECTION_SHADERS\n");
+	}
+
+	// Debug pipeline variants: inject RT_DEBUG_ENABLED to include debug_visualize code.
+	if (p_rt_flags & RT_FLAG_DEBUG_VIS_ENABLED) {
+		inject_define(sources, "#define RT_DEBUG_ENABLED\n");
 	}
 
 	// Save intersection source as template for procedural HGs; clear it from

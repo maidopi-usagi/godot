@@ -140,10 +140,9 @@ void main() {
 	// Miss always ends the path.
 	ps.packed_bounces_flags = set_path_terminated(ps.packed_bounces_flags);
 
-	// Debug visualization mode handling
-	if ((RT_FLAGS & RT_FLAG_DEBUG_VIS_ENABLED) != 0u) {
+#ifdef RT_DEBUG_ENABLED
+	{
 		int VIS_MODE = int(get_rt_param(RT_PARAM_VIS_MODE));
-
 		// Specular hit distance: the first-bounce closest_hit pre-seeds the
 		// "no hit" color into radiance, so a missed reflection just keeps it.
 		if (VIS_MODE == 13 && get_total_bounces(ps.packed_bounces_flags) > 0u) {
@@ -151,6 +150,7 @@ void main() {
 			return;
 		}
 	}
+#endif // RT_DEBUG_ENABLED
 
 	// Primary ray miss: write depth, velocity, and DLSS RR defaults (sample 0 only).
 	{
@@ -206,7 +206,8 @@ void main() {
 	}
 #endif
 
-	if ((RT_FLAGS & RT_FLAG_DEBUG_VIS_ENABLED) != 0u) {
+#ifdef RT_DEBUG_ENABLED
+	{
 		int VIS_MODE = int(get_rt_param(RT_PARAM_VIS_MODE));
 		if (VIS_MODE == 20) {
 			ps.radiance = vec3(1.0);
@@ -215,9 +216,10 @@ void main() {
 		} else {
 			ps.radiance = sky_color;
 		}
-	} else {
-		ps.radiance += ps.throughput * sky_color;
 	}
+#else
+	ps.radiance += ps.throughput * sky_color;
+#endif // RT_DEBUG_ENABLED
 
 	path_pack(payload, ps);
 }
@@ -288,113 +290,6 @@ layout(set = 0, binding = 8) uniform sampler radiance_sampler;
 // clang-format on
 
 // ============================================================================
-// DEBUG VISUALIZATION (only compiled when RT_FLAG_DEBUG_VIS_ENABLED is set)
-// ============================================================================
-void debug_visualize(
-		int vis_mode,
-		vec3 geometry_normal,
-		vec3 final_normal,
-		vec3 tangent_space_normal,
-		vec3 world_tangent,
-		vec3 world_bitangent,
-		vec2 uv,
-		vec3 albedo,
-		vec3 orm,
-		float metalness,
-		float roughness,
-		float specular,
-		vec3 V,
-		float NdotV) {
-	PathState ps = path_unpack(payload);
-
-	if (vis_mode == 1) {
-		if (get_total_bounces(ps.packed_bounces_flags) == 0u) {
-			ps.packed_bounces_flags = inc_total_bounce(ps.packed_bounces_flags);
-			ps.hit_t = gl_HitTEXT;
-			ps.offset_normal = geometry_normal;
-			ps.next_ray_dir = reflect(gl_WorldRayDirectionEXT, geometry_normal);
-			path_pack(payload, ps);
-			return;
-		} else {
-			ps.radiance = geometry_normal * 0.5 + 0.5;
-		}
-	} else if (vis_mode == 2) {
-		ps.radiance = geometry_normal * 0.5 + 0.5;
-	} else if (vis_mode == 3) {
-		ps.radiance = final_normal * 0.5 + 0.5;
-	} else if (vis_mode == 4) {
-		ps.radiance = tangent_space_normal * 0.5 + 0.5;
-	} else if (vis_mode == 5) {
-		ps.radiance = world_tangent * 0.5 + 0.5;
-	} else if (vis_mode == 6) {
-		ps.radiance = world_bitangent * 0.5 + 0.5;
-	} else if (vis_mode == 7) {
-		ps.radiance = vec3(fract(uv), 0.0);
-	} else if (vis_mode == 8) {
-		ps.radiance = albedo;
-	} else if (vis_mode == 9) {
-		ps.radiance = orm;
-	} else if (vis_mode == 10) {
-		ps.radiance = DLSSRR_computeDiffuseAlbedo(albedo, metalness);
-	} else if (vis_mode == 11) {
-		ps.radiance = DLSSRR_computeSpecularAlbedo(albedo, metalness, specular_to_f0(specular), roughness, NdotV);
-	} else if (vis_mode == 12) {
-		ps.radiance = (final_normal * 0.5 + 0.5) * (1.0 - roughness * 0.5);
-	} else if (vis_mode == 13) {
-		if (get_total_bounces(ps.packed_bounces_flags) == 0u) {
-			if (roughness < MAX_DENOISER_SPECULAR_HIT_THRESHOLD) {
-				ps.packed_bounces_flags = inc_total_bounce(ps.packed_bounces_flags);
-				ps.radiance = vec3(0.1, 0.1, 0.4);
-				ps.hit_t = gl_HitTEXT;
-				ps.offset_normal = final_normal;
-				ps.next_ray_dir = reflect(gl_WorldRayDirectionEXT, final_normal);
-				path_pack(payload, ps);
-				return;
-			} else {
-				ps.radiance = vec3(0.1, 0.1, 0.4);
-			}
-		} else {
-			// Second bounce: map reflection hit distance to a gradient color.
-			float spec_hit_t = gl_HitTEXT;
-			float v = clamp(log(spec_hit_t + 1.0) / log(1000.0), 0.0, 1.0);
-			vec3 color;
-			if (v < 0.33) {
-				color = mix(vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), v * 3.0);
-			} else if (v < 0.66) {
-				color = mix(vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), (v - 0.33) * 3.0);
-			} else {
-				color = mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 1.0, 1.0), (v - 0.66) * 3.0);
-			}
-			ps.radiance = color;
-		}
-	} else if (vis_mode == 14) {
-		ps.radiance = vec3(metalness);
-	} else if (vis_mode == 15) {
-		ps.radiance = vec3(roughness);
-	} else if (vis_mode == 16) {
-		mat3 world_to_view = mat3(scene_data_block.data.inv_view_matrix);
-		ps.radiance = normalize(world_to_view * final_normal) * 0.5 + 0.5;
-	} else if (vis_mode == 17) {
-		vec3 diffuse_albedo = DLSSRR_computeDiffuseAlbedo(albedo, metalness);
-		vec3 specular_albedo = DLSSRR_computeSpecularAlbedo(albedo, metalness, specular_to_f0(specular), roughness, NdotV);
-		ps.radiance = mix(diffuse_albedo, specular_albedo, metalness);
-	} else if (vis_mode == 18) {
-		ps.radiance = baseColorToSpecularF0(albedo, metalness, specular_to_f0(specular));
-	} else if (vis_mode == 19) {
-		bool is_front_face = (gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT);
-		ps.radiance = is_front_face ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-	} else if (vis_mode == 20) {
-		float depth_range = scene_data_block.data.z_far - scene_data_block.data.z_near;
-		float d = clamp(gl_HitTEXT / depth_range, 0.0, 1.0);
-		ps.radiance = vec3(d);
-	}
-
-	// All fall-through debug modes are terminal.
-	ps.packed_bounces_flags = set_path_terminated(ps.packed_bounces_flags);
-	path_pack(payload, ps);
-}
-
-// ============================================================================
 // CUSTOM SHADER GLOBALS (injected by ShaderCompiler for HG1+)
 // ============================================================================
 #ifdef RT_CUSTOM_HIT_GROUP
@@ -439,6 +334,19 @@ void main() {
 		m.normal = apply_normal_map(h, ts_normal, normal_map_depth);
 	}
 
+#ifdef RT_DEBUG_ENABLED
+	{
+		int VIS_MODE = int(get_rt_param(RT_PARAM_VIS_MODE));
+		if (VIS_MODE != 0) {
+			vec3 V = -gl_WorldRayDirectionEXT;
+			float NdotV = max(dot(m.normal, V), 0.0001);
+			vec3 orm = vec3(1.0, m.roughness, m.metalness);
+			debug_visualize(VIS_MODE, h.geometry_normal, m.normal, vec3(0.5, 0.5, 1.0),
+					h.tangent, h.bitangent, h.uv, m.albedo, orm, m.metalness, m.roughness, m.specular, m.emissive, V, NdotV);
+			return;
+		}
+	}
+#endif // RT_DEBUG_ENABLED
 	shade_and_bounce(h, m);
 #else
 	// HG0: StandardMaterial3D evaluation.
@@ -478,20 +386,19 @@ void main() {
 	m.emissive = emissive;
 	m.normal = final_normal;
 
-	// Debug or production path.
-	int VIS_MODE = 0;
-	if ((RT_FLAGS & RT_FLAG_DEBUG_VIS_ENABLED) != 0u) {
-		VIS_MODE = int(get_rt_param(RT_PARAM_VIS_MODE));
+#ifdef RT_DEBUG_ENABLED
+	{
+		int VIS_MODE = int(get_rt_param(RT_PARAM_VIS_MODE));
+		if (VIS_MODE != 0) {
+			vec3 V = -gl_WorldRayDirectionEXT;
+			float NdotV = max(dot(m.normal, V), 0.0001);
+			debug_visualize(VIS_MODE, h.geometry_normal, final_normal, tangent_space_normal,
+					h.tangent, h.bitangent, uv, albedo, orm, metalness, roughness, mat.specular, emissive, V, NdotV);
+			return;
+		}
 	}
-
-	if ((RT_FLAGS & RT_FLAG_DEBUG_VIS_ENABLED) != 0u && VIS_MODE != 0) {
-		vec3 V = -gl_WorldRayDirectionEXT;
-		float NdotV = max(dot(m.normal, V), 0.0001);
-		debug_visualize(VIS_MODE, h.geometry_normal, final_normal, tangent_space_normal,
-				h.tangent, h.bitangent, uv, albedo, orm, metalness, roughness, mat.specular, V, NdotV);
-	} else {
-		shade_and_bounce(h, m);
-	}
+#endif // RT_DEBUG_ENABLED
+	shade_and_bounce(h, m);
 #endif
 }
 
