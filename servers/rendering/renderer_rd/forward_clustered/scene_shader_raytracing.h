@@ -371,6 +371,7 @@ public:
 		Vector<TextureUniformInfo> texture_uniforms; // Sampler2D packed as bindless indices after UBO
 		bool uses_alpha_clip = false; // Writes ALPHA_SCISSOR_THRESHOLD; needs per-HG any-hit
 		bool is_procedural = false; // Uses intersection shader instead of triangle geometry
+		bool failed = false; // Compilation/preprocessing failed; do not retry until source changes.
 	};
 
 	HashMap<uint32_t, CustomShaderEntry> compilation_cache;
@@ -384,6 +385,21 @@ public:
 	uint32_t register_custom_shader(uint32_t p_shader_id, RID p_material);
 	uint32_t register_procedural_shader(uint32_t p_shader_id, RID p_material);
 
+private:
+	// Helpers shared by both registration paths.
+	enum CacheState {
+		CACHE_NOT_STARTED, // No entry, or entry is stale (source hash differs); caller should compile.
+		CACHE_HIT_VALID, // Entry exists and matches; caller can use it directly.
+		CACHE_HIT_FAILED, // Entry exists, matches, and is marked failed; caller must skip silently.
+		CACHE_NO_SOURCE, // Source hash is 0 (no shader code); skip silently.
+	};
+
+	CacheState _resolve_cache(uint32_t p_shader_id, RID p_material, uint64_t &r_code_hash, HashMap<uint32_t, CustomShaderEntry>::Iterator &r_cache_it);
+	void _record_failure(uint32_t p_shader_id, uint64_t p_code_hash, bool p_is_procedural);
+	void _strip_texture_globals(String &r_globals, const String &p_tex_name);
+	void _finalize_uniforms_with_textures(CustomShaderEntry &r_entry, const ShaderCompiler::GeneratedCode &p_gen_code, const HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> &p_uniforms, bool p_strip_intersection_globals);
+
+public:
 	void begin_custom_shader_frame();
 
 	void finalize_custom_shaders();

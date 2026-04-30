@@ -162,7 +162,7 @@ public:
 	virtual RID shader_create_from_code(const String &p_code, const String &p_path_hint = String()) = 0;
 
 	virtual void shader_set_code(RID p_shader, const String &p_code) = 0;
-	virtual void shader_set_raw_code(RID p_shader, const String &p_raw_code) = 0;
+	virtual void shader_set_code_rt(RID p_shader, const String &p_code_rt) = 0;
 	virtual void shader_set_path_hint(RID p_shader, const String &p_path) = 0;
 	virtual String shader_get_code(RID p_shader) const = 0;
 	virtual void get_shader_parameter_list(RID p_shader, List<PropertyInfo> *p_param_list) const = 0;

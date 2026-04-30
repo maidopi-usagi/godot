@@ -2288,6 +2288,9 @@ void MaterialStorage::shader_set_code(RID p_shader, const String &p_code) {
 	if (shader->data) {
 		shader->data->set_path_hint(shader->path_hint);
 		shader->data->set_code(p_code);
+		// rt_* fields are seeded from raster inside `set_code`; the
+		// authoritative RT classification arrives via the follow-up
+		// `shader_set_code_rt` from the resource layer.
 	}
 
 	for (Material *E : shader->owners) {
@@ -2297,11 +2300,28 @@ void MaterialStorage::shader_set_code(RID p_shader, const String &p_code) {
 	}
 }
 
-void MaterialStorage::shader_set_raw_code(RID p_shader, const String &p_raw_code) {
+void MaterialStorage::shader_set_code_rt(RID p_shader, const String &p_code_rt) {
 	Shader *shader = shader_owner.get_or_null(p_shader);
 	ERR_FAIL_NULL(shader);
-	shader->raw_code = p_raw_code;
-	shader->raw_code_hash = p_raw_code.is_empty() ? 0 : p_raw_code.hash64();
+
+	const bool changed = shader->code_rt != p_code_rt;
+	shader->code_rt = p_code_rt;
+	shader->code_rt_hash = p_code_rt.is_empty() ? 0 : p_code_rt.hash64();
+
+	// Always forward: the preceding `shader_set_code()` reset rt_* to raster
+	// mirrors, so we must re-establish the RT classification even when the
+	// preprocessed text is byte-identical to the previous run.
+	if (shader->data) {
+		shader->data->set_code_rt(p_code_rt);
+	}
+
+	if (changed) {
+		for (Material *E : shader->owners) {
+			Material *material = E;
+			material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
+			_material_queue_update(material, false, false);
+		}
+	}
 }
 
 void MaterialStorage::shader_set_path_hint(RID p_shader, const String &p_path) {
@@ -2555,22 +2575,22 @@ String MaterialStorage::material_get_shader_code(RID p_material) const {
 	return String();
 }
 
-String MaterialStorage::material_get_shader_raw_code(RID p_material) const {
+String MaterialStorage::material_get_shader_code_rt(RID p_material) const {
 	const Material *material = material_owner.get_or_null(p_material);
 	if (material && material->shader) {
-		if (!material->shader->raw_code.is_empty()) {
-			return material->shader->raw_code;
+		if (!material->shader->code_rt.is_empty()) {
+			return material->shader->code_rt;
 		}
 		return material->shader->code;
 	}
 	return String();
 }
 
-uint64_t MaterialStorage::material_get_shader_raw_code_hash(RID p_material) const {
+uint64_t MaterialStorage::material_get_shader_code_rt_hash(RID p_material) const {
 	const Material *material = material_owner.get_or_null(p_material);
 	if (material && material->shader) {
-		if (material->shader->raw_code_hash != 0) {
-			return material->shader->raw_code_hash;
+		if (material->shader->code_rt_hash != 0) {
+			return material->shader->code_rt_hash;
 		}
 		return material->shader->code.hash64();
 	}

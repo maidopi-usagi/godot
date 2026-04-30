@@ -306,7 +306,7 @@ public:
 	}
 
 	FUNC2(shader_set_code, RID, const String &)
-	FUNC2(shader_set_raw_code, RID, const String &)
+	FUNC2(shader_set_code_rt, RID, const String &)
 	FUNC2(shader_set_path_hint, RID, const String &)
 	FUNC1RC(String, shader_get_code, RID)
 

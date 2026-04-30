@@ -39,7 +39,6 @@
 #include "servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h"
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
-#include "servers/rendering/shader_preprocessor.h"
 
 using namespace RendererSceneRenderImplementation;
 
@@ -385,29 +384,134 @@ void SceneShaderRaytracing::begin_custom_shader_frame() {
 	frame_shader_id_to_hg.clear();
 }
 
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+SceneShaderRaytracing::CacheState SceneShaderRaytracing::_resolve_cache(
+		uint32_t p_shader_id,
+		RID p_material,
+		uint64_t &r_code_hash,
+		HashMap<uint32_t, CustomShaderEntry>::Iterator &r_cache_it) {
+	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
+	r_code_hash = material_storage->material_get_shader_code_rt_hash(p_material);
+	if (r_code_hash == 0) {
+		return CACHE_NO_SOURCE;
+	}
+
+	r_cache_it = compilation_cache.find(p_shader_id);
+	if (r_cache_it == compilation_cache.end() || r_cache_it->value.source_hash != r_code_hash) {
+		return CACHE_NOT_STARTED;
+	}
+	if (r_cache_it->value.failed) {
+		return CACHE_HIT_FAILED;
+	}
+	return CACHE_HIT_VALID;
+}
+
+void SceneShaderRaytracing::_record_failure(uint32_t p_shader_id, uint64_t p_code_hash, bool p_is_procedural) {
+	CustomShaderEntry failed_entry;
+	failed_entry.source_hash = p_code_hash;
+	failed_entry.is_procedural = p_is_procedural;
+	failed_entry.failed = true;
+	compilation_cache[p_shader_id] = failed_entry;
+	frame_shader_id_to_hg[p_shader_id] = 0;
+}
+
+void SceneShaderRaytracing::_strip_texture_globals(String &r_globals, const String &p_tex_name) {
+	const String decl_marker = " m_" + p_tex_name + ";";
+	int pos = r_globals.find(decl_marker);
+	if (pos < 0) {
+		return;
+	}
+	int line_start = r_globals.rfind("\n", pos);
+	line_start = (line_start < 0) ? 0 : line_start + 1;
+	int line_end = r_globals.find("\n", pos);
+	if (line_end < 0) {
+		line_end = r_globals.length();
+	} else {
+		line_end += 1;
+	}
+	r_globals = r_globals.substr(0, line_start) + r_globals.substr(line_end);
+}
+
+void SceneShaderRaytracing::_finalize_uniforms_with_textures(
+		CustomShaderEntry &r_entry,
+		const ShaderCompiler::GeneratedCode &p_gen_code,
+		const HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> &p_uniforms,
+		bool p_strip_intersection_globals) {
+	// ShaderCompiler rounds uniform_total_size to 16 bytes for UBO requirements,
+	// but our buffer_reference struct uses std140 member layout without UBO-level padding.
+	// Recompute the raw (unrounded) end of the last uniform member.
+	uint32_t raw_uniform_end = 0;
+	for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &kv : p_uniforms) {
+		const ShaderLanguage::ShaderNode::Uniform &uu = kv.value;
+		if (ShaderLanguage::is_sampler_type(uu.type) || uu.order < 0 || uu.order >= (int)p_gen_code.uniform_offsets.size()) {
+			continue;
+		}
+		uint32_t end = p_gen_code.uniform_offsets[uu.order] + ShaderLanguage::get_datatype_size(uu.type);
+		if (end > raw_uniform_end) {
+			raw_uniform_end = end;
+		}
+	}
+
+	for (int ti = 0; ti < p_gen_code.texture_uniforms.size(); ti++) {
+		const ShaderCompiler::GeneratedCode::Texture &tex = p_gen_code.texture_uniforms[ti];
+		if (tex.name.is_empty()) {
+			continue;
+		}
+
+		_strip_texture_globals(r_entry.fragment_globals, tex.name);
+		if (p_strip_intersection_globals) {
+			_strip_texture_globals(r_entry.intersection_globals, tex.name);
+		}
+
+		// Append a bindless-index uint member to the uniform buffer.
+		uint32_t offset = raw_uniform_end;
+		if (offset % 4 != 0) {
+			offset += 4 - (offset % 4);
+		}
+
+		TextureUniformInfo tui;
+		tui.name = tex.name;
+		tui.hint = tex.hint;
+		tui.use_color = tex.use_color;
+		tui.is_global = tex.global;
+		tui.buffer_offset = offset;
+		r_entry.texture_uniforms.push_back(tui);
+
+		r_entry.uniform_members += "uint m_" + tex.name + ";\n";
+		raw_uniform_end = offset + 4;
+	}
+
+	r_entry.uniform_total_size = raw_uniform_end;
+	if (r_entry.uniform_total_size % 16 != 0) {
+		r_entry.uniform_total_size += 16 - (r_entry.uniform_total_size % 16);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// register_custom_shader: triangle-geometry materials (vertex + fragment)
+// ---------------------------------------------------------------------------
+
 uint32_t SceneShaderRaytracing::register_custom_shader(uint32_t p_shader_id, RID p_material) {
 	HashMap<uint32_t, uint32_t>::Iterator it = frame_shader_id_to_hg.find(p_shader_id);
 	if (it != frame_shader_id_to_hg.end()) {
 		return it->value;
 	}
 
-	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
-	uint64_t code_hash = material_storage->material_get_shader_raw_code_hash(p_material);
-	if (code_hash == 0) {
+	uint64_t code_hash = 0;
+	HashMap<uint32_t, CustomShaderEntry>::Iterator cache_it;
+	const CacheState state = _resolve_cache(p_shader_id, p_material, code_hash, cache_it);
+	if (state == CACHE_NO_SOURCE || state == CACHE_HIT_FAILED) {
 		frame_shader_id_to_hg[p_shader_id] = 0;
 		return 0;
 	}
 
-	HashMap<uint32_t, CustomShaderEntry>::Iterator cache_it = compilation_cache.find(p_shader_id);
-	if (cache_it == compilation_cache.end() || cache_it->value.source_hash != code_hash) {
-		String raw_code = material_storage->material_get_shader_raw_code(p_material);
-		ShaderPreprocessor preprocessor;
-		preprocessor.add_define("RT", "1");
-		String code;
-		Error pp_err = preprocessor.preprocess(raw_code, String(), code);
-		if (pp_err != OK || code.is_empty()) {
-			WARN_PRINT("RT: Failed to preprocess custom shader with RT=1 (shader_id=" + itos(p_shader_id) + ").");
-			frame_shader_id_to_hg[p_shader_id] = 0;
+	if (state == CACHE_NOT_STARTED) {
+		String code = RendererRD::MaterialStorage::get_singleton()->material_get_shader_code_rt(p_material);
+		if (code.is_empty()) {
+			_record_failure(p_shader_id, code_hash, false);
 			return 0;
 		}
 
@@ -424,86 +528,23 @@ uint32_t SceneShaderRaytracing::register_custom_shader(uint32_t p_shader_id, RID
 
 		ShaderCompiler::GeneratedCode gen_code;
 		Error err = compiler.compile(RSE::SHADER_SPATIAL, code, &actions, String(), gen_code);
+		if (err != OK) {
+			WARN_PRINT(vformat("RT: Failed to compile custom shader (shader_id=%d). Falling back to standard material; will not retry until source changes.", p_shader_id));
+			_record_failure(p_shader_id, code_hash, false);
+			return 0;
+		}
 
 		CustomShaderEntry entry;
 		entry.source_hash = code_hash;
 		entry.uses_alpha_clip = detected_alpha_clip;
-		if (err == OK) {
-			entry.vertex_code = gen_code.code.has("vertex") ? gen_code.code["vertex"] : String();
-			entry.fragment_code = gen_code.code.has("fragment") ? gen_code.code["fragment"] : String();
-			entry.fragment_globals = gen_code.stage_globals[ShaderCompiler::STAGE_FRAGMENT];
-			entry.uniform_members = gen_code.uniforms;
-			entry.uniform_total_size = gen_code.uniform_total_size;
-			entry.uniform_offsets = gen_code.uniform_offsets;
-			entry.uniforms = uniform_sink;
-
-			// Compute raw (unrounded) end of the last uniform member.
-			// ShaderCompiler rounds uniform_total_size to 16 bytes for UBO requirements,
-			// but our buffer_reference struct uses std140 member layout without UBO-level padding.
-			uint32_t raw_uniform_end = 0;
-			for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &kv : uniform_sink) {
-				const ShaderLanguage::ShaderNode::Uniform &uu = kv.value;
-				if (ShaderLanguage::is_sampler_type(uu.type) || uu.order < 0 || uu.order >= (int)gen_code.uniform_offsets.size()) {
-					continue;
-				}
-				uint32_t end = gen_code.uniform_offsets[uu.order] + ShaderLanguage::get_datatype_size(uu.type);
-				if (end > raw_uniform_end) {
-					raw_uniform_end = end;
-				}
-			}
-
-			for (int ti = 0; ti < gen_code.texture_uniforms.size(); ti++) {
-				const ShaderCompiler::GeneratedCode::Texture &tex = gen_code.texture_uniforms[ti];
-				if (tex.name.is_empty()) {
-					continue;
-				}
-
-				// Strip the texture2D declaration from fragment_globals.
-				String decl_marker = " m_" + tex.name + ";";
-				int pos = entry.fragment_globals.find(decl_marker);
-				if (pos >= 0) {
-					int line_start = entry.fragment_globals.rfind("\n", pos);
-					line_start = (line_start < 0) ? 0 : line_start + 1;
-					int line_end = entry.fragment_globals.find("\n", pos);
-					if (line_end < 0) {
-						line_end = entry.fragment_globals.length();
-					} else {
-						line_end += 1;
-					}
-					entry.fragment_globals = entry.fragment_globals.substr(0, line_start) + entry.fragment_globals.substr(line_end);
-				}
-
-				// Append uint member to the uniform buffer struct (stores bindless index).
-				uint32_t offset = raw_uniform_end;
-				if (offset % 4 != 0) {
-					offset += 4 - (offset % 4);
-				}
-
-				TextureUniformInfo tui;
-				tui.name = tex.name;
-				tui.hint = tex.hint;
-				tui.use_color = tex.use_color;
-				tui.is_global = tex.global;
-				tui.buffer_offset = offset;
-				entry.texture_uniforms.push_back(tui);
-
-				entry.uniform_members += "uint m_" + tex.name + ";\n";
-				raw_uniform_end = offset + 4;
-			}
-
-			entry.uniform_total_size = raw_uniform_end;
-			if (entry.uniform_total_size % 16 != 0) {
-				entry.uniform_total_size += 16 - (entry.uniform_total_size % 16);
-			}
-
-		} else {
-			WARN_PRINT("RT: Failed to compile custom shader (shader_id=" + itos(p_shader_id) + "). Falling back to standard material.");
-			if (cache_it != compilation_cache.end()) {
-				cache_it->value.source_hash = 0;
-			}
-			frame_shader_id_to_hg[p_shader_id] = 0;
-			return 0;
-		}
+		entry.vertex_code = gen_code.code.has("vertex") ? gen_code.code["vertex"] : String();
+		entry.fragment_code = gen_code.code.has("fragment") ? gen_code.code["fragment"] : String();
+		entry.fragment_globals = gen_code.stage_globals[ShaderCompiler::STAGE_FRAGMENT];
+		entry.uniform_members = gen_code.uniforms;
+		entry.uniform_total_size = gen_code.uniform_total_size;
+		entry.uniform_offsets = gen_code.uniform_offsets;
+		entry.uniforms = uniform_sink;
+		_finalize_uniforms_with_textures(entry, gen_code, uniform_sink, /*strip_intersection_globals=*/false);
 
 		if (cache_it != compilation_cache.end()) {
 			cache_it->value = entry;
@@ -523,25 +564,28 @@ uint32_t SceneShaderRaytracing::register_custom_shader(uint32_t p_shader_id, RID
 	return hg_index;
 }
 
+// ---------------------------------------------------------------------------
+// register_procedural_shader: AABB / intersection-shader materials
+// ---------------------------------------------------------------------------
+
 uint32_t SceneShaderRaytracing::register_procedural_shader(uint32_t p_shader_id, RID p_material) {
 	HashMap<uint32_t, uint32_t>::Iterator it = frame_shader_id_to_hg.find(p_shader_id);
 	if (it != frame_shader_id_to_hg.end()) {
 		return it->value;
 	}
 
-	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
-	uint64_t code_hash = material_storage->material_get_shader_raw_code_hash(p_material);
+	uint64_t code_hash = 0;
+	HashMap<uint32_t, CustomShaderEntry>::Iterator cache_it;
+	const CacheState state = _resolve_cache(p_shader_id, p_material, code_hash, cache_it);
+	if (state == CACHE_NO_SOURCE || state == CACHE_HIT_FAILED) {
+		frame_shader_id_to_hg[p_shader_id] = 0;
+		return 0;
+	}
 
-	HashMap<uint32_t, CustomShaderEntry>::Iterator cache_it = compilation_cache.find(p_shader_id);
-	if (cache_it == compilation_cache.end() || cache_it->value.source_hash != code_hash) {
-		String raw_code = material_storage->material_get_shader_raw_code(p_material);
-		ShaderPreprocessor preprocessor;
-		preprocessor.add_define("RT", "1");
-		String code;
-		Error pp_err = preprocessor.preprocess(raw_code, String(), code);
-		if (pp_err != OK || code.is_empty()) {
-			WARN_PRINT_ONCE("RT: Failed to preprocess procedural shader with RT=1 (shader_id=" + itos(p_shader_id) + ").");
-			frame_shader_id_to_hg[p_shader_id] = 0;
+	if (state == CACHE_NOT_STARTED) {
+		String code = RendererRD::MaterialStorage::get_singleton()->material_get_shader_code_rt(p_material);
+		if (code.is_empty()) {
+			_record_failure(p_shader_id, code_hash, true);
 			return 0;
 		}
 
@@ -560,89 +604,25 @@ uint32_t SceneShaderRaytracing::register_procedural_shader(uint32_t p_shader_id,
 
 		ShaderCompiler::GeneratedCode gen_code;
 		Error err = compiler.compile(RSE::SHADER_SPATIAL, code, &actions, String(), gen_code);
+		if (err != OK) {
+			WARN_PRINT(vformat("RT: Failed to compile procedural shader (shader_id=%d). Skipping; will not retry until source changes.", p_shader_id));
+			_record_failure(p_shader_id, code_hash, true);
+			return 0;
+		}
 
 		CustomShaderEntry entry;
 		entry.source_hash = code_hash;
 		entry.is_procedural = true;
 		entry.uses_alpha_clip = detected_alpha_clip;
-		if (err == OK) {
-			entry.intersection_code = gen_code.code.has("intersection") ? gen_code.code["intersection"] : String();
-			entry.intersection_globals = gen_code.stage_globals[ShaderCompiler::STAGE_INTERSECTION];
-			entry.fragment_code = gen_code.code.has("fragment") ? gen_code.code["fragment"] : String();
-			entry.fragment_globals = gen_code.stage_globals[ShaderCompiler::STAGE_FRAGMENT];
-			entry.uniform_members = gen_code.uniforms;
-			entry.uniform_total_size = gen_code.uniform_total_size;
-			entry.uniform_offsets = gen_code.uniform_offsets;
-			entry.uniforms = uniform_sink;
-
-			// Compute raw (unrounded) end of the last uniform member.
-			uint32_t raw_uniform_end = 0;
-			for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &kv : uniform_sink) {
-				const ShaderLanguage::ShaderNode::Uniform &uu = kv.value;
-				if (ShaderLanguage::is_sampler_type(uu.type) || uu.order < 0 || uu.order >= (int)gen_code.uniform_offsets.size()) {
-					continue;
-				}
-				uint32_t end = gen_code.uniform_offsets[uu.order] + ShaderLanguage::get_datatype_size(uu.type);
-				if (end > raw_uniform_end) {
-					raw_uniform_end = end;
-				}
-			}
-
-			for (int ti = 0; ti < gen_code.texture_uniforms.size(); ti++) {
-				const ShaderCompiler::GeneratedCode::Texture &tex = gen_code.texture_uniforms[ti];
-				if (tex.name.is_empty()) {
-					continue;
-				}
-
-				// Strip texture declarations from both globals.
-				String decl_marker = " m_" + tex.name + ";";
-				for (String *globals : { &entry.intersection_globals, &entry.fragment_globals }) {
-					int pos = globals->find(decl_marker);
-					if (pos >= 0) {
-						int line_start = globals->rfind("\n", pos);
-						line_start = (line_start < 0) ? 0 : line_start + 1;
-						int line_end = globals->find("\n", pos);
-						if (line_end < 0) {
-							line_end = globals->length();
-						} else {
-							line_end += 1;
-						}
-						*globals = globals->substr(0, line_start) + globals->substr(line_end);
-					}
-				}
-
-				uint32_t offset = raw_uniform_end;
-				if (offset % 4 != 0) {
-					offset += 4 - (offset % 4);
-				}
-
-				TextureUniformInfo tui;
-				tui.name = tex.name;
-				tui.hint = tex.hint;
-				tui.use_color = tex.use_color;
-				tui.buffer_offset = offset;
-				entry.texture_uniforms.push_back(tui);
-
-				entry.uniform_members += "uint m_" + tex.name + ";\n";
-				raw_uniform_end = offset + 4;
-			}
-
-			entry.uniform_total_size = raw_uniform_end;
-			if (entry.uniform_total_size % 16 != 0) {
-				entry.uniform_total_size += 16 - (entry.uniform_total_size % 16);
-			}
-		} else {
-			WARN_PRINT_ONCE("RT: Failed to compile procedural shader (shader_id=" + itos(p_shader_id) + "). Skipping.");
-			// Cache the failure with the real hash so we don't retry every frame.
-			entry.intersection_code = String();
-			if (cache_it != compilation_cache.end()) {
-				cache_it->value = entry;
-			} else {
-				compilation_cache.insert(p_shader_id, entry);
-			}
-			frame_shader_id_to_hg[p_shader_id] = 0;
-			return 0;
-		}
+		entry.intersection_code = gen_code.code.has("intersection") ? gen_code.code["intersection"] : String();
+		entry.intersection_globals = gen_code.stage_globals[ShaderCompiler::STAGE_INTERSECTION];
+		entry.fragment_code = gen_code.code.has("fragment") ? gen_code.code["fragment"] : String();
+		entry.fragment_globals = gen_code.stage_globals[ShaderCompiler::STAGE_FRAGMENT];
+		entry.uniform_members = gen_code.uniforms;
+		entry.uniform_total_size = gen_code.uniform_total_size;
+		entry.uniform_offsets = gen_code.uniform_offsets;
+		entry.uniforms = uniform_sink;
+		_finalize_uniforms_with_textures(entry, gen_code, uniform_sink, /*strip_intersection_globals=*/true);
 
 		if (cache_it != compilation_cache.end()) {
 			cache_it->value = entry;

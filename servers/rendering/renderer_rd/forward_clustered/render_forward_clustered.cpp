@@ -1100,14 +1100,14 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 				inst->transform_status = GeometryInstanceForwardClustered::TransformStatus::NONE;
 			}
 
-			// Early-out for alpha-only mode (RT path): skip instances that have
-			// no transparent or fading surfaces to contribute. Opaque geometry
-			// is handled by the TLAS, not by any raster list.
+			// Alpha-only (RT path): skip instances with no transparent/fading
+			// surfaces; opaque geometry is in the TLAS. Uses rt_pass_flags so
+			// `#if defined(RT)` overrides are honoured.
 			if (p_alpha_only && fade_alpha >= FADE_ALPHA_PASS_THRESHOLD) {
 				bool has_alpha_surface = false;
 				const GeometryInstanceSurfaceDataCache *s = inst->surface_caches;
 				while (s) {
-					if (s->flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA) {
+					if (s->rt_pass_flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA) {
 						has_alpha_surface = true;
 						break;
 					}
@@ -1250,11 +1250,15 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 					force_alpha = true;
 				}
 
-				if (!p_alpha_only && !force_alpha && (surf->flags & (GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH | GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE))) {
+				// Alpha-only (RT) routes via rt_pass_flags so RT-overridden
+				// surfaces stay out of the raster overlay; raster path uses flags.
+				const uint32_t pass_flags = p_alpha_only ? surf->rt_pass_flags : surf->flags;
+
+				if (!p_alpha_only && !force_alpha && (pass_flags & (GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH | GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE))) {
 					rl->add_element(surf);
 				}
 
-				if (force_alpha || (surf->flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA)) {
+				if (force_alpha || (pass_flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA)) {
 					surf->color_pass_inclusion_mask = COLOR_PASS_FLAG_TRANSPARENT;
 					render_list[RENDER_LIST_ALPHA].add_element(surf);
 					if (uses_gi) {
@@ -4549,6 +4553,7 @@ void RenderForwardClustered::_geometry_instance_add_surface_with_material(Geomet
 		flags |= GeometryInstanceSurfaceDataCache::FLAG_USES_STENCIL;
 	}
 
+	// Raster-side pass classification.
 	if (p_material->shader_data->uses_alpha_pass()) {
 		flags |= GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA;
 		if (p_material->shader_data->uses_depth_in_alpha_pass()) {
@@ -4559,6 +4564,21 @@ void RenderForwardClustered::_geometry_instance_add_surface_with_material(Geomet
 		flags |= GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE;
 		flags |= GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH;
 		flags |= GeometryInstanceSurfaceDataCache::FLAG_PASS_SHADOW;
+	}
+
+	// RT-side pass classification; mirrors `flags` unless the shader has
+	// `#if defined(RT)` divergence.
+	uint32_t rt_pass_flags = 0;
+	if (p_material->shader_data->rt_uses_alpha_pass()) {
+		rt_pass_flags |= GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA;
+		if (p_material->shader_data->rt_uses_depth_in_alpha_pass()) {
+			rt_pass_flags |= GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH;
+			rt_pass_flags |= GeometryInstanceSurfaceDataCache::FLAG_PASS_SHADOW;
+		}
+	} else {
+		rt_pass_flags |= GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE;
+		rt_pass_flags |= GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH;
+		rt_pass_flags |= GeometryInstanceSurfaceDataCache::FLAG_PASS_SHADOW;
 	}
 
 	if (p_material->shader_data->uses_particle_trails) {
@@ -4597,6 +4617,7 @@ void RenderForwardClustered::_geometry_instance_add_surface_with_material(Geomet
 	GeometryInstanceSurfaceDataCache *sdcache = geometry_instance_surface_alloc.alloc();
 
 	sdcache->flags = flags;
+	sdcache->rt_pass_flags = rt_pass_flags;
 
 	sdcache->shader = p_material->shader_data;
 	sdcache->material = p_material;

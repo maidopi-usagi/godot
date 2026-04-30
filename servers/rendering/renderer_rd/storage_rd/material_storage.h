@@ -79,6 +79,10 @@ public:
 		virtual bool is_parameter_texture(const StringName &p_param) const;
 
 		virtual void set_code(const String &p_Code) = 0;
+		// Optional follow-up to `set_code` carrying the RT-preprocessed source.
+		// Default no-op; RT-aware subclasses override to extract RT-side
+		// classification flags.
+		virtual void set_code_rt(const String &p_code_rt) {}
 		virtual bool is_animated() const = 0;
 		virtual bool casts_shadows() const = 0;
 		virtual RenderingServerTypes::ShaderNativeSourceCode get_native_source_code() const = 0;
@@ -267,8 +271,9 @@ private:
 	struct Shader {
 		ShaderData *data = nullptr;
 		String code;
-		String raw_code;
-		uint64_t raw_code_hash = 0;
+		// Same source preprocessed with `RT=1`. Set by `shader_set_code_rt`.
+		String code_rt;
+		uint64_t code_rt_hash = 0;
 		String path_hint;
 		ShaderType type;
 		HashMap<StringName, HashMap<int, RID>> default_texture_parameter;
@@ -472,7 +477,7 @@ public:
 	virtual void shader_free(RID p_rid) override;
 
 	virtual void shader_set_code(RID p_shader, const String &p_code) override;
-	virtual void shader_set_raw_code(RID p_shader, const String &p_raw_code) override;
+	virtual void shader_set_code_rt(RID p_shader, const String &p_code_rt) override;
 	virtual void shader_set_path_hint(RID p_shader, const String &p_path) override;
 	virtual String shader_get_code(RID p_shader) const override;
 	virtual void get_shader_parameter_list(RID p_shader, List<PropertyInfo> *p_param_list) const override;
@@ -503,8 +508,9 @@ public:
 	ShaderData *material_get_shader_data(RID p_material);
 
 	String material_get_shader_code(RID p_material) const;
-	String material_get_shader_raw_code(RID p_material) const;
-	uint64_t material_get_shader_raw_code_hash(RID p_material) const;
+	// Falls back to raster code when no RT variant is set.
+	String material_get_shader_code_rt(RID p_material) const;
+	uint64_t material_get_shader_code_rt_hash(RID p_material) const;
 
 	virtual void material_set_param(RID p_material, const StringName &p_param, const Variant &p_value) override;
 	virtual Variant material_get_param(RID p_material, const StringName &p_param) const override;

@@ -586,6 +586,7 @@ private:
 
 		RSE::PrimitiveType primitive = RSE::PRIMITIVE_MAX;
 		uint32_t flags = 0;
+		uint32_t rt_pass_flags = 0;
 		uint32_t surface_index = 0;
 		uint32_t color_pass_inclusion_mask = 0;
 

@@ -1306,6 +1306,12 @@ void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data) {
 		// Walk the surface cache linked list.
 		const RenderForwardClustered::GeometryInstanceSurfaceDataCache *surf = inst->surface_caches;
 		while (surf) {
+			// Skip surfaces routed to the raster alpha overlay
+			if (surf->rt_pass_flags & RenderForwardClustered::GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA) {
+				surf = surf->next;
+				continue;
+			}
+
 			void *mesh_surface = surf->surface;
 			uint32_t surface_counter = mesh_storage->mesh_surface_get_rt_invalidation_counter(mesh_surface);
 
