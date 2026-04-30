@@ -89,7 +89,7 @@ vec2 fetch_uv(in GeometryData geom, uint i0, uint i1, uint i2, vec3 bary) {
 		uv1 = vec2(float(p1 & 0xFFFFu), float(p1 >> 16)) / 65535.0;
 		uv2 = vec2(float(p2 & 0xFFFFu), float(p2 >> 16)) / 65535.0;
 
-		vec2 scale = vec2(geom.uv_scale_x, geom.uv_scale_y);
+		vec2 scale = unpackHalf2x16(geom.uv_scale_packed);
 		if (scale.x != 0.0 || scale.y != 0.0) {
 			uv0 = (uv0 - 0.5) * scale;
 			uv1 = (uv1 - 0.5) * scale;

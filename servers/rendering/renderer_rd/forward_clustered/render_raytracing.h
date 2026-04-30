@@ -66,8 +66,7 @@ struct alignas(16) RT_GeometryData {
 	uint32_t tangent_stride;
 	uint32_t attribute_stride;
 	uint32_t uv_byte_offset;
-	float uv_scale_x;
-	float uv_scale_y;
+	uint32_t uv_scale_packed;
 	uint32_t index_format;
 	uint32_t primitive_count;
 	uint32_t flags;
@@ -75,7 +74,10 @@ struct alignas(16) RT_GeometryData {
 	float aabb_size_y;
 	float aabb_size_z;
 	uint32_t color_byte_offset;
-	uint32_t _pad[9];
+	float aabb_pos_x;
+	float aabb_pos_y;
+	float aabb_pos_z;
+	uint32_t _pad[7];
 };
 static_assert(sizeof(RT_GeometryData) == 128, "RT_GeometryData must be 128 bytes for std430");
 

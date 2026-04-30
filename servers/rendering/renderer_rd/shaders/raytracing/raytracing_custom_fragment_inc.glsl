@@ -21,7 +21,13 @@ mat4 rt_view_matrix = transpose(mat4(scene_data_block.data.view_matrix[0],
 		scene_data_block.data.view_matrix[1],
 		scene_data_block.data.view_matrix[2],
 		vec4(0.0, 0.0, 0.0, 1.0)));
-read_model_matrix = mat4(gl_ObjectToWorldEXT);
+
+GeometryData rt_geom = geometries[rt_geometry_idx];
+mat4 rt_aabb_xform;
+mat4 rt_inv_aabb_xform;
+get_aabb_compression_xforms(rt_geom, rt_aabb_xform, rt_inv_aabb_xform);
+
+read_model_matrix = mat4(gl_ObjectToWorldEXT) * rt_inv_aabb_xform;
 read_view_matrix = rt_view_matrix;
 inv_view_matrix = transpose(mat4(scene_data_block.data.inv_view_matrix[0],
 		scene_data_block.data.inv_view_matrix[1],
@@ -32,12 +38,12 @@ inv_projection_matrix = scene_data_block.data.inv_projection_matrix;
 read_viewport_size = scene_data_block.data.viewport_size;
 global_time = scene_data_block.data.time;
 
-// Vertex shader inputs: object-space geometry (matches rasterizer vertex() inputs).
-mat4 rt_world_to_object = mat4(gl_WorldToObjectEXT);
-vertex = (rt_world_to_object * vec4(rt_hit_pos, 1.0)).xyz;
-normal = mat3(rt_world_to_object) * rt_normal;
-tangent = mat3(rt_world_to_object) * rt_tangent;
-binormal = mat3(rt_world_to_object) * rt_bitangent;
+mat4 rt_world_to_object_decomp = rt_aabb_xform * mat4(gl_WorldToObjectEXT);
+
+vertex = (rt_world_to_object_decomp * vec4(rt_hit_pos, 1.0)).xyz;
+normal = mat3(rt_world_to_object_decomp) * rt_normal;
+tangent = mat3(rt_world_to_object_decomp) * rt_tangent;
+binormal = mat3(rt_world_to_object_decomp) * rt_bitangent;
 uv_interp = rt_uv;
 uv2_interp = rt_uv;
 color_interp = rt_color;

@@ -263,6 +263,7 @@ layout(set = 1, binding = 0) uniform texture2D bindless_textures[];
 
 #include "raytracing_samplers_inc.glsl"
 
+// clang-format off
 layout(set = 0, binding = 3, std430) readonly buffer GeometryBuffer {
 	GeometryData geometries[];
 };
@@ -274,12 +275,15 @@ layout(set = 0, binding = 4, std430) readonly buffer MotionIndexBuffer {
 layout(set = 0, binding = 5, std430) readonly buffer MaterialBuffer {
 	MaterialData materials[];
 };
+// clang-format on
 
 #include "raytracing_lights_inc.glsl"
 
+// clang-format off
 layout(set = 0, binding = 32, std430) readonly buffer MotionTransforms {
 	InstanceMotionData motion_transforms[];
 };
+// clang-format on
 
 layout(set = 0, binding = 7) uniform texture2D radiance_octmap;
 layout(set = 0, binding = 8) uniform sampler radiance_sampler;
@@ -341,7 +345,7 @@ void main() {
 			vec3 V = -gl_WorldRayDirectionEXT;
 			float NdotV = max(dot(m.normal, V), 0.0001);
 			vec3 orm = vec3(1.0, m.roughness, m.metalness);
-			debug_visualize(VIS_MODE, h.geometry_normal, m.normal, vec3(0.5, 0.5, 1.0),
+			debug_visualize(VIS_MODE, h.geometry_normal, m.normal, normal_map,
 					h.tangent, h.bitangent, h.uv, m.albedo, orm, m.metalness, m.roughness, m.specular, m.emissive, V, NdotV);
 			return;
 		}
@@ -431,6 +435,7 @@ void main() {
 
 layout(location = 0) rayPayloadInEXT PathPayload payload;
 
+// clang-format off
 layout(set = 0, binding = 3, std430) readonly buffer GeometryBuffer {
 	GeometryData geometries[];
 };
@@ -442,14 +447,17 @@ layout(set = 0, binding = 4, std430) readonly buffer MotionIndexBuffer {
 layout(set = 0, binding = 5, std430) readonly buffer MaterialBuffer {
 	MaterialData materials[];
 };
+// clang-format on
 
 layout(set = 1, binding = 0) uniform texture2D bindless_textures[];
 
 #include "raytracing_samplers_inc.glsl"
 
+// clang-format off
 layout(set = 0, binding = 32, std430) readonly buffer MotionTransforms {
 	InstanceMotionData motion_transforms[];
 };
+// clang-format on
 
 // ============================================================================
 // CUSTOM SHADER GLOBALS (injected for per-HG any-hit)
@@ -533,22 +541,23 @@ void main() {
 
 // Write all attributes and report the intersection. Transparently delta-compresses
 // PREV_POSITION into spare .w bytes of packed_normal/tangent + prev_pos_delta_yz.
-#define report_intersection(t_hit, kind)                                                      \
-	{                                                                                         \
-		vec3 _obj_hit = gl_ObjectRayOriginEXT + gl_ObjectRayDirectionEXT * (t_hit);           \
+#define report_intersection(t_hit, kind) \
+	{ \
+		vec3 _obj_hit = gl_ObjectRayOriginEXT + gl_ObjectRayDirectionEXT * (t_hit); \
 		vec3 _delta = any(isnan(m_PREV_POSITION)) ? vec3(0.0) : (m_PREV_POSITION - _obj_hit); \
-		uint _n4 = packSnorm4x8(vec4(m_HIT_NORMAL, 0.0));                                     \
-		uint _t4 = packSnorm4x8(vec4(m_HIT_TANGENT, 0.0));                                    \
-		uint _dx = packHalf2x16(vec2(_delta.x, 0.0));                                         \
-		hit_attribs.bary_or_uv = m_HIT_UV;                                                    \
-		hit_attribs.packed_normal = (_n4 & 0x00FFFFFFu) | ((_dx & 0xFFu) << 24u);             \
-		hit_attribs.packed_tangent = (_t4 & 0x00FFFFFFu) | (((_dx >> 8u) & 0xFFu) << 24u);    \
-		hit_attribs.prev_pos_delta_yz = packHalf2x16(vec2(_delta.y, _delta.z));               \
-		reportIntersectionEXT(t_hit, kind);                                                   \
+		uint _n4 = packSnorm4x8(vec4(m_HIT_NORMAL, 0.0)); \
+		uint _t4 = packSnorm4x8(vec4(m_HIT_TANGENT, 0.0)); \
+		uint _dx = packHalf2x16(vec2(_delta.x, 0.0)); \
+		hit_attribs.bary_or_uv = m_HIT_UV; \
+		hit_attribs.packed_normal = (_n4 & 0x00FFFFFFu) | ((_dx & 0xFFu) << 24u); \
+		hit_attribs.packed_tangent = (_t4 & 0x00FFFFFFu) | (((_dx >> 8u) & 0xFFu) << 24u); \
+		hit_attribs.prev_pos_delta_yz = packHalf2x16(vec2(_delta.y, _delta.z)); \
+		reportIntersectionEXT(t_hit, kind); \
 	}
 
 #ifdef RT_CUSTOM_HIT_GROUP
 
+// clang-format off
 layout(set = 0, binding = 3, std430) readonly buffer GeometryBuffer {
 	GeometryData geometries[];
 };
@@ -556,6 +565,7 @@ layout(set = 0, binding = 3, std430) readonly buffer GeometryBuffer {
 layout(set = 0, binding = 5, std430) readonly buffer MaterialBuffer {
 	MaterialData materials[];
 };
+// clang-format on
 
 layout(set = 1, binding = 0) uniform texture2D bindless_textures[];
 
@@ -602,8 +612,6 @@ void main() {
 	vec3 m_WORLD_DIRECTION = gl_WorldRayDirectionEXT;
 	float m_T_MIN = gl_RayTminEXT;
 	float m_T_MAX = gl_RayTmaxEXT;
-	read_model_matrix = mat4(gl_ObjectToWorldEXT);
-	m_INV_MODEL_MATRIX = mat4(gl_WorldToObjectEXT);
 	global_prev_time = scene_data_block.prev_data.time;
 
 	// Resolve custom material uniforms via BDA (assigns file-scope address).
@@ -621,6 +629,12 @@ void main() {
 		m_AABB_MIN = vec3(aabb_buf.v[base + 0], aabb_buf.v[base + 1], aabb_buf.v[base + 2]);
 		m_AABB_MAX = vec3(aabb_buf.v[base + 3], aabb_buf.v[base + 4], aabb_buf.v[base + 5]);
 	}
+
+	mat4 rt_aabb_xform;
+	mat4 rt_inv_aabb_xform;
+	get_aabb_compression_xforms(rt_geom, rt_aabb_xform, rt_inv_aabb_xform);
+	read_model_matrix = mat4(gl_ObjectToWorldEXT) * rt_inv_aabb_xform;
+	m_INV_MODEL_MATRIX = rt_aabb_xform * mat4(gl_WorldToObjectEXT);
 
 	/* RT_CUSTOM_INTERSECTION_CODE */
 

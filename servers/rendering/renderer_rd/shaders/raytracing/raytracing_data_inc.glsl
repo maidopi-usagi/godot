@@ -28,14 +28,10 @@ struct GeometryData {
 
 	uint attribute_stride;
 	uint uv_byte_offset;
-
-	float uv_scale_x;
-	float uv_scale_y;
-
+	uint uv_scale_packed; // fp16 x, fp16 y
 	uint index_format;
 	uint primitive_count;
 	uint flags;
-
 	float aabb_size_x;
 	float aabb_size_y;
 	float aabb_size_z;
@@ -44,8 +40,33 @@ struct GeometryData {
 	// or OFFSET_NONE if the mesh has no vertex colors.
 	uint color_byte_offset;
 
-	uint _pad[9];
+	float aabb_pos_x;
+	float aabb_pos_y;
+	float aabb_pos_z;
+
+	uint _pad[7];
 };
+
+void get_aabb_compression_xforms(GeometryData geom, out mat4 aabb_xform, out mat4 inv_aabb_xform) {
+	if ((geom.flags & FLAG_COMPRESSED) == 0u) {
+		aabb_xform = mat4(1.0);
+		inv_aabb_xform = mat4(1.0);
+		return;
+	}
+	vec3 aabb_sz = vec3(geom.aabb_size_x, geom.aabb_size_y, geom.aabb_size_z);
+	vec3 aabb_po = vec3(geom.aabb_pos_x, geom.aabb_pos_y, geom.aabb_pos_z);
+	aabb_xform = mat4(
+			vec4(aabb_sz.x, 0.0, 0.0, 0.0),
+			vec4(0.0, aabb_sz.y, 0.0, 0.0),
+			vec4(0.0, 0.0, aabb_sz.z, 0.0),
+			vec4(aabb_po, 1.0));
+	vec3 inv_sz = 1.0 / aabb_sz;
+	inv_aabb_xform = mat4(
+			vec4(inv_sz.x, 0.0, 0.0, 0.0),
+			vec4(0.0, inv_sz.y, 0.0, 0.0),
+			vec4(0.0, 0.0, inv_sz.z, 0.0),
+			vec4(-aabb_po * inv_sz, 1.0));
+}
 
 // ============================================================================
 // PER-INSTANCE MOTION DATA (matches C++ RT_InstanceMotionData, 48 bytes)

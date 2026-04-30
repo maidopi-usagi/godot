@@ -28,6 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include "core/math/math_funcs.h"
 #include "servers/rendering/renderer_rd/environment/sky.h"
 #include "servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h"
 #include "servers/rendering/renderer_rd/forward_clustered/scene_shader_raytracing.h"
@@ -387,16 +388,21 @@ RTSurfaceData *RenderRaytracing::process_surface(
 	geom.tangent_stride = tangent_stride;
 	geom.flags = compressed ? RT_GEOM_FLAG_COMPRESSED : 0;
 
-	// AABB for compressed meshes
 	if (compressed) {
 		AABB surface_aabb = mesh_storage->mesh_surface_get_aabb(p_mesh_surface);
 		geom.aabb_size_x = surface_aabb.size.x;
 		geom.aabb_size_y = surface_aabb.size.y;
 		geom.aabb_size_z = surface_aabb.size.z;
+		geom.aabb_pos_x = surface_aabb.position.x;
+		geom.aabb_pos_y = surface_aabb.position.y;
+		geom.aabb_pos_z = surface_aabb.position.z;
 	} else {
 		geom.aabb_size_x = 1.0f;
 		geom.aabb_size_y = 1.0f;
 		geom.aabb_size_z = 1.0f;
+		geom.aabb_pos_x = 0.0f;
+		geom.aabb_pos_y = 0.0f;
+		geom.aabb_pos_z = 0.0f;
 	}
 
 	// Attribute buffer layout
@@ -425,10 +431,9 @@ RTSurfaceData *RenderRaytracing::process_surface(
 	}
 	geom.attribute_stride = attrib_offset;
 
-	// UV scale
+	// UV scale (fp16 packed, matches GLSL unpackHalf2x16)
 	Vector4 uv_scale = mesh_storage->mesh_surface_get_uv_scale(p_mesh_surface);
-	geom.uv_scale_x = uv_scale.x;
-	geom.uv_scale_y = uv_scale.y;
+	geom.uv_scale_packed = (uint32_t(Math::make_half_float(uv_scale.y)) << 16) | Math::make_half_float(uv_scale.x);
 
 	// Index format
 	if (index_buffer.is_valid() && index_count > 0) {
