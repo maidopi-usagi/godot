@@ -2818,6 +2818,9 @@ void RendererSceneCull::_visibility_cull(const VisibilityCullData &cull_data, ui
 		InstanceVisibilityData &vd = scenario->instance_visibility[i];
 		InstanceData &idata = scenario->instance_data[vd.array_index];
 
+		const uint32_t hidden_mask = InstanceData::FLAG_VISIBILITY_DEPENDENCY_HIDDEN | InstanceData::FLAG_VISIBILITY_DEPENDENCY_HIDDEN_CLOSE_RANGE;
+		const bool was_hidden = (idata.flags & hidden_mask) != 0;
+
 		if (idata.parent_array_index >= 0) {
 			uint32_t parent_flags = scenario->instance_data[idata.parent_array_index].flags;
 
@@ -2846,6 +2849,13 @@ void RendererSceneCull::_visibility_cull(const VisibilityCullData &cull_data, ui
 				idata.flags |= InstanceData::FLAG_VISIBILITY_DEPENDENCY_FADE_CHILDREN;
 			} else {
 				idata.flags &= ~InstanceData::FLAG_VISIBILITY_DEPENDENCY_FADE_CHILDREN;
+			}
+
+			if (was_hidden) {
+				const uint32_t base_type = idata.flags & InstanceData::FLAG_BASE_TYPE_MASK;
+				if ((1u << base_type) & RSE::INSTANCE_GEOMETRY_MASK) {
+					idata.instance_geometry->reset_motion_vectors();
+				}
 			}
 		}
 	}
@@ -3279,14 +3289,41 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 			// Frustum-visible instances are guaranteed to be inside the AABB (superset),
 			// so skip the AABB test for them. Only test AABB for non-frustum instances.
 			// Mask out editor-only layers (20+) so gizmos/grid don't enter the TLAS.
-			if (cull_data.cull->rt_enabled && (idata.layer_mask & ((1 << 20) - 1)) &&
-					(in_frustum || cull_data.scenario->instance_aabbs[i].in_aabb(cull_data.cull->rt_aabb))) {
-				uint32_t base_type = idata.flags & InstanceData::FLAG_BASE_TYPE_MASK;
-				if (base_type == RSE::INSTANCE_LIGHT) {
-					cull_result.rt_light_instances.push_back(RID::from_uint64(idata.instance_data_rid));
-				} else if (base_type == RSE::INSTANCE_MESH &&
-						!(idata.flags & InstanceData::FLAG_CAST_SHADOWS_ONLY)) {
-					cull_result.rt_geometry_instances.push_back(idata.instance_geometry);
+			//
+			// Visibility-range parity: instances that failed VIS_CHECK for raster (i.e. they
+			// have NEEDS_CHECK flags and are off-frustum) must be re-checked here, otherwise
+			// out-of-range distant meshes can still enter the TLAS.
+			//
+			// Visibility-parent binary fix: when a parent mesh is in the FADE_CHILDREN band
+			// (cross-fading with its LOD child in raster), we have no alpha blending in PT.
+			// Prefer the parent: exclude the child from RT until the parent becomes
+			// HIDDEN_CLOSE_RANGE (fully faded out), matching the point where raster
+			// switches over. In-frustum children are subject to the same rule.
+			if (cull_data.cull->rt_enabled && (idata.layer_mask & ((1 << 20) - 1))) {
+				// For off-frustum instances, also run VIS_CHECK to match raster gating.
+				bool rt_in_range = in_frustum || (cull_data.scenario->instance_aabbs[i].in_aabb(cull_data.cull->rt_aabb) && VIS_CHECK);
+				if (rt_in_range) {
+					// Exclude visibility-parent children while their parent is in the
+					// FADE_CHILDREN cross-fade band. PT is binary: only one LOD at a time.
+					bool excluded_by_parent_fade = false;
+					if (idata.parent_array_index >= 0) {
+						const uint32_t parent_flags = cull_data.scenario->instance_data[idata.parent_array_index].flags;
+						// FADE_CHILDREN set means the parent is still visible but fading out.
+						// Keep the parent in PT and suppress the child until parent is gone.
+						if (parent_flags & InstanceData::FLAG_VISIBILITY_DEPENDENCY_FADE_CHILDREN) {
+							excluded_by_parent_fade = true;
+						}
+					}
+
+					if (!excluded_by_parent_fade) {
+						uint32_t base_type = idata.flags & InstanceData::FLAG_BASE_TYPE_MASK;
+						if (base_type == RSE::INSTANCE_LIGHT) {
+							cull_result.rt_light_instances.push_back(RID::from_uint64(idata.instance_data_rid));
+						} else if (base_type == RSE::INSTANCE_MESH &&
+								!(idata.flags & InstanceData::FLAG_CAST_SHADOWS_ONLY)) {
+							cull_result.rt_geometry_instances.push_back(idata.instance_geometry);
+						}
+					}
 				}
 			}
 		}

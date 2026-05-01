@@ -487,14 +487,15 @@ void main() {
 			normalize(model_rotation[2]));
 
 	vec3 rt_normal = normalize(normal_matrix * ah_tbn.normal);
+	vec3 rt_tangent = normalize(normal_matrix * ah_tbn.tangent);
+	vec3 rt_bitangent = cross(rt_normal, rt_tangent) * ah_tbn.bitangent_sign;
+
 	bool rt_front_face = (gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT);
 	if (!rt_front_face) {
 		rt_normal = -rt_normal;
 	}
 
 	vec3 rt_hit_pos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
-	vec3 rt_tangent = normalize(normal_matrix * ah_tbn.tangent);
-	vec3 rt_bitangent = cross(rt_normal, rt_tangent) * ah_tbn.bitangent_sign;
 	vec4 rt_color = fetch_color(geom, i0, i1, i2, bary);
 
 #include "raytracing_custom_fragment_inc.glsl"

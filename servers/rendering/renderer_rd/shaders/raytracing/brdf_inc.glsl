@@ -167,6 +167,30 @@ V mul(const M &m, const V &v) {
 // Enable height correlated version of G2 term. Separable version will be used otherwise
 #define USE_HEIGHT_CORRELATED_G2 1
 
+// Master toggle for the shading-normal clamp at grazing angles.
+// 0 -> clampShadingNormal becomes a passthrough; only the mirror fallback in
+//      shade_and_bounce remains active.
+// 1 -> clamp + mirror two-layer fallback (default).
+#ifndef RT_SHADING_NORMAL_CLAMP_ENABLED
+#define RT_SHADING_NORMAL_CLAMP_ENABLED 1
+#endif
+
+// Geometry NdotV below which clampShadingNormal starts pulling the shading
+// normal toward the geometry normal. Higher values flatten normal-mapped
+// detail at grazing angles but reduce BRDF below-hemisphere rejections.
+// Used by both the production indirect-bounce path and the matching debug
+// visualization so they remain in sync.
+#ifndef RT_SHADING_NORMAL_CLAMP_THRESHOLD
+#define RT_SHADING_NORMAL_CLAMP_THRESHOLD 0.4f
+#endif
+
+// Enable below-hemisphere sample recovery.
+// 0 -> disable recovery and terminate the path on rejection instead.
+// 1 -> enable recovery and reuse the original BRDF weight.
+#ifndef RT_BELOW_HEMISPHERE_RECOVERY_ENABLED
+#define RT_BELOW_HEMISPHERE_RECOVERY_ENABLED 1
+#endif
+
 // -------------------------------------------------------------------------
 //    Automatically resolved macros based on preferences (don't edit these)
 // -------------------------------------------------------------------------
@@ -904,6 +928,87 @@ float3 evalMicrofacet(const BrdfData data) {
 }
 
 // -------------------------------------------------------------------------
+//    Shading normal clamping
+// -------------------------------------------------------------------------
+
+// Clamps a shading normal toward the geometry normal at grazing view angles.
+// This addresses a Monte-Carlo path tracing failure mode: when a strong normal
+// map perturbs the shading normal far from the geometry normal and the view
+// direction grazes the surface, importance-sampled reflection directions
+// frequently land below the geometry hemisphere. Such samples must be
+// discarded (they would self-intersect the surface), terminating the path
+// before it can collect any environment contribution and producing speckled
+// black pixels. The classic example is water with high-frequency wave normals
+// viewed at distance.
+//
+// The clamp is a smooth lerp between the shading and geometry normals based
+// on the geometry NdotV. Above 'threshold' the shading normal is unchanged.
+// Below it, the lerp factor falls linearly to 0 at NdotV == 0 (full geometry
+// normal). 'threshold' should be small (e.g. 0.10..0.20); higher values flatten
+// detail at glancing angles unnecessarily, lower values still allow rejection
+// black pixels for very aggressive normal maps.
+//
+// The same clamped normal must be used for *all* BRDF math (sampling, eval,
+// direct light NEE, denoiser G-buffers) so the indirect lobe and direct
+// lighting agree.
+float3 clampShadingNormal(float3 shading_n, float3 geometry_n, float3 V, float threshold) {
+#if RT_SHADING_NORMAL_CLAMP_ENABLED
+	float NdotV_geo = dot(geometry_n, V);
+	if (NdotV_geo >= threshold) {
+		return shading_n;
+	}
+	float t = max(0.0f, NdotV_geo) * rcp(max(0.0001f, threshold));
+	return normalize(lerp(geometry_n, shading_n, t));
+#else
+	return shading_n;
+#endif
+}
+
+// -------------------------------------------------------------------------
+//    Below-hemisphere sample recovery
+// -------------------------------------------------------------------------
+//
+// When BRDF importance sampling against a strongly perturbed shading normal
+// produces a direction that lands below the geometry plane, the direction
+// would self-intersect the surface and cannot be traced as-is.
+//
+// Recovery strategy: mirror the rejected direction across the geometry plane
+// and reuse the original BRDF weight. Cheap, never produces black pixels,
+// but is energy-non-conserving (over-bright at grazing angles) -- a
+// deliberate trade-off vs. terminating the path.
+//
+// Set RT_BELOW_HEMISPHERE_RECOVERY_ENABLED to 0 to disable recovery and
+// terminate the path on rejection instead. Useful for A/B comparison or
+// when investigating energy conservation.
+
+// Mirrors a direction across the geometry plane. No-op if already above.
+float3 mirrorDirectionAcrossPlane(float3 dir, float3 geometry_n) {
+	float c = dot(dir, geometry_n);
+	if (c >= 0.0f) {
+		return dir;
+	}
+	return normalize(dir - 2.0f * c * geometry_n);
+}
+
+// Recover a BRDF sample that landed below the geometry plane.
+// Returns true and writes the recovered (above-plane) direction to
+// 'recovered_dir' when recovery is enabled. Returns false when recovery is
+// disabled at compile time (RT_BELOW_HEMISPHERE_RECOVERY_ENABLED == 0); the
+// caller should then terminate the path.
+bool recoverBelowHemisphereSample(
+		float3 rejected_dir,
+		float3 geometry_n,
+		OUT_PARAMETER(float3) recovered_dir) {
+#if RT_BELOW_HEMISPHERE_RECOVERY_ENABLED
+	recovered_dir = mirrorDirectionAcrossPlane(rejected_dir, geometry_n);
+	return true;
+#else
+	recovered_dir = rejected_dir;
+	return false;
+#endif
+}
+
+// -------------------------------------------------------------------------
 //    Combined BRDF
 // -------------------------------------------------------------------------
 
@@ -1026,15 +1131,19 @@ bool evalIndirectCombinedBRDF(float2 u, float3 shadingNormal, float3 geometryNor
 		rayDirectionLocal = sampleSpecular(Vlocal, data.alpha, data.alphaSquared, data.specularF0, u, sampleWeight);
 	}
 
+	// Transform sampled direction Llocal back to V vector space.
+	// Done before the early-out checks so the caller always receives a valid
+	// direction in 'rayDirection' (e.g. for below-hemisphere mirroring).
+	rayDirection = normalize(rotatePoint(invertRotation(qRotationToZ), rayDirectionLocal));
+
 	// Prevent tracing direction with no contribution
 	if (luminance(sampleWeight) == 0.0f) {
 		return false;
 	}
 
-	// Transform sampled direction Llocal back to V vector space
-	rayDirection = normalize(rotatePoint(invertRotation(qRotationToZ), rayDirectionLocal));
-
-	// Prevent tracing direction "under" the hemisphere (behind the triangle)
+	// Prevent tracing direction "under" the hemisphere (behind the triangle).
+	// The caller is expected to handle this case: either terminate the path,
+	// or mirror the direction across the geometry plane to keep it above.
 	if (dot(geometryNormal, rayDirection) <= 0.0f) {
 		return false;
 	}

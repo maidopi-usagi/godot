@@ -1002,9 +1002,37 @@ _FORCE_INLINE_ static uint32_t _indices_to_primitives(RSE::PrimitiveType p_primi
 	static const uint32_t subtractor[RSE::PRIMITIVE_MAX] = { 0, 0, 1, 0, 2 };
 	return (p_indices - subtractor[p_primitive]) / divisor[p_primitive];
 }
+void RenderForwardClustered::_age_out_motion_vectors(const RenderDataRD *p_render_data) {
+	if (!p_render_data) {
+		return;
+	}
+	const uint64_t frame = RSG::rasterizer->get_frame_number();
+
+	// Process RT-only instances
+	if (p_render_data->rt_instances) {
+		for (uint32_t i = 0; i < (uint32_t)p_render_data->rt_instances->size(); i++) {
+			GeometryInstanceForwardClustered *inst =
+					static_cast<GeometryInstanceForwardClustered *>((*p_render_data->rt_instances)[i]);
+			if (inst) {
+				inst->age_out_motion(frame);
+			}
+		}
+	}
+
+	// Process raster instances
+	if (p_render_data->instances) {
+		for (uint32_t i = 0; i < (uint32_t)p_render_data->instances->size(); i++) {
+			GeometryInstanceForwardClustered *inst =
+					static_cast<GeometryInstanceForwardClustered *>((*p_render_data->instances)[i]);
+			if (inst) {
+				inst->age_out_motion(frame);
+			}
+		}
+	}
+}
+
 void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi, bool p_using_opaque_gi, bool p_using_motion_pass, bool p_append, bool p_alpha_only) {
 	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
-	uint64_t frame = RSG::rasterizer->get_frame_number();
 
 	if (p_render_list == RENDER_LIST_OPAQUE) {
 		scene_state.used_sss = false;
@@ -1090,15 +1118,8 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 				}
 			}
 
-			// Age out prev_transform: if the instance moved once but has been
-			// static for >=2 frames, snap prev_transform back to current so
-			// motion-vector consumers (raster or RT) see zero velocity. Must
-			// run BEFORE the alpha-only early-out, or skipped instances never
-			// get reset and keep reporting huge stale motion deltas.
-			if (unlikely(inst->transform_status != GeometryInstanceForwardClustered::TransformStatus::NONE && frame > inst->prev_transform_change_frame + 1 && inst->prev_transform_change_frame)) {
-				inst->prev_transform = inst->transform;
-				inst->transform_status = GeometryInstanceForwardClustered::TransformStatus::NONE;
-			}
+			// Age-out is handled in the pre-pass (_age_out_motion_vectors) which
+			// covers both raster-only and RT-only instances before this loop runs.
 
 			// Alpha-only (RT path): skip instances with no transparent/fading
 			// surfaces; opaque geometry is in the TLAS. Uses rt_pass_flags so
@@ -2070,6 +2091,11 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	// May have changed due to the above (light buffer enlarged, as an example).
 	_update_render_base_uniform_set();
+
+	// Age out stale transform_status on all instances that may appear in raster or
+	// RT cull lists. Must run before _fill_render_list and build_tlas so that both
+	// consumers see a consistent transform_status this frame.
+	_age_out_motion_vectors(p_render_data);
 
 	// With RT on we skip OPAQUE (TLAS is built from rt_instances) and
 	// using_motion_pass is off (RT writes velocity itself), so the last arg
@@ -5315,6 +5341,17 @@ void RenderForwardClustered::GeometryInstanceForwardClustered::set_transform(con
 void RenderForwardClustered::GeometryInstanceForwardClustered::reset_motion_vectors() {
 	prev_transform = transform;
 	transform_status = TransformStatus::TELEPORTED;
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::age_out_motion(uint64_t p_frame) {
+	if (last_aged_frame == p_frame) {
+		return; // Already processed this frame (e.g. appears in both raster and RT lists).
+	}
+	last_aged_frame = p_frame;
+	if (transform_status != TransformStatus::NONE && p_frame > prev_transform_change_frame + 1 && prev_transform_change_frame) {
+		prev_transform = transform;
+		transform_status = TransformStatus::NONE;
+	}
 }
 
 void RenderForwardClustered::GeometryInstanceForwardClustered::set_use_lightmap(RID p_lightmap_instance, const Rect2 &p_lightmap_uv_scale, int p_lightmap_slice_index) {

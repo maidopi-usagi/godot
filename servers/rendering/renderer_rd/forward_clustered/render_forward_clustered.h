@@ -529,6 +529,7 @@ private:
 
 	void _fill_instance_data(RenderListType p_render_list, int *p_render_info = nullptr, uint32_t p_offset = 0, int32_t p_max_elements = -1, bool p_update_buffer = true);
 	void _fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi = false, bool p_using_opaque_gi = false, bool p_using_motion_pass = false, bool p_append = false, bool p_alpha_only = false);
+	void _age_out_motion_vectors(const RenderDataRD *p_render_data);
 
 	HashMap<Size2i, RID> sdfgi_framebuffer_size_cache;
 
@@ -599,6 +600,9 @@ private:
 		RID material_uniform_set_shadow;
 		SceneShaderForwardClustered::ShaderData *shader_shadow = nullptr;
 
+		mutable Transform3D cached_final_transform;
+		mutable bool cached_final_transform_valid = false;
+
 		GeometryInstanceSurfaceDataCache *next = nullptr;
 		GeometryInstanceForwardClustered *owner = nullptr;
 		SelfList<GeometryInstanceSurfaceDataCache> compilation_dirty_element;
@@ -632,6 +636,7 @@ private:
 
 		//used during setup
 		uint64_t prev_transform_change_frame = 0xFFFFFFFF;
+		uint64_t last_aged_frame = 0;
 		enum TransformStatus {
 			NONE,
 			MOVED,
@@ -665,6 +670,8 @@ private:
 		virtual void pair_voxel_gi_instances(const RID *p_voxel_gi_instances, uint32_t p_voxel_gi_instance_count) override;
 
 		virtual void set_softshadow_projector_pairing(bool p_softshadow, bool p_projector) override;
+
+		void age_out_motion(uint64_t p_frame);
 	};
 
 	// These are not used in the Forward+ path, it has different light clustering tech.

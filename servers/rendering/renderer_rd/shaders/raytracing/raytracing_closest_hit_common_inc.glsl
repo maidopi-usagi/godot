@@ -342,6 +342,66 @@ void debug_visualize(
 		ps.radiance = vec3(d);
 	} else if (vis_mode == 21) {
 		ps.radiance = emissive;
+	} else if (vis_mode == 22) {
+		// BRDF below-hemisphere fallback visualization. Reflects the two-layer
+		// recovery applied in shade_and_bounce:
+		//   Layer 1 - shading-normal clamp toward geometry (energy preserving
+		//             but flattens detail at grazing angles)
+		//   Layer 2 - mirror rejected directions across the geometry plane
+		//             (biased; reuses the rejected sample's BRDF weight)
+		//
+		// We sample both BRDF lobes once with the un-clamped shading normal
+		// and once with the clamped shading normal, reusing the same random
+		// pair so the two passes are directly comparable.
+		//
+		// Color legend (ordered cleanest -> most biased):
+		//   green   = no rejection in either pass (no fallback needed)
+		//   blue    = clamp alone resolves rejection (energy preserving)
+		//   yellow  = clamp + mirror (one lobe still mirrored after clamp)
+		//   red     = clamp + mirror (both lobes mirrored - most biased pixel)
+		//
+		// Production output is never black anymore -- yellow/red just indicate
+		// where the cheaper Layer-1 clamp could not catch the bump and the
+		// biased Layer-2 mirror had to step in. Raise
+		// RT_SHADING_NORMAL_CLAMP_THRESHOLD if yellow/red dominate.
+		MaterialProperties dbg_mat;
+		dbg_mat.baseColor = albedo;
+		dbg_mat.metalness = metalness;
+		dbg_mat.roughness = roughness;
+		dbg_mat.dielectricF0 = specular_to_f0(specular);
+		dbg_mat.emissive = vec3(0.0);
+		dbg_mat.transmissivness = 0.0;
+		dbg_mat.opacity = 1.0;
+
+		vec3 dbg_dir;
+		vec3 dbg_weight;
+		// Draw both random pairs up front so each (specular/diffuse) test in
+		// the un-clamped and clamped pass uses the exact same numbers.
+		vec2 u_spec_rng = rand2(ps.rng_state);
+		vec2 u_diff_rng = rand2(ps.rng_state);
+
+		bool u_spec_ok = evalIndirectCombinedBRDF(u_spec_rng, final_normal, geometry_normal, V, dbg_mat, SPECULAR_TYPE, dbg_dir, dbg_weight, vec4(0.0));
+		bool u_diff_ok = evalIndirectCombinedBRDF(u_diff_rng, final_normal, geometry_normal, V, dbg_mat, DIFFUSE_TYPE, dbg_dir, dbg_weight, vec4(0.0));
+
+		// Uses the same threshold as shade_and_bounce so the visualization
+		// stays in sync with production sampling.
+		vec3 N_clamped = clampShadingNormal(final_normal, geometry_normal, V, RT_SHADING_NORMAL_CLAMP_THRESHOLD);
+		bool c_spec_ok = evalIndirectCombinedBRDF(u_spec_rng, N_clamped, geometry_normal, V, dbg_mat, SPECULAR_TYPE, dbg_dir, dbg_weight, vec4(0.0));
+		bool c_diff_ok = evalIndirectCombinedBRDF(u_diff_rng, N_clamped, geometry_normal, V, dbg_mat, DIFFUSE_TYPE, dbg_dir, dbg_weight, vec4(0.0));
+
+		bool all_uncl_ok = u_spec_ok && u_diff_ok;
+		bool all_cl_ok = c_spec_ok && c_diff_ok;
+		bool any_cl_ok = c_spec_ok || c_diff_ok;
+
+		if (all_uncl_ok) {
+			ps.radiance = vec3(0.0, 1.0, 0.0);
+		} else if (all_cl_ok) {
+			ps.radiance = vec3(0.0, 0.4, 1.0);
+		} else if (any_cl_ok) {
+			ps.radiance = vec3(1.0, 1.0, 0.0);
+		} else {
+			ps.radiance = vec3(1.0, 0.0, 0.0);
+		}
 	}
 
 	ps.packed_bounces_flags = set_path_terminated(ps.packed_bounces_flags);
@@ -359,7 +419,10 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 	PathState ps = path_unpack(payload);
 
 	vec3 V = -gl_WorldRayDirectionEXT;
-	float NdotV = max(dot(m.normal, V), 0.0001);
+
+	// Clamp shading normal toward geometry at grazing view angles to keep BRDF above the geometry hemisphere.
+	vec3 N = clampShadingNormal(m.normal, h.geometry_normal, V, RT_SHADING_NORMAL_CLAMP_THRESHOLD);
+	float NdotV = max(dot(N, V), 0.0001);
 
 	uint total_bounces = get_total_bounces(ps.packed_bounces_flags);
 	uint diffuse_bounces = get_diffuse_bounces(ps.packed_bounces_flags);
@@ -403,12 +466,12 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 		vec3 specular_albedo = DLSSRR_computeSpecularAlbedo(m.albedo, m.metalness, brdf_mat.dielectricF0, m.roughness, NdotV);
 		imageStore(dlss_rr_specular_albedo, pixel, vec4(clamp(specular_albedo, vec3(0.0), vec3(1.0)), 1.0)); // match UNORM8 like before - fixes some issues with garbling..
 
-		imageStore(dlss_rr_normal_roughness, pixel, vec4(m.normal, m.roughness));
+		imageStore(dlss_rr_normal_roughness, pixel, vec4(N, m.roughness));
 
 		// Specular hit distance via inline ray query (only for smooth surfaces).
 		float spec_hit_dist = -1.0;
 		if (m.roughness < MAX_DENOISER_SPECULAR_HIT_THRESHOLD) {
-			vec3 spec_dir = reflect(-V, m.normal);
+			vec3 spec_dir = reflect(-V, N);
 			vec3 spec_origin = offset_ray_origin(h.hit_pos, spec_dir);
 
 			rayQueryEXT spec_rq;
@@ -442,7 +505,7 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 		vec3 hit_pos_offset = offset_ray_origin(h.hit_pos, h.geometry_normal);
 		bool is_indirect = (diffuse_bounces > 0u);
 		vec3 direct_light = lights_evaluate_direct_lighting(
-				hit_pos_offset, m.normal, V, brdf_mat, ps.rng_state, is_indirect, rt_light_count);
+				hit_pos_offset, N, V, brdf_mat, ps.rng_state, is_indirect, rt_light_count);
 		ps.radiance += ps.throughput * direct_light;
 	}
 
@@ -471,11 +534,21 @@ void shade_and_bounce(HitData h, MaterialResult m) {
 	vec2 u = rand2(ps.rng_state);
 	vec3 next_dir;
 	vec3 brdf_weight;
-	if (!evalIndirectCombinedBRDF(u, m.normal, h.geometry_normal, V, brdf_mat, brdfType, next_dir, brdf_weight, vec4(0.0))) {
-		// No valid next-bounce direction -- terminate here.
-		ps.packed_bounces_flags = set_path_terminated(ps.packed_bounces_flags);
-		path_pack(payload, ps);
-		return;
+	if (!evalIndirectCombinedBRDF(u, N, h.geometry_normal, V, brdf_mat, brdfType, next_dir, brdf_weight, vec4(0.0))) {
+		// Two failure modes:
+		//   1) Sample weight is zero (no contribution). Terminate.
+		//   2) Sampled direction is below the geometry plane. Recover by
+		//      mirroring across the geometry plane (see brdf_inc.glsl). The
+		//      mirror is gated by RT_BELOW_HEMISPHERE_RECOVERY_ENABLED; when
+		//      disabled, recovery returns false and we terminate the path.
+		vec3 recovered_dir;
+		if (luminance(brdf_weight) == 0.0 ||
+				!recoverBelowHemisphereSample(next_dir, h.geometry_normal, recovered_dir)) {
+			ps.packed_bounces_flags = set_path_terminated(ps.packed_bounces_flags);
+			path_pack(payload, ps);
+			return;
+		}
+		next_dir = recovered_dir;
 	}
 
 	ps.throughput *= brdf_weight;

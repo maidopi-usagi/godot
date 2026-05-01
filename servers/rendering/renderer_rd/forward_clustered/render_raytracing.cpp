@@ -260,17 +260,7 @@ RTSurfaceData *RenderRaytracing::process_surface(
 			entry->cached_counter != p_surface_invalidation_counter;
 
 	if (!needs_refresh && entry->ptr->blas.is_valid()) {
-		// Cache hit - reuse existing BLAS
 		cache_hits++;
-
-		// Compute transform for this instance
-		uint64_t surface_format = mesh_storage->mesh_surface_get_format(p_mesh_surface);
-		Transform3D final_transform = p_transform;
-		if (surface_format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES) {
-			final_transform = p_transform * entry->ptr->aabb_transform;
-		}
-		blas_transforms.push_back(final_transform);
-
 		return entry->ptr;
 	}
 
@@ -315,12 +305,8 @@ RTSurfaceData *RenderRaytracing::process_surface(
 		surf_data->aabb_transform = Transform3D();
 	}
 
-	// Compute final transform for TLAS
-	Transform3D final_transform = p_transform;
-	if (compressed) {
-		final_transform = p_transform * surf_data->aabb_transform;
-	}
-	blas_transforms.push_back(final_transform);
+	// Invalidate per-surface cached final transform since aabb_transform was recomputed.
+	surf->cached_final_transform_valid = false;
 
 	// Populate geometry data
 	RT_GeometryData &geom = surf_data->geometry;
@@ -1310,6 +1296,7 @@ void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data) {
 
 		// Walk the surface cache linked list.
 		const RenderForwardClustered::GeometryInstanceSurfaceDataCache *surf = inst->surface_caches;
+		bool instance_static = inst->transform_status == RenderForwardClustered::GeometryInstanceForwardClustered::TransformStatus::NONE;
 		while (surf) {
 			// Skip surfaces routed to the raster alpha overlay
 			if (surf->rt_pass_flags & RenderForwardClustered::GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA) {
@@ -1325,6 +1312,20 @@ void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data) {
 				surf = surf->next;
 				continue;
 			}
+
+			// Compute or reuse cached final transform (instance * aabb_transform for compressed meshes).
+			Transform3D final_transform;
+			if (instance_static && surf->cached_final_transform_valid) {
+				final_transform = surf->cached_final_transform;
+			} else {
+				final_transform = instance_transform;
+				if (surf_data->is_compressed) {
+					final_transform = instance_transform * surf_data->aabb_transform;
+				}
+				surf->cached_final_transform = final_transform;
+				surf->cached_final_transform_valid = true;
+			}
+			blas_transforms.push_back(final_transform);
 
 			blass.push_back(surf_data->blas);
 			geometry_data.push_back(surf_data->geometry);
