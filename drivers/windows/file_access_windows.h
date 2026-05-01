@@ -47,6 +47,24 @@ class FileAccessWindows : public FileAccess {
 	String path_src;
 	String save_path;
 
+	// Internal read cache. Lets get_8/16/32/64 and any small get_buffer call
+	// avoid the per-call CRT fread overhead (function call + _lock_file). All
+	// OS reads go through _fread_nolock in cache-sized chunks. Invalidated on
+	// seek / write / resize / close.
+	static constexpr uint64_t READ_CACHE_SIZE = 8192;
+	mutable uint8_t read_cache[READ_CACHE_SIZE];
+	mutable uint64_t read_cache_pos = 0; // File offset of read_cache[0].
+	mutable uint32_t read_cache_filled = 0; // Valid bytes in read_cache.
+	mutable uint32_t read_cache_consumed = 0; // Bytes already served to callers.
+
+	void _invalidate_read_cache() const;
+	// Refills read_cache starting from the current CRT file cursor. Returns
+	// the number of bytes read. Caller must ensure the cache is drained first.
+	uint64_t _fill_read_cache() const;
+	// Before a write in READ_WRITE/WRITE_READ mode, align the CRT cursor with
+	// the logical read position and invalidate the read cache.
+	void _sync_for_write() const;
+
 	void _close();
 
 	static HashSet<String> invalid_files;
