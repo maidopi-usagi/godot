@@ -2306,7 +2306,17 @@ void MaterialStorage::shader_set_code_rt(RID p_shader, const String &p_code_rt) 
 
 	const bool changed = shader->code_rt != p_code_rt;
 	shader->code_rt = p_code_rt;
-	shader->code_rt_hash = p_code_rt.is_empty() ? 0 : p_code_rt.hash64();
+	if (p_code_rt.is_empty()) {
+		shader->code_rt_hash = 0;
+		shader->code_rt_hash_b = 0;
+	} else {
+		// Two passes of hash64 with different bookends produce a 128-bit identity. 
+		// Birthday problem is negligible for any realistic project shader count at 128 bit.
+		const String wrapped_a = String("RT_HG_A|") + p_code_rt + "|A_END";
+		const String wrapped_b = String("RT_HG_B|") + p_code_rt + "|B_END";
+		shader->code_rt_hash = wrapped_a.hash64();
+		shader->code_rt_hash_b = wrapped_b.hash64();
+	}
 
 	// Always forward: the preceding `shader_set_code()` reset rt_* to raster
 	// mirrors, so we must re-establish the RT classification even when the
@@ -2593,6 +2603,18 @@ uint64_t MaterialStorage::material_get_shader_code_rt_hash(RID p_material) const
 			return material->shader->code_rt_hash;
 		}
 		return material->shader->code.hash64();
+	}
+	return 0;
+}
+
+uint64_t MaterialStorage::material_get_shader_code_rt_hash_b(RID p_material) const {
+	const Material *material = material_owner.get_or_null(p_material);
+	if (material && material->shader) {
+		if (material->shader->code_rt_hash_b != 0) {
+			return material->shader->code_rt_hash_b;
+		}
+		const String wrapped_b = String("RT_HG_B|") + material->shader->code + "|B_END";
+		return wrapped_b.hash64();
 	}
 	return 0;
 }

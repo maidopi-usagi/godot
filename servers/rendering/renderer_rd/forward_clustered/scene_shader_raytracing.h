@@ -30,6 +30,9 @@
 
 #pragma once
 
+#include "core/object/worker_thread_pool.h"
+#include "core/templates/local_vector.h"
+#include "core/templates/safe_refcount.h"
 #include "servers/rendering/renderer_rd/pipeline_hash_map_rd.h"
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/shaders/raytracing/scene_raytracing_raygen.glsl.gen.h"
@@ -338,16 +341,6 @@ public:
 
 	SceneRaytracingRaygenShaderRD raygen_shader;
 
-	/// All resources for one raytracing pipeline variant, keyed by RaytracingFlags.
-	struct PipelineBundle {
-		RID pipeline;
-		RID hit_sbt;
-		RID base_shader; // Layout-defining shader -- use for uniform_set_create.
-		LocalVector<RID> owned_shaders; // All shader RIDs created for this variant (for cleanup).
-	};
-
-	HashMap<uint32_t, PipelineBundle> pipeline_bundles;
-
 	struct TextureUniformInfo {
 		StringName name;
 		ShaderLanguage::ShaderNode::Uniform::Hint hint = ShaderLanguage::ShaderNode::Uniform::HINT_NONE;
@@ -356,9 +349,8 @@ public:
 		uint32_t buffer_offset = 0; // Stored as bindless index in UBO
 	};
 
-	// Per-shader transpiled code for RT hit group injection.
+	// Preprocessed custom HG GLSL (templates filled per compile). One entry per slot, all variants.
 	struct CustomShaderEntry {
-		uint64_t source_hash = 0;
 		String vertex_code;
 		String fragment_code;
 		String fragment_globals;
@@ -371,53 +363,127 @@ public:
 		Vector<TextureUniformInfo> texture_uniforms; // Sampler2D packed as bindless indices after UBO
 		bool uses_alpha_clip = false; // Writes ALPHA_SCISSOR_THRESHOLD; needs per-HG any-hit
 		bool is_procedural = false; // Uses intersection shader instead of triangle geometry
-		bool failed = false; // Compilation/preprocessing failed; do not retry until source changes.
 	};
 
-	HashMap<uint32_t, CustomShaderEntry> compilation_cache;
+	// 128-bit identity (dual hash64 with distinct salt). Treated as source equality.
+	struct SourceHash128 {
+		uint64_t a = 0;
+		uint64_t b = 0;
+		bool operator==(const SourceHash128 &p_o) const { return a == p_o.a && b == p_o.b; }
+		bool is_zero() const { return a == 0 && b == 0; }
+	};
+	struct SourceHash128Hasher {
+		static _FORCE_INLINE_ uint32_t hash(const SourceHash128 &p_h) {
+			// Mix both halves so a-only collisions don't create bucket pile-ups.
+			// Constant: integral part of the Golden Ratio's fractional part 0.61803398875… multiplied by 2^64
+			return hash_one_uint64(p_h.a ^ (p_h.b * 0x9E3779B97F4A7C15ULL));
+		}
+	};
 
-	LocalVector<CustomShaderEntry> active_custom_shaders;
-	LocalVector<CustomShaderEntry> frame_custom_shaders;
-	HashMap<uint32_t, uint32_t> frame_shader_id_to_hg;
-	uint64_t active_custom_shaders_hash = 0;
-	bool has_intersection_shaders = false;
+	enum class HGState : uint8_t {
+		Empty,
+		Pending, // Preprocessed; SPIR-V compile not done for this bundle yet.
+		Ready, // Per-HG RID valid; next rebuild will publish.
+		Failed, // Permanent compile failure for this slot in this bundle.
+	};
+
+	// Append-only by source hash. Index 0 = default HG.
+	struct HitGroupSlot {
+		SourceHash128 source_hash;
+		HGState state = HGState::Empty;
+		CustomShaderEntry entry;
+	};
+
+	LocalVector<HitGroupSlot> hit_group_slots;
+	HashMap<SourceHash128, uint32_t, SourceHash128Hasher> source_hash_to_slot;
+
+	// One RD RT pipeline variant (rt_flags key). Owns base + per-slot HG shaders (RG+miss baked in per HG).
+	struct PipelineBundle {
+		RID pipeline; // RD::free_rid on swap (deferred internally).
+		RID hit_sbt; // RD::free_rid on swap.
+		RID base_shader; // Immutable for variant lifetime; uniform_set is bound to this.
+
+		// Parallel to hit_group_slots.
+		LocalVector<RID> per_hg_shaders;
+		LocalVector<HGState> per_hg_states;
+
+		// Baked into current pipeline (TLAS skip / is_hg_ready_in_bundle).
+		LocalVector<bool> live_ready_mask;
+		uint32_t live_hg_count = 0;
+
+		bool dirty = false;
+		bool initial_pipeline_built = false;
+	};
+
+	HashMap<uint32_t, PipelineBundle> pipeline_bundles;
+
+	// Single-lane async bundle rebuild (worker: SPIR-V + raytracing_pipeline_create; main: SBT + swap).
+	struct PipelineBuildTask;
+	struct CompileLane {
+		Mutex mutex;
+		PipelineBuildTask *current = nullptr;
+		LocalVector<PipelineBuildTask *> queue;
+	};
 
 	uint32_t register_custom_shader(uint32_t p_shader_id, RID p_material);
 	uint32_t register_procedural_shader(uint32_t p_shader_id, RID p_material);
 
-private:
-	// Helpers shared by both registration paths.
-	enum CacheState {
-		CACHE_NOT_STARTED, // No entry, or entry is stale (source hash differs); caller should compile.
-		CACHE_HIT_VALID, // Entry exists and matches; caller can use it directly.
-		CACHE_HIT_FAILED, // Entry exists, matches, and is marked failed; caller must skip silently.
-		CACHE_NO_SOURCE, // Source hash is 0 (no shader code); skip silently.
-	};
+	const CustomShaderEntry *get_custom_shader_entry(uint32_t p_slot_index) const;
+	uint32_t get_hit_group_slot_count() const { return hit_group_slots.size(); }
 
-	CacheState _resolve_cache(uint32_t p_shader_id, RID p_material, uint64_t &r_code_hash, HashMap<uint32_t, CustomShaderEntry>::Iterator &r_cache_it);
-	void _record_failure(uint32_t p_shader_id, uint64_t p_code_hash, bool p_is_procedural);
-	void _strip_texture_globals(String &r_globals, const String &p_tex_name);
-	void _finalize_uniforms_with_textures(CustomShaderEntry &r_entry, const ShaderCompiler::GeneratedCode &p_gen_code, const HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> &p_uniforms, bool p_strip_intersection_globals);
-
-public:
-	void begin_custom_shader_frame();
-
+	bool is_hg_ready_in_bundle(uint32_t p_slot_index, uint32_t p_rt_flags) const;
+	void drain_completed_compiles();
 	void finalize_custom_shaders();
 
-	const CustomShaderEntry *get_custom_shader_entry(uint32_t p_hg_index) const;
-	uint32_t get_active_custom_shader_count() const { return active_custom_shaders.size(); }
-
-	/// Lazily creates (or returns cached) the full pipeline bundle for the given flags.
 	const PipelineBundle &ensure_pipeline_bundle(uint32_t p_rt_flags);
 
 	RID get_raytracing_pipeline(uint32_t p_rt_flags) { return ensure_pipeline_bundle(p_rt_flags).pipeline; }
 	RID get_hit_sbt(uint32_t p_rt_flags) { return ensure_pipeline_bundle(p_rt_flags).hit_sbt; }
 	RID get_pipeline_base_shader(uint32_t p_rt_flags) { return ensure_pipeline_bundle(p_rt_flags).base_shader; }
 
-	// Pipeline-matching shader for uniform set creation. In the bundle
-	// architecture this is the same as base_shader.
+	// Uniform set layout shader (same as base_shader).
 	RID get_pipeline_shader_rd(uint32_t p_rt_flags) { return ensure_pipeline_bundle(p_rt_flags).base_shader; }
 
+private:
+	// Source-hash slot management.
+	uint32_t _register_slot(uint32_t p_shader_id, RID p_material, bool p_is_procedural);
+	bool _preprocess_shader(RID p_material, bool p_is_procedural, CustomShaderEntry &r_entry);
+	void _strip_texture_globals(String &r_globals, const String &p_tex_name);
+	void _finalize_uniforms_with_textures(CustomShaderEntry &r_entry, const ShaderCompiler::GeneratedCode &p_gen_code, const HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> &p_uniforms, bool p_strip_intersection_globals);
+
+	// Bundle build / rebuild.
+	void _bundle_resize_for_slots(PipelineBundle &r_bundle);
+	bool _build_initial_bundle(uint32_t p_rt_flags, PipelineBundle &r_bundle);
+	void _kick_rebuild_if_idle();
+
+	// Compile lane / worker.
+	void _enqueue_build(PipelineBuildTask *p_task);
+	void _dispatch_next_locked(); // CompileLane::mutex MUST be held.
+	void _build_pipeline_worker(PipelineBuildTask *p_task);
+	static void _build_pipeline_worker_static(void *p_userdata);
+	void _finalize_pipeline_build(PipelineBuildTask *p_task);
+	void _drain_lane_inline_main_thread();
+	void _join_lane_for_shutdown();
+	PipelineBuildTask *_make_pipeline_build_task(uint32_t p_rt_flags, PipelineBundle &p_bundle);
+
+	// Eager/late stage assembly bits cached per variant for compile workers.
+	struct VariantCompileContext {
+		Vector<RD::ShaderStageSPIRVData> base_non_hit_stages; // RAYGEN + MISS spirv.
+		RD::ShaderStageSPIRVData base_any_hit_stage; // Used when slot doesn't override AH.
+		bool base_any_hit_valid = false;
+		String ch_template; // Template GLSL with /* RT_CUSTOM_* */ markers.
+		String ah_template;
+		String is_template;
+	};
+	HashMap<uint32_t, VariantCompileContext> variant_compile_contexts;
+
+	bool _ensure_variant_compile_context(uint32_t p_rt_flags);
+
+	bool async_compilation_enabled = true;
+	Mutex spirv_compile_mutex; // Serialise glslang calls (RD::shader_compile_spirv_from_source).
+	CompileLane compile_lane;
+
+public:
 	void invalidate_pipeline_bundles();
 
 	ShaderCompiler compiler;

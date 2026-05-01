@@ -2140,7 +2140,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			rb_data->dlss_rr_free_buffers();
 		}
 
-		raytracing->build_tlas(p_render_data);
+		raytracing->build_tlas(p_render_data, rt_flags);
 		raytracing->update_uniform_set(p_render_data, rt_flags);
 	} else if (rb_data.is_valid() && rb_data->dlss_rr_has_buffers()) {
 		// RT disabled: free DLSS RR buffers so DLSS falls back to SR.
@@ -2410,7 +2410,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	// Declare rp_uniform_set here so it's available for transparent pass later
 	RID rp_uniform_set;
 
-	// Skip opaque color pass when raytracing is enabled - RT doesn't use rasterization pipeline
+	// Skip opaque pass when raytracing handles color.
 	if (!scene_features.rt) {
 		RID normal_roughness_views[RendererSceneRender::MAX_RENDER_VIEWS];
 		if (rb_data.is_valid() && rb_data->has_normal_roughness()) {
@@ -2517,6 +2517,15 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			RD::get_singleton()->raytracing_list_bind_uniform_set(raytracing_list, bindless_set, 1);
 		}
 
+		// Critical: Mat UBO pool buffer dependency for correctness.
+		// TODO: Materials larger than 512 bytes are currently not taken into account. This can be very bad. (they produce a warning whenever they are used)
+		//       Better to avoid >512 bytes per material anyway, but this could cause GPU hangs in case that path is taken.
+		//       So either we support that properly (keep a running tally of which ones are referenced), or we drop support for these.
+		RID mat_ubo_pool = raytracing->get_mat_ubo_pool_buffer();
+		if (mat_ubo_pool.is_valid()) {
+			RD::get_singleton()->raytracing_list_add_buffer_dependency(raytracing_list, mat_ubo_pool, /*p_writable=*/false);
+		}
+
 		// Raytracing dispatches at internal (pre-upscale) size because the RT
 		// output texture is allocated at that resolution; FSR/upscaler runs
 		// afterward as a separate compute pass.
@@ -2596,7 +2605,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	if (use_msaa) {
 		RENDER_TIMESTAMP("Resolve MSAA");
 
-		// Skip color MSAA resolve when raytracing - RT output is already in internal_texture.
+		// RT writes internal_texture; skip MSAA resolve.
 		if (!scene_features.rt && (scene_state.used_screen_texture || using_separate_specular || ce_pre_transparent_resolved_color)) {
 			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
 				RD::get_singleton()->texture_resolve_multisample(rb->get_color_msaa(v), rb->get_internal_texture(v));
@@ -2680,7 +2689,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			// so if we've requested this, we need another copy.
 			// Fairly unlikely scenario though.
 
-			// Skip color MSAA resolve when raytracing - RT output is already in internal_texture.
+			// RT writes internal_texture; skip MSAA resolve.
 			if (!scene_features.rt && ce_pre_transparent_resolved_color) {
 				for (uint32_t v = 0; v < rb->get_view_count(); v++) {
 					RD::get_singleton()->texture_resolve_multisample(rb->get_color_msaa(v), rb->get_internal_texture(v));
@@ -2698,7 +2707,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		_process_compositor_effects(RSE::COMPOSITOR_EFFECT_CALLBACK_TYPE_PRE_TRANSPARENT, p_render_data);
 	}
 
-	// Skip transparent pass when raytracing is enabled - RT doesn't use rasterization pipeline
+	// Skip transparent pass when raytracing handles color.
 	if (true) {
 		RENDER_TIMESTAMP("Render 3D Transparent Pass");
 
@@ -2728,7 +2737,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	if (rb_data.is_valid() && use_msaa) {
 		bool resolve_velocity_buffer = (using_taa || using_upscaling || ce_needs_motion_vectors) && rb->has_velocity_buffer(true);
 		for (uint32_t v = 0; v < rb->get_view_count(); v++) {
-			// Skip color MSAA resolve when raytracing - RT output is already in internal_texture
+			// RT writes internal_texture; skip MSAA resolve.
 			// and MSAA color buffer is empty since we skipped rasterization.
 			if (!scene_features.rt) {
 				RD::get_singleton()->texture_resolve_multisample(rb->get_color_msaa(v), rb->get_internal_texture(v));

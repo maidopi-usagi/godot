@@ -58,7 +58,8 @@ private:
 	RenderingDevice *rd = nullptr;
 	LocalVector<RID> textures;
 	HashMap<RID, uint32_t> texture_to_index;
-	LocalVector<uint32_t> free_indices; // Recycled slots.
+	LocalVector<uint32_t> free_indices;
+	uint32_t free_indices_count = 0; // logical top to avoid resize of free_indices array
 	RID default_texture;
 	RID uniform_set;
 	bool needs_refinalize = false;

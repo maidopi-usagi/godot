@@ -80,6 +80,10 @@ RenderRaytracing::~RenderRaytracing() {
 	if (params_buffer.is_valid()) {
 		RD::get_singleton()->free_rid(params_buffer);
 	}
+	if (mat_ubo_pool_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(mat_ubo_pool_buffer);
+		mat_ubo_pool_buffer = RID();
+	}
 
 	if (bindless_block) {
 		memdelete(bindless_block);
@@ -89,6 +93,86 @@ RenderRaytracing::~RenderRaytracing() {
 		memdelete(shader);
 		shader = nullptr;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Material UBO sub-allocation pool
+//
+// Single device-address storage buffer of MAT_UBO_POOL_TOTAL_BYTES, divided
+// into MAT_UBO_POOL_CAPACITY fixed-size slots. Allocate/release just bump a
+// next-slot counter and a free-list. Per-material UBO writes are
+// buffer_update at slot offset, no allocation. mat.uniform_address is
+// pool_bda + slot * slot_size, so the closest-hit shader's
+// CustomMaterialUniforms(addr) cast lands on the correct slot.
+// ---------------------------------------------------------------------------
+
+namespace {
+// Pool tuning. Kept in this TU because nothing outside it needs to know.
+// SLOT_SIZE bounds the per-material UBO before we fall back to a dedicated
+// buffer; CAPACITY is the maximum number of pooled materials in flight.
+constexpr uint32_t MAT_UBO_POOL_SLOT_SIZE = 512;
+constexpr uint32_t MAT_UBO_POOL_CAPACITY = 100000;
+constexpr uint64_t MAT_UBO_POOL_TOTAL_BYTES = uint64_t(MAT_UBO_POOL_SLOT_SIZE) * MAT_UBO_POOL_CAPACITY;
+} // namespace
+
+void RenderRaytracing::mat_ubo_pool_ensure_initialized() {
+	if (mat_ubo_pool_buffer.is_valid()) {
+		return;
+	}
+	Vector<uint8_t> init;
+	init.resize(MAT_UBO_POOL_TOTAL_BYTES);
+	memset(init.ptrw(), 0, MAT_UBO_POOL_TOTAL_BYTES);
+	mat_ubo_pool_buffer = RD::get_singleton()->storage_buffer_create(
+			MAT_UBO_POOL_TOTAL_BYTES, init, 0,
+			RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
+	if (mat_ubo_pool_buffer.is_valid()) {
+		RD::get_singleton()->set_resource_name(mat_ubo_pool_buffer, "RT Material UBO Pool");
+		mat_ubo_pool_bda = RD::get_singleton()->buffer_get_device_address(mat_ubo_pool_buffer);
+	}
+}
+
+uint32_t RenderRaytracing::mat_ubo_pool_allocate() {
+	mat_ubo_pool_ensure_initialized();
+	if (!mat_ubo_pool_buffer.is_valid()) {
+		return UINT32_MAX;
+	}
+	// Pop from the free-list stack. mat_ubo_pool_free_count is the logical top;
+	// the underlying vector is never shrunk so this is a pure counter op.
+	if (mat_ubo_pool_free_count > 0) {
+		--mat_ubo_pool_free_count;
+		return mat_ubo_pool_free_slots[mat_ubo_pool_free_count];
+	}
+	if (mat_ubo_pool_next_slot >= MAT_UBO_POOL_CAPACITY) {
+		ERR_PRINT_ONCE("RT Material UBO Pool exhausted; falling back to dedicated buffer.");
+		return UINT32_MAX;
+	}
+	return mat_ubo_pool_next_slot++;
+}
+
+void RenderRaytracing::mat_ubo_pool_release(uint32_t p_slot) {
+	if (p_slot >= MAT_UBO_POOL_CAPACITY) {
+		return;
+	}
+	// Push onto the free-list stack. Grow the underlying buffer only when the
+	// counter would overflow the existing capacity; never shrink.
+	if (mat_ubo_pool_free_count < mat_ubo_pool_free_slots.size()) {
+		mat_ubo_pool_free_slots[mat_ubo_pool_free_count] = p_slot;
+	} else {
+		mat_ubo_pool_free_slots.push_back(p_slot);
+	}
+	++mat_ubo_pool_free_count;
+}
+
+void RenderRaytracing::mat_ubo_pool_update(uint32_t p_slot, const void *p_data, uint32_t p_size) {
+	if (!mat_ubo_pool_buffer.is_valid() || p_slot >= MAT_UBO_POOL_CAPACITY) {
+		return;
+	}
+	uint32_t size = MIN(p_size, MAT_UBO_POOL_SLOT_SIZE);
+	RD::get_singleton()->buffer_update(mat_ubo_pool_buffer, uint64_t(p_slot) * MAT_UBO_POOL_SLOT_SIZE, size, p_data);
+}
+
+uint64_t RenderRaytracing::mat_ubo_pool_get_address(uint32_t p_slot) const {
+	return mat_ubo_pool_bda + uint64_t(p_slot) * MAT_UBO_POOL_SLOT_SIZE;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +204,9 @@ void RenderRaytracing::cleanup_caches() {
 				if (entry->ptr) {
 					if (entry->ptr->uniform_buffer.is_valid()) {
 						RD::get_singleton()->free_rid(entry->ptr->uniform_buffer);
+					}
+					if (entry->ptr->uniform_pool_slot != UINT32_MAX) {
+						mat_ubo_pool_release(entry->ptr->uniform_pool_slot);
 					}
 					memdelete(entry->ptr);
 					entry->ptr = nullptr;
@@ -213,13 +300,12 @@ void RenderRaytracing::prepare_frame() {
 	motion_indices.clear();
 	motion_transforms.clear();
 
-	// Procedural BLAS + AABB buffers now live on the geometry instance (grow-only).
-	// Nothing to free here per frame.
+	// Procedural BLAS/AABB lifetime is on the geometry instance.
 
-	SceneShaderRaytracing::get_singleton()->begin_custom_shader_frame();
+	// Finish async HG compiles so live_ready_mask matches this frame (sync path fills at build_tlas end).
+	SceneShaderRaytracing::get_singleton()->drain_completed_compiles();
 
-	// geometry/material/motion buffers are grow-only; the TLAS is reused
-	// across frames. finalize_buffers() handles per-frame uploads.
+	// Grow-only geometry/material/motion; TLAS reused; uploads in finalize_buffers().
 
 	// Reset per-frame metrics
 	cache_hits = 0;
@@ -254,13 +340,14 @@ RTSurfaceData *RenderRaytracing::process_surface(
 	// Cache lookup
 	RTCacheEntry *entry = get_surface_cache_entry(cache_key);
 
-	// Check if we can reuse cached BLAS
+	uint32_t current_frame = RSG::rasterizer->get_frame_number();
 	bool needs_refresh = !entry->ptr ||
 			entry->cached_rid_version != mesh_version ||
 			entry->cached_counter != p_surface_invalidation_counter;
 
 	if (!needs_refresh && entry->ptr->blas.is_valid()) {
 		cache_hits++;
+		entry->last_used_frame = current_frame;
 		return entry->ptr;
 	}
 
@@ -468,7 +555,7 @@ RTSurfaceData *RenderRaytracing::process_surface(
 	// Update cache entry
 	entry->cached_counter = p_surface_invalidation_counter;
 	entry->cached_rid_version = mesh_version;
-	entry->last_used_frame = RSG::rasterizer->get_frame_number();
+	entry->last_used_frame = current_frame;
 
 	return surf_data;
 }
@@ -836,19 +923,20 @@ RTMaterialData *RenderRaytracing::process_material(RID p_material_rid, uint16_t 
 	uint32_t mat_version = get_rid_version(p_material_rid);
 	RTMaterialCacheEntry *entry = get_material_cache_entry(mat_idx);
 
-	// Check if we can reuse cached material
+	uint32_t current_frame = RSG::rasterizer->get_frame_number();
 	bool needs_refresh = !entry->ptr ||
 			entry->cached_rid_version != mat_version ||
 			entry->cached_counter != p_material_invalidation_counter;
 
 	if (!needs_refresh) {
-		entry->last_used_frame = RSG::rasterizer->get_frame_number();
+		entry->last_used_frame = current_frame;
 		if (entry->ptr->is_custom_shader) {
 			uint32_t shader_id = RendererRD::MaterialStorage::get_singleton()->material_get_shader_id(p_material_rid);
 			uint32_t old_sbt = entry->ptr->rt_sbt_offset;
 			uint32_t new_sbt = SceneShaderRaytracing::get_singleton()->register_custom_shader(shader_id, p_material_rid);
 			entry->ptr->rt_sbt_offset = new_sbt;
-			if (old_sbt == 0 && new_sbt > 0) {
+			// HG slot change invalidates cached UBO layout / BDA.
+			if (old_sbt != new_sbt) {
 				needs_refresh = true;
 			}
 		}
@@ -1053,12 +1141,52 @@ RTMaterialData *RenderRaytracing::process_material(RID p_material_rid, uint16_t 
 				}
 			}
 
-			if (mat_data->uniform_buffer.is_valid()) {
-				RD::get_singleton()->free_rid(mat_data->uniform_buffer);
+			// Try the suballoc pool first. Common materials (UBO <= slot size)
+			// just buffer_update an existing slot - O(1), no driver allocation,
+			// no per-frame storage_buffer_create cost.
+			bool used_pool = false;
+			if (cse->uniform_total_size <= MAT_UBO_POOL_SLOT_SIZE) {
+				if (mat_data->uniform_pool_slot == UINT32_MAX) {
+					mat_data->uniform_pool_slot = mat_ubo_pool_allocate();
+				}
+				if (mat_data->uniform_pool_slot != UINT32_MAX) {
+					// Transitioning from a dedicated buffer back into the pool.
+					if (mat_data->uniform_buffer.is_valid()) {
+						RD::get_singleton()->free_rid(mat_data->uniform_buffer);
+						mat_data->uniform_buffer = RID();
+					}
+					mat_ubo_pool_update(mat_data->uniform_pool_slot, ubo_data.ptr(), cse->uniform_total_size);
+					mat.uniform_address = mat_ubo_pool_get_address(mat_data->uniform_pool_slot);
+					used_pool = true;
+				}
 			}
-			mat_data->uniform_buffer = RD::get_singleton()->storage_buffer_create(cse->uniform_total_size, ubo_data, 0, RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
-			RD::get_singleton()->set_resource_name(mat_data->uniform_buffer, String("RT Material UBO [sbt=") + itos(mat_data->rt_sbt_offset) + "]");
-			mat.uniform_address = RD::get_singleton()->buffer_get_device_address(mat_data->uniform_buffer);
+
+			if (!used_pool) {
+				// Oversized or pool exhausted: dedicated per-material buffer.
+				// This is the slow path: a per-material storage_buffer_create on
+				// every rebuild. Warn once so it's visible in the log; the fix is
+				// either to shrink the material's uniform footprint below
+				// MAT_UBO_POOL_SLOT_SIZE or to grow the pool slot/capacity.
+				const char *reason = (cse->uniform_total_size > MAT_UBO_POOL_SLOT_SIZE)
+						? "uniform size exceeds slot"
+						: "pool exhausted";
+				WARN_PRINT_ONCE(vformat(
+						"RT Material UBO falling back to dedicated buffer (%s): "
+						"sbt_offset=%u, uniform_total_size=%u, slot_size=%u.",
+						String(reason), mat_data->rt_sbt_offset,
+						cse->uniform_total_size, MAT_UBO_POOL_SLOT_SIZE));
+
+				if (mat_data->uniform_pool_slot != UINT32_MAX) {
+					mat_ubo_pool_release(mat_data->uniform_pool_slot);
+					mat_data->uniform_pool_slot = UINT32_MAX;
+				}
+				if (mat_data->uniform_buffer.is_valid()) {
+					RD::get_singleton()->free_rid(mat_data->uniform_buffer);
+				}
+				mat_data->uniform_buffer = RD::get_singleton()->storage_buffer_create(cse->uniform_total_size, ubo_data, 0, RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
+				RD::get_singleton()->set_resource_name(mat_data->uniform_buffer, String("RT Material UBO [sbt=") + itos(mat_data->rt_sbt_offset) + "]");
+				mat.uniform_address = RD::get_singleton()->buffer_get_device_address(mat_data->uniform_buffer);
+			}
 		}
 	}
 
@@ -1120,7 +1248,7 @@ RTMaterialData *RenderRaytracing::process_material(RID p_material_rid, uint16_t 
 	// Update cache entry
 	entry->cached_counter = p_material_invalidation_counter;
 	entry->cached_rid_version = mat_version;
-	entry->last_used_frame = RSG::rasterizer->get_frame_number();
+	entry->last_used_frame = current_frame;
 
 	return mat_data;
 }
@@ -1201,12 +1329,16 @@ _FORCE_INLINE_ static uint32_t _rt_indices_to_primitives(RSE::PrimitiveType p_pr
 	return (p_indices - subtractor[p_primitive]) / divisor[p_primitive];
 }
 
-void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data) {
+void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data, uint32_t p_rt_flags) {
 	if (!p_render_data || !p_render_data->rt_instances) {
 		return;
 	}
 
 	prepare_frame();
+
+	// Builds bundle if needed; live_ready_mask drives TLAS inclusion below.
+	SceneShaderRaytracing *rt_shader_singleton = SceneShaderRaytracing::get_singleton();
+	rt_shader_singleton->ensure_pipeline_bundle(p_rt_flags);
 
 	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
 	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
@@ -1251,6 +1383,9 @@ void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data) {
 
 			uint32_t hg_index = rt_shader->register_procedural_shader(shader_id, proc_material_rid);
 			if (hg_index == 0) {
+				continue;
+			}
+			if (!rt_shader->is_hg_ready_in_bundle(hg_index, p_rt_flags)) {
 				continue;
 			}
 
@@ -1313,6 +1448,29 @@ void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data) {
 				continue;
 			}
 
+			// Resolve material before TLAS so we can skip surfaces whose HG is not live yet (override > surface > mesh).
+			RID material_rid;
+			if (surf->owner->data->material_override.is_valid()) {
+				material_rid = surf->owner->data->material_override;
+			} else if (surf->surface_index < surf->owner->data->surface_materials.size() &&
+					surf->owner->data->surface_materials[surf->surface_index].is_valid()) {
+				material_rid = surf->owner->data->surface_materials[surf->surface_index];
+			} else {
+				RID mesh_rid = surf->owner->data->base;
+				if (mesh_rid.is_valid() && mesh_storage->owns_mesh(mesh_rid)) {
+					material_rid = mesh_storage->mesh_surface_get_material(mesh_rid, surf->surface_index);
+				}
+			}
+
+			uint16_t material_counter = material_storage->material_get_rt_invalidation_counter(material_rid);
+			RTMaterialData *mat_data = process_material(material_rid, material_counter);
+
+			if (mat_data->rt_sbt_offset > 0 &&
+					!rt_shader_singleton->is_hg_ready_in_bundle(mat_data->rt_sbt_offset, p_rt_flags)) {
+				surf = surf->next;
+				continue;
+			}
+
 			// Compute or reuse cached final transform (instance * aabb_transform for compressed meshes).
 			Transform3D final_transform;
 			if (instance_static && surf->cached_final_transform_valid) {
@@ -1351,24 +1509,6 @@ void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data) {
 			}
 #endif
 
-			// Process material first (needed for FORCE_OPAQUE decision on custom shaders).
-			// Priority: material_override > surface_materials > mesh surface material.
-			RID material_rid;
-			if (surf->owner->data->material_override.is_valid()) {
-				material_rid = surf->owner->data->material_override;
-			} else if (surf->surface_index < surf->owner->data->surface_materials.size() &&
-					surf->owner->data->surface_materials[surf->surface_index].is_valid()) {
-				material_rid = surf->owner->data->surface_materials[surf->surface_index];
-			} else {
-				RID mesh_rid = surf->owner->data->base;
-				if (mesh_rid.is_valid() && mesh_storage->owns_mesh(mesh_rid)) {
-					material_rid = mesh_storage->mesh_surface_get_material(mesh_rid, surf->surface_index);
-				}
-			}
-
-			uint16_t material_counter = material_storage->material_get_rt_invalidation_counter(material_rid);
-
-			RTMaterialData *mat_data = process_material(material_rid, material_counter);
 			sbt_offsets.push_back(mat_data->rt_sbt_offset);
 			material_data.push_back(mat_data->data);
 
@@ -1394,7 +1534,7 @@ void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data) {
 			if (mat_data->rt_sbt_offset > 0) {
 				// Custom shader: only enable any-hit if the shader uses alpha clip.
 				const SceneShaderRaytracing::CustomShaderEntry *cse =
-						SceneShaderRaytracing::get_singleton()->get_custom_shader_entry(mat_data->rt_sbt_offset);
+						rt_shader_singleton->get_custom_shader_entry(mat_data->rt_sbt_offset);
 				if (!cse || !cse->uses_alpha_clip) {
 					inst_flags |= RD::ACCELERATION_STRUCTURE_INSTANCE_FORCE_OPAQUE_BIT;
 				}
@@ -1617,25 +1757,7 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uin
 		return;
 	}
 
-	// === SET 0: Core raytracing bindings ===
-	// Binding layout (keep in sync with raytracing_common_inc.glsl, scene_raytracing_raygen.glsl,
-	// raytracing_samplers_inc.glsl and any hit-group shader headers):
-	//    0     Output image (rgba32f)
-	//    1     TLAS
-	//    2     SceneDataBlock (UBO, current + previous frame)
-	//    3     GeometryBuffer (SSBO)
-	//    4     MotionIndexBuffer (SSBO, int32 per TLAS instance; -1 = no motion)
-	//    5     MaterialBuffer (SSBO)
-	//    6     RaytracingParams (UBO, params + unjittered VP matrices)
-	//    7     radiance_octmap (texture2D)
-	//    8     radiance_sampler (sampler)
-	//    9-12  DLSS RR images (diffuse/specular albedo, normal-roughness, specular hit dist)
-	//    13    LightBuffer (SSBO)
-	//    14    Velocity output image (rg16f)
-	//    15    RT depth output image (r32f)
-	//    16-27 Default material samplers (currently 12 filter/repeat combinations)
-	//    28-31 Reserved for sampler-block growth (4 slots of headroom).
-	//    32    MotionTransforms (SSBO, compact per-moving-instance previous transforms)
+	// SET 0 indices must match raytracing_common_inc.glsl / scene_raytracing_raygen.glsl / samplers includes.
 	Vector<RD::Uniform> uniforms;
 
 	{
@@ -1690,9 +1812,7 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uin
 		uniforms.push_back(u);
 	}
 
-	// Binding 32: Compact motion transform buffer (only moving instances).
-	// Placed past a 4-slot reservation (28-31) so the sampler block at 16-27 has
-	// room to grow without colliding.
+	// Motion transforms past sampler block growth reservation (bindings 28-31).
 	{
 		RD::Uniform u;
 		u.binding = 32;

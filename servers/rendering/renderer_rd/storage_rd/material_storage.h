@@ -274,6 +274,7 @@ private:
 		// Same source preprocessed with `RT=1`. Set by `shader_set_code_rt`.
 		String code_rt;
 		uint64_t code_rt_hash = 0;
+		uint64_t code_rt_hash_b = 0; // 128 bit hash
 		String path_hint;
 		ShaderType type;
 		HashMap<StringName, HashMap<int, RID>> default_texture_parameter;
@@ -511,6 +512,7 @@ public:
 	// Falls back to raster code when no RT variant is set.
 	String material_get_shader_code_rt(RID p_material) const;
 	uint64_t material_get_shader_code_rt_hash(RID p_material) const;
+	uint64_t material_get_shader_code_rt_hash_b(RID p_material) const;
 
 	virtual void material_set_param(RID p_material, const StringName &p_param, const Variant &p_value) override;
 	virtual Variant material_get_param(RID p_material, const StringName &p_param) const override;

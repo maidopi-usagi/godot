@@ -63,7 +63,12 @@ void BindlessBlock::begin_frame() {
 	for (uint32_t i = 1; i < textures.size(); i++) {
 		if (!rd->texture_is_valid(textures[i])) {
 			textures[i] = default_texture;
-			free_indices.push_back(i);
+			if (free_indices_count < free_indices.size()) {
+				free_indices[free_indices_count] = i;
+			} else {
+				free_indices.push_back(i);
+			}
+			++free_indices_count;
 		} else {
 			texture_to_index[textures[i]] = i;
 		}
@@ -75,15 +80,17 @@ void BindlessBlock::begin_frame() {
 uint32_t BindlessBlock::add_texture(RID p_texture) {
 	ERR_FAIL_COND_V_MSG(!is_initialized(), 0, "BindlessBlock not initialized. Call initialize() first.");
 
-	if (!p_texture.is_valid()) {
-		return 0;
+	// Substitute null/stale RIDs with the default white texture.
+	if (!p_texture.is_valid() || !rd->texture_is_valid(p_texture)) {
+		p_texture = default_texture;
 	}
 
-	if (texture_to_index.has(p_texture)) {
-		return texture_to_index[p_texture];
+	HashMap<RID, uint32_t>::Iterator it = texture_to_index.find(p_texture);
+	if (it != texture_to_index.end()) {
+		return it->value;
 	}
 
-	if (textures.size() >= MAX_BINDLESS_TEXTURES && free_indices.is_empty()) {
+	if (textures.size() >= MAX_BINDLESS_TEXTURES && free_indices_count == 0) {
 		ERR_PRINT_ONCE("BindlessBlock: Maximum texture count exceeded. Using default texture.");
 		return 0;
 	}
@@ -93,9 +100,9 @@ uint32_t BindlessBlock::add_texture(RID p_texture) {
 	}
 
 	uint32_t index;
-	if (!free_indices.is_empty()) {
-		index = free_indices[free_indices.size() - 1];
-		free_indices.resize(free_indices.size() - 1);
+	if (free_indices_count > 0) {
+		--free_indices_count;
+		index = free_indices[free_indices_count];
 		textures[index] = p_texture;
 	} else {
 		index = textures.size();
@@ -145,6 +152,7 @@ void BindlessBlock::clear() {
 	textures.clear();
 	texture_to_index.clear();
 	free_indices.clear();
+	free_indices_count = 0;
 	rd = nullptr;
 }
 

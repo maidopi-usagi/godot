@@ -234,8 +234,6 @@ RD::PolygonCullMode SceneShaderRaytracing::ShaderData::get_cull_mode_from_cull_v
 }
 
 RID SceneShaderRaytracing::ShaderData::_get_shader_variant(ShaderVersion p_shader_version) const {
-	// For raytracing, we don't use rasterization shaders - return invalid RID
-	// The raygen shader is accessed via get_raygen_shader_variant() instead
 	return RID();
 }
 
@@ -275,7 +273,7 @@ uint64_t SceneShaderRaytracing::ShaderData::get_vertex_input_mask(PipelineVersio
 }
 
 bool SceneShaderRaytracing::ShaderData::is_valid() const {
-	// For raytracing: check raygen shader validity, not rasterization shader
+	// Validity follows raygen_version.
 	if (raygen_version.is_valid()) {
 		MutexLock lock(SceneShaderRaytracing::singleton_mutex);
 		ERR_FAIL_NULL_V(SceneShaderRaytracing::singleton, false);
@@ -294,7 +292,7 @@ SceneShaderRaytracing::ShaderData::ShaderData() :
 SceneShaderRaytracing::ShaderData::~ShaderData() {
 	pipeline_hash_map.clear_pipelines();
 
-	// For raytracing: only free raygen_version, not the rasterization shader version
+	// Tear down raygen only (no raster shader RID).
 	if (raygen_version.is_valid()) {
 		MutexLock lock(SceneShaderRaytracing::singleton_mutex);
 		ERR_FAIL_NULL(SceneShaderRaytracing::singleton);
@@ -307,8 +305,7 @@ Pair<ShaderRD *, RID> SceneShaderRaytracing::ShaderData::get_native_shader_and_v
 	if (SceneShaderRaytracing::singleton == nullptr) {
 		return Pair<ShaderRD *, RID>(nullptr, RID());
 	}
-	// For raytracing: return raygen shader instead of rasterization shader
-	return Pair<ShaderRD *, RID>(&SceneShaderRaytracing::singleton->raygen_shader, raygen_version);
+	return Pair<ShaderRD *, RID>(&SceneShaderRaytracing::singleton->raygen_shader, raygen_version); // Raygen pair for tooling.
 }
 
 RendererRD::MaterialStorage::ShaderData *SceneShaderRaytracing::_create_shader_func() {
@@ -327,9 +324,7 @@ void SceneShaderRaytracing::MaterialData::set_next_pass(RID p_pass) {
 }
 
 bool SceneShaderRaytracing::MaterialData::update_parameters(const HashMap<StringName, Variant> &p_parameters, bool p_uniform_dirty, bool p_textures_dirty) {
-	// For raytracing: We don't use material uniform sets with the rasterization pipeline
-	// Material parameters for RT would be handled differently (e.g., via shader binding table)
-	// For now, just return true to indicate parameters were "processed"
+	// RT path does not drive MaterialStorage uniform sets here.
 	return true;
 }
 
@@ -352,6 +347,7 @@ SceneShaderRaytracing::SceneShaderRaytracing() {
 }
 
 SceneShaderRaytracing::~SceneShaderRaytracing() {
+	_join_lane_for_shutdown();
 	invalidate_pipeline_bundles();
 
 	if (raygen_shader_version.is_valid()) {
@@ -362,6 +358,7 @@ SceneShaderRaytracing::~SceneShaderRaytracing() {
 }
 
 void SceneShaderRaytracing::invalidate_pipeline_bundles() {
+	// Bundles own HG + base_shader RIDs; free_rid is deferred-safe for in-flight frames.
 	for (KeyValue<uint32_t, PipelineBundle> &kv : pipeline_bundles) {
 		PipelineBundle &b = kv.value;
 		if (b.hit_sbt.is_valid()) {
@@ -370,53 +367,51 @@ void SceneShaderRaytracing::invalidate_pipeline_bundles() {
 		if (b.pipeline.is_valid()) {
 			RD::get_singleton()->free_rid(b.pipeline);
 		}
-		for (const RID &rid : b.owned_shaders) {
+		for (const RID &rid : b.per_hg_shaders) {
 			if (rid.is_valid()) {
 				RD::get_singleton()->free_rid(rid);
 			}
 		}
+		if (b.base_shader.is_valid()) {
+			RD::get_singleton()->free_rid(b.base_shader);
+		}
 	}
 	pipeline_bundles.clear();
+	variant_compile_contexts.clear();
 }
 
-void SceneShaderRaytracing::begin_custom_shader_frame() {
-	frame_custom_shaders.clear();
-	frame_shader_id_to_hg.clear();
-}
+// Async bundle rebuild task (worker: SPIR-V + pipeline; main thread: SBT + swap). Single-lane globally.
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
+struct SceneShaderRaytracing::PipelineBuildTask {
+	uint32_t rt_flags = 0;
 
-SceneShaderRaytracing::CacheState SceneShaderRaytracing::_resolve_cache(
-		uint32_t p_shader_id,
-		RID p_material,
-		uint64_t &r_code_hash,
-		HashMap<uint32_t, CustomShaderEntry>::Iterator &r_cache_it) {
-	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
-	r_code_hash = material_storage->material_get_shader_code_rt_hash(p_material);
-	if (r_code_hash == 0) {
-		return CACHE_NO_SOURCE;
-	}
+	RID base_shader;
+	Vector<RD::PipelineSpecializationConstant> spec_constants;
+	Vector<RD::ShaderStageSPIRVData> base_non_hit_stages;
+	RD::ShaderStageSPIRVData base_any_hit_stage;
+	bool base_any_hit_valid = false;
 
-	r_cache_it = compilation_cache.find(p_shader_id);
-	if (r_cache_it == compilation_cache.end() || r_cache_it->value.source_hash != r_code_hash) {
-		return CACHE_NOT_STARTED;
-	}
-	if (r_cache_it->value.failed) {
-		return CACHE_HIT_FAILED;
-	}
-	return CACHE_HIT_VALID;
-}
+	struct SlotInput {
+		RID existing_per_hg_shader;
+		bool needs_compile = false;
+		bool uses_alpha_clip = false;
+		bool is_procedural = false;
+		String ch_src;
+		String ah_src;
+		String is_src;
+	};
+	LocalVector<SlotInput> slots;
 
-void SceneShaderRaytracing::_record_failure(uint32_t p_shader_id, uint64_t p_code_hash, bool p_is_procedural) {
-	CustomShaderEntry failed_entry;
-	failed_entry.source_hash = p_code_hash;
-	failed_entry.is_procedural = p_is_procedural;
-	failed_entry.failed = true;
-	compilation_cache[p_shader_id] = failed_entry;
-	frame_shader_id_to_hg[p_shader_id] = 0;
-}
+	LocalVector<RID> new_per_hg_shaders;
+	LocalVector<bool> new_ready_mask;
+	RID new_pipeline;
+	bool failed = false;
+	String error;
+
+	SafeFlag abort_requested;
+	SafeFlag done;
+	WorkerThreadPool::TaskID worker_id = WorkerThreadPool::INVALID_TASK_ID;
+};
 
 void SceneShaderRaytracing::_strip_texture_globals(String &r_globals, const String &p_tex_name) {
 	const String decl_marker = " m_" + p_tex_name + ";";
@@ -490,189 +485,158 @@ void SceneShaderRaytracing::_finalize_uniforms_with_textures(
 	}
 }
 
-// ---------------------------------------------------------------------------
-// register_custom_shader: triangle-geometry materials (vertex + fragment)
-// ---------------------------------------------------------------------------
+// Slot table: append-only by 128-bit source hash (stable across reloads).
 
-uint32_t SceneShaderRaytracing::register_custom_shader(uint32_t p_shader_id, RID p_material) {
-	HashMap<uint32_t, uint32_t>::Iterator it = frame_shader_id_to_hg.find(p_shader_id);
-	if (it != frame_shader_id_to_hg.end()) {
-		return it->value;
-	}
-
-	uint64_t code_hash = 0;
-	HashMap<uint32_t, CustomShaderEntry>::Iterator cache_it;
-	const CacheState state = _resolve_cache(p_shader_id, p_material, code_hash, cache_it);
-	if (state == CACHE_NO_SOURCE || state == CACHE_HIT_FAILED) {
-		frame_shader_id_to_hg[p_shader_id] = 0;
-		return 0;
-	}
-
-	if (state == CACHE_NOT_STARTED) {
-		String code = RendererRD::MaterialStorage::get_singleton()->material_get_shader_code_rt(p_material);
-		if (code.is_empty()) {
-			_record_failure(p_shader_id, code_hash, false);
-			return 0;
-		}
-
-		ShaderCompiler::IdentifierActions actions;
-		actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_VERTEX;
-		actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_FRAGMENT;
-
-		bool detected_alpha_clip = false;
-		actions.usage_flag_pointers["ALPHA_SCISSOR_THRESHOLD"] = &detected_alpha_clip;
-		actions.usage_flag_pointers["ALPHA_HASH_SCALE"] = &detected_alpha_clip;
-
-		HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> uniform_sink;
-		actions.uniforms = &uniform_sink;
-
-		ShaderCompiler::GeneratedCode gen_code;
-		Error err = compiler.compile(RSE::SHADER_SPATIAL, code, &actions, String(), gen_code);
-		if (err != OK) {
-			WARN_PRINT(vformat("RT: Failed to compile custom shader (shader_id=%d). Falling back to standard material; will not retry until source changes.", p_shader_id));
-			_record_failure(p_shader_id, code_hash, false);
-			return 0;
-		}
-
-		CustomShaderEntry entry;
-		entry.source_hash = code_hash;
-		entry.uses_alpha_clip = detected_alpha_clip;
-		entry.vertex_code = gen_code.code.has("vertex") ? gen_code.code["vertex"] : String();
-		entry.fragment_code = gen_code.code.has("fragment") ? gen_code.code["fragment"] : String();
-		entry.fragment_globals = gen_code.stage_globals[ShaderCompiler::STAGE_FRAGMENT];
-		entry.uniform_members = gen_code.uniforms;
-		entry.uniform_total_size = gen_code.uniform_total_size;
-		entry.uniform_offsets = gen_code.uniform_offsets;
-		entry.uniforms = uniform_sink;
-		_finalize_uniforms_with_textures(entry, gen_code, uniform_sink, /*strip_intersection_globals=*/false);
-
-		if (cache_it != compilation_cache.end()) {
-			cache_it->value = entry;
-		} else {
-			cache_it = compilation_cache.insert(p_shader_id, entry);
-		}
-	}
-
-	if (cache_it->value.fragment_code.is_empty() && cache_it->value.vertex_code.is_empty()) {
-		frame_shader_id_to_hg[p_shader_id] = 0;
-		return 0;
-	}
-
-	uint32_t hg_index = frame_custom_shaders.size() + 1;
-	frame_custom_shaders.push_back(cache_it->value);
-	frame_shader_id_to_hg[p_shader_id] = hg_index;
-	return hg_index;
+uint32_t SceneShaderRaytracing::register_custom_shader(uint32_t /*p_shader_id*/, RID p_material) {
+	return _register_slot(/*p_shader_id*/ 0, p_material, /*p_is_procedural=*/false);
 }
 
-// ---------------------------------------------------------------------------
-// register_procedural_shader: AABB / intersection-shader materials
-// ---------------------------------------------------------------------------
+uint32_t SceneShaderRaytracing::register_procedural_shader(uint32_t /*p_shader_id*/, RID p_material) {
+	return _register_slot(/*p_shader_id*/ 0, p_material, /*p_is_procedural=*/true);
+}
 
-uint32_t SceneShaderRaytracing::register_procedural_shader(uint32_t p_shader_id, RID p_material) {
-	HashMap<uint32_t, uint32_t>::Iterator it = frame_shader_id_to_hg.find(p_shader_id);
-	if (it != frame_shader_id_to_hg.end()) {
+uint32_t SceneShaderRaytracing::_register_slot(uint32_t /*p_shader_id*/, RID p_material, bool p_is_procedural) {
+	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
+	SourceHash128 hash;
+	hash.a = material_storage->material_get_shader_code_rt_hash(p_material);
+	hash.b = material_storage->material_get_shader_code_rt_hash_b(p_material);
+	if (hash.is_zero()) {
+		return 0;
+	}
+
+	HashMap<SourceHash128, uint32_t, SourceHash128Hasher>::Iterator it = source_hash_to_slot.find(hash);
+	if (it != source_hash_to_slot.end()) {
 		return it->value;
 	}
 
-	uint64_t code_hash = 0;
-	HashMap<uint32_t, CustomShaderEntry>::Iterator cache_it;
-	const CacheState state = _resolve_cache(p_shader_id, p_material, code_hash, cache_it);
-	if (state == CACHE_NO_SOURCE || state == CACHE_HIT_FAILED) {
-		frame_shader_id_to_hg[p_shader_id] = 0;
+	// New slot: preprocess here; heavy compile is on worker.
+	CustomShaderEntry entry;
+	entry.is_procedural = p_is_procedural;
+	if (!_preprocess_shader(p_material, p_is_procedural, entry)) {
+		// Failed slot still occupies an index so hash lookups stay stable.
+		HitGroupSlot failed_slot;
+		failed_slot.source_hash = hash;
+		failed_slot.state = HGState::Failed;
+		uint32_t failed_index = (uint32_t)hit_group_slots.size();
+		hit_group_slots.push_back(failed_slot);
+		source_hash_to_slot.insert(hash, failed_index);
+		for (KeyValue<uint32_t, PipelineBundle> &kv : pipeline_bundles) {
+			_bundle_resize_for_slots(kv.value);
+			kv.value.per_hg_states[failed_index] = HGState::Failed;
+		}
+		return 0;
+	}
+	// Empty custom HG source uses slot 0 (default).
+	if (!p_is_procedural && entry.fragment_code.is_empty() && entry.vertex_code.is_empty()) {
+		return 0;
+	}
+	if (p_is_procedural && entry.intersection_code.is_empty()) {
 		return 0;
 	}
 
-	if (state == CACHE_NOT_STARTED) {
-		String code = RendererRD::MaterialStorage::get_singleton()->material_get_shader_code_rt(p_material);
-		if (code.is_empty()) {
-			_record_failure(p_shader_id, code_hash, true);
-			return 0;
-		}
+	HitGroupSlot slot;
+	slot.source_hash = hash;
+	slot.state = HGState::Ready;
+	slot.entry = entry;
+	uint32_t slot_index = (uint32_t)hit_group_slots.size();
+	hit_group_slots.push_back(slot);
+	source_hash_to_slot.insert(hash, slot_index);
 
-		ShaderCompiler::IdentifierActions actions;
-		actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_VERTEX;
-		actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_FRAGMENT;
+	for (KeyValue<uint32_t, PipelineBundle> &kv : pipeline_bundles) {
+		PipelineBundle &bundle = kv.value;
+		_bundle_resize_for_slots(bundle);
+		bundle.dirty = true;
+	}
+
+	return slot_index;
+}
+
+bool SceneShaderRaytracing::_preprocess_shader(RID p_material, bool p_is_procedural, CustomShaderEntry &r_entry) {
+	String code = RendererRD::MaterialStorage::get_singleton()->material_get_shader_code_rt(p_material);
+	if (code.is_empty()) {
+		return false;
+	}
+
+	ShaderCompiler::IdentifierActions actions;
+	actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_VERTEX;
+	actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_FRAGMENT;
+	if (p_is_procedural) {
 		actions.entry_point_stages["light"] = ShaderCompiler::STAGE_FRAGMENT;
 		actions.entry_point_stages["intersection"] = ShaderCompiler::STAGE_INTERSECTION;
-
-		bool detected_alpha_clip = false;
-		actions.usage_flag_pointers["ALPHA_SCISSOR_THRESHOLD"] = &detected_alpha_clip;
-		actions.usage_flag_pointers["ALPHA_HASH_SCALE"] = &detected_alpha_clip;
-
-		HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> uniform_sink;
-		actions.uniforms = &uniform_sink;
-
-		ShaderCompiler::GeneratedCode gen_code;
-		Error err = compiler.compile(RSE::SHADER_SPATIAL, code, &actions, String(), gen_code);
-		if (err != OK) {
-			WARN_PRINT(vformat("RT: Failed to compile procedural shader (shader_id=%d). Skipping; will not retry until source changes.", p_shader_id));
-			_record_failure(p_shader_id, code_hash, true);
-			return 0;
-		}
-
-		CustomShaderEntry entry;
-		entry.source_hash = code_hash;
-		entry.is_procedural = true;
-		entry.uses_alpha_clip = detected_alpha_clip;
-		entry.intersection_code = gen_code.code.has("intersection") ? gen_code.code["intersection"] : String();
-		entry.intersection_globals = gen_code.stage_globals[ShaderCompiler::STAGE_INTERSECTION];
-		entry.fragment_code = gen_code.code.has("fragment") ? gen_code.code["fragment"] : String();
-		entry.fragment_globals = gen_code.stage_globals[ShaderCompiler::STAGE_FRAGMENT];
-		entry.uniform_members = gen_code.uniforms;
-		entry.uniform_total_size = gen_code.uniform_total_size;
-		entry.uniform_offsets = gen_code.uniform_offsets;
-		entry.uniforms = uniform_sink;
-		_finalize_uniforms_with_textures(entry, gen_code, uniform_sink, /*strip_intersection_globals=*/true);
-
-		if (cache_it != compilation_cache.end()) {
-			cache_it->value = entry;
-		} else {
-			cache_it = compilation_cache.insert(p_shader_id, entry);
-		}
 	}
 
-	if (cache_it->value.intersection_code.is_empty()) {
-		frame_shader_id_to_hg[p_shader_id] = 0;
-		return 0;
+	bool detected_alpha_clip = false;
+	actions.usage_flag_pointers["ALPHA_SCISSOR_THRESHOLD"] = &detected_alpha_clip;
+	actions.usage_flag_pointers["ALPHA_HASH_SCALE"] = &detected_alpha_clip;
+
+	HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> uniform_sink;
+	actions.uniforms = &uniform_sink;
+
+	ShaderCompiler::GeneratedCode gen_code;
+	Error err = compiler.compile(RSE::SHADER_SPATIAL, code, &actions, String(), gen_code);
+	if (err != OK) {
+		WARN_PRINT(vformat("RT: Failed to preprocess %s shader; falling back to default material.",
+				p_is_procedural ? String("procedural") : String("custom")));
+		return false;
 	}
 
-	uint32_t hg_index = frame_custom_shaders.size() + 1;
-	frame_custom_shaders.push_back(cache_it->value);
-	frame_shader_id_to_hg[p_shader_id] = hg_index;
-	return hg_index;
+	r_entry.is_procedural = p_is_procedural;
+	r_entry.uses_alpha_clip = detected_alpha_clip;
+	r_entry.vertex_code = gen_code.code.has("vertex") ? gen_code.code["vertex"] : String();
+	r_entry.fragment_code = gen_code.code.has("fragment") ? gen_code.code["fragment"] : String();
+	r_entry.fragment_globals = gen_code.stage_globals[ShaderCompiler::STAGE_FRAGMENT];
+	if (p_is_procedural) {
+		r_entry.intersection_code = gen_code.code.has("intersection") ? gen_code.code["intersection"] : String();
+		r_entry.intersection_globals = gen_code.stage_globals[ShaderCompiler::STAGE_INTERSECTION];
+	}
+	r_entry.uniform_members = gen_code.uniforms;
+	r_entry.uniform_total_size = gen_code.uniform_total_size;
+	r_entry.uniform_offsets = gen_code.uniform_offsets;
+	r_entry.uniforms = uniform_sink;
+	_finalize_uniforms_with_textures(r_entry, gen_code, uniform_sink, /*strip_intersection_globals=*/p_is_procedural);
+	return true;
 }
 
 void SceneShaderRaytracing::finalize_custom_shaders() {
-	bool any_procedural = false;
-	uint64_t new_hash = 0;
-	for (uint32_t i = 0; i < frame_custom_shaders.size(); i++) {
-		new_hash = hash_djb2_one_64(frame_custom_shaders[i].vertex_code.hash64(), new_hash);
-		new_hash = hash_djb2_one_64(frame_custom_shaders[i].fragment_code.hash64(), new_hash);
-		new_hash = hash_djb2_one_64(frame_custom_shaders[i].fragment_globals.hash64(), new_hash);
-		new_hash = hash_djb2_one_64(frame_custom_shaders[i].uniform_members.hash64(), new_hash);
-		new_hash = hash_djb2_one_64(frame_custom_shaders[i].uses_alpha_clip ? 1 : 0, new_hash);
-		new_hash = hash_djb2_one_64(frame_custom_shaders[i].intersection_code.hash64(), new_hash);
-		new_hash = hash_djb2_one_64(frame_custom_shaders[i].intersection_globals.hash64(), new_hash);
-		new_hash = hash_djb2_one_64(frame_custom_shaders[i].is_procedural ? 1 : 0, new_hash);
-		any_procedural = any_procedural || frame_custom_shaders[i].is_procedural;
-	}
+	async_compilation_enabled = GLOBAL_GET_CACHED(bool, "rendering/pathtracer/async_shader_compilation");
 
-	if (any_procedural != has_intersection_shaders) {
-		has_intersection_shaders = any_procedural;
-	}
+	_kick_rebuild_if_idle(); // Async dispatch only; sync drains below.
 
-	if (new_hash != active_custom_shaders_hash || frame_custom_shaders.size() != active_custom_shaders.size()) {
-		active_custom_shaders = frame_custom_shaders;
-		active_custom_shaders_hash = new_hash;
-		invalidate_pipeline_bundles();
+	if (!async_compilation_enabled) {
+		_drain_lane_inline_main_thread();
 	}
 }
 
-const SceneShaderRaytracing::CustomShaderEntry *SceneShaderRaytracing::get_custom_shader_entry(uint32_t p_hg_index) const {
-	if (p_hg_index == 0 || p_hg_index > frame_custom_shaders.size()) {
+const SceneShaderRaytracing::CustomShaderEntry *SceneShaderRaytracing::get_custom_shader_entry(uint32_t p_slot_index) const {
+	if (p_slot_index == 0 || p_slot_index >= hit_group_slots.size()) {
 		return nullptr;
 	}
-	return &frame_custom_shaders[p_hg_index - 1];
+	const HitGroupSlot &slot = hit_group_slots[p_slot_index];
+	if (slot.state == HGState::Failed) {
+		return nullptr;
+	}
+	return &slot.entry;
+}
+
+bool SceneShaderRaytracing::is_hg_ready_in_bundle(uint32_t p_slot_index, uint32_t p_rt_flags) const {
+	if (p_slot_index == 0) {
+		return true;
+	}
+	if (p_slot_index >= hit_group_slots.size()) {
+		return false;
+	}
+	HashMap<uint32_t, PipelineBundle>::ConstIterator it = pipeline_bundles.find(p_rt_flags);
+	if (it == pipeline_bundles.end()) {
+		return false;
+	}
+	const PipelineBundle &b = it->value;
+	if (p_slot_index >= b.live_hg_count) {
+		return false;
+	}
+	if (p_slot_index >= b.live_ready_mask.size()) {
+		return false;
+	}
+	return b.live_ready_mask[p_slot_index];
 }
 
 uint32_t SceneShaderRaytracing::compute_rt_flags(const float *p_env_params, bool p_fog_enabled) {
@@ -712,22 +676,19 @@ SceneShaderRaytracing *SceneShaderRaytracing::get_singleton() {
 	return singleton;
 }
 
-const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipeline_bundle(uint32_t p_rt_flags) {
-	static const PipelineBundle EMPTY_BUNDLE;
+// Per-rt_flags base SPIR-V + HG templates (immutable cache for worker tasks).
 
-	HashMap<uint32_t, PipelineBundle>::Iterator it = pipeline_bundles.find(p_rt_flags);
-	if (it != pipeline_bundles.end()) {
-		return it->value;
+bool SceneShaderRaytracing::_ensure_variant_compile_context(uint32_t p_rt_flags) {
+	if (variant_compile_contexts.has(p_rt_flags)) {
+		return true;
 	}
-
-	ERR_FAIL_COND_V(!raygen_shader_version.is_valid(), EMPTY_BUNDLE);
+	ERR_FAIL_COND_V(!raygen_shader_version.is_valid(), false);
 
 	int variant = (int)_raygen_variant_from_rt_flags(p_rt_flags);
 
 	Vector<String> sources = raygen_shader.version_build_variant_stage_sources(raygen_shader_version, variant);
-	ERR_FAIL_COND_V(sources.is_empty(), EMPTY_BUNDLE);
+	ERR_FAIL_COND_V(sources.is_empty(), false);
 
-	// Helper: inject a #define into the line after #version in every non-empty stage source.
 	auto inject_define = [](Vector<String> &p_sources, const String &p_define) {
 		for (int i = 0; i < p_sources.size(); i++) {
 			if (p_sources[i].is_empty()) {
@@ -743,281 +704,731 @@ const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipel
 		}
 	};
 
-	// Procedural instances need full HitAttribs (normal/tangent).
-	if (has_intersection_shaders) {
-		inject_define(sources, "#define ENABLE_INTERSECTION_SHADERS\n");
-	}
+	// Fixed intersection hit-attribute layout for all variants (keeps base_shader layout stable).
+	inject_define(sources, "#define ENABLE_INTERSECTION_SHADERS\n");
 
-	// Debug pipeline variants: inject RT_DEBUG_ENABLED to include debug_visualize code.
 	if (p_rt_flags & RT_FLAG_DEBUG_VIS_ENABLED) {
 		inject_define(sources, "#define RT_DEBUG_ENABLED\n");
 	}
 
-	// Save intersection source as template for procedural HGs; clear it from
-	// the base so HG0 stays a triangle hit group.
+	// Procedural templates come from intersection stage; strip from base HG0 path.
 	String intersection_source_template;
 	if (sources.size() > RD::SHADER_STAGE_INTERSECTION) {
 		intersection_source_template = sources[RD::SHADER_STAGE_INTERSECTION];
 		sources.write[RD::SHADER_STAGE_INTERSECTION] = String();
 	}
 
-	Vector<RD::ShaderStageSPIRVData> base_stages = ShaderRD::compile_stages(sources, {});
-	ERR_FAIL_COND_V(base_stages.is_empty(), EMPTY_BUNDLE);
+	String base_ch_src = sources[RD::SHADER_STAGE_CLOSEST_HIT];
+	String base_ah_src = sources[RD::SHADER_STAGE_ANY_HIT];
+	ERR_FAIL_COND_V(base_ch_src.is_empty(), false);
+	ERR_FAIL_COND_V(base_ah_src.is_empty(), false);
+
+	static const String custom_hg_define = "#define RT_CUSTOM_HIT_GROUP\n";
+	int base_ch_ver = base_ch_src.find("#version");
+	int base_ah_ver = base_ah_src.find("#version");
+	ERR_FAIL_COND_V(base_ch_ver < 0 || base_ah_ver < 0, false);
+
+	VariantCompileContext ctx;
+	ctx.ch_template = base_ch_src.insert(base_ch_src.find("\n", base_ch_ver) + 1, custom_hg_define);
+	ctx.ah_template = base_ah_src.insert(base_ah_src.find("\n", base_ah_ver) + 1, custom_hg_define);
+	if (!intersection_source_template.is_empty()) {
+		int base_is_ver = intersection_source_template.find("#version");
+		if (base_is_ver >= 0) {
+			ctx.is_template = intersection_source_template.insert(intersection_source_template.find("\n", base_is_ver) + 1, custom_hg_define);
+		}
+	}
+
+	// Full base stages; CH/AH SPIR-V is HG0 default; RG+miss duplicated into each HG bytecode.
+	Vector<RD::ShaderStageSPIRVData> base_stages;
+	{
+		MutexLock lock(spirv_compile_mutex);
+		base_stages = ShaderRD::compile_stages(sources, {});
+	}
+	ERR_FAIL_COND_V(base_stages.is_empty(), false);
+
+	for (const RD::ShaderStageSPIRVData &sd : base_stages) {
+		if (sd.shader_stage == RD::SHADER_STAGE_RAYGEN || sd.shader_stage == RD::SHADER_STAGE_MISS) {
+			ctx.base_non_hit_stages.push_back(sd);
+		} else if (sd.shader_stage == RD::SHADER_STAGE_ANY_HIT) {
+			ctx.base_any_hit_stage = sd;
+			ctx.base_any_hit_valid = true;
+		}
+	}
+
+	variant_compile_contexts.insert(p_rt_flags, ctx);
+
+	// Creates layout-defining base_shader RID for uniform sets (immutable per variant).
+	HashMap<uint32_t, PipelineBundle>::Iterator bit = pipeline_bundles.find(p_rt_flags);
+	if (bit != pipeline_bundles.end() && bit->value.base_shader.is_valid()) {
+		return true;
+	}
+
+	Vector<uint8_t> base_binary;
+	{
+		MutexLock lock(spirv_compile_mutex);
+		base_binary = RD::get_singleton()->shader_compile_binary_from_spirv(base_stages, "RT_base");
+	}
+	ERR_FAIL_COND_V(base_binary.is_empty(), false);
+
+	RID base_shader_rd = RD::get_singleton()->shader_create_from_bytecode(base_binary);
+	ERR_FAIL_COND_V(!base_shader_rd.is_valid(), false);
+
+	PipelineBundle &bundle = pipeline_bundles[p_rt_flags];
+	bundle.base_shader = base_shader_rd;
+	_bundle_resize_for_slots(bundle);
+	if (!bundle.per_hg_states.is_empty()) {
+		bundle.per_hg_states[0] = HGState::Ready;
+	}
+
+	return true;
+}
+
+void SceneShaderRaytracing::_bundle_resize_for_slots(PipelineBundle &r_bundle) {
+	uint32_t n = (uint32_t)hit_group_slots.size();
+	uint32_t old = (uint32_t)r_bundle.per_hg_states.size();
+	if (old == n) {
+		return;
+	}
+	r_bundle.per_hg_states.resize(n);
+	r_bundle.per_hg_shaders.resize(n);
+	for (uint32_t i = old; i < n; i++) {
+		r_bundle.per_hg_states[i] = HGState::Empty;
+		r_bundle.per_hg_shaders[i] = RID();
+	}
+	if (n > 0 && r_bundle.base_shader.is_valid()) {
+		r_bundle.per_hg_states[0] = HGState::Ready;
+	}
+}
+
+const SceneShaderRaytracing::PipelineBundle &SceneShaderRaytracing::ensure_pipeline_bundle(uint32_t p_rt_flags) {
+	static PipelineBundle EMPTY_BUNDLE;
+
+	HashMap<uint32_t, PipelineBundle>::Iterator it = pipeline_bundles.find(p_rt_flags);
+	if (it != pipeline_bundles.end() && it->value.initial_pipeline_built) {
+		return it->value;
+	}
+
+	if (!_ensure_variant_compile_context(p_rt_flags)) {
+		WARN_PRINT(vformat("RT: Failed to build base compile context for variant 0x%x.", p_rt_flags));
+		return EMPTY_BUNDLE;
+	}
+
+	PipelineBundle &bundle = pipeline_bundles[p_rt_flags];
+	_bundle_resize_for_slots(bundle);
+
+	// Sync bootstrap: HG0-only pipeline + SBT on render thread; dirty if extra slots exist.
+	if (!_build_initial_bundle(p_rt_flags, bundle)) {
+		return EMPTY_BUNDLE;
+	}
+	if (hit_group_slots.size() > 1) {
+		bundle.dirty = true;
+	}
+	bundle.initial_pipeline_built = true;
+	return bundle;
+}
+
+// Minimal HG0 + empty sentinel pipeline/SBT for first use of a variant.
+
+bool SceneShaderRaytracing::_build_initial_bundle(uint32_t p_rt_flags, PipelineBundle &r_bundle) {
+	if (!r_bundle.base_shader.is_valid()) {
+		return false;
+	}
 
 	Vector<RD::PipelineSpecializationConstant> spec_constants;
 	{
 		RD::PipelineSpecializationConstant sc;
 		sc.constant_id = 0;
 		sc.type = RD::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_INT;
-		sc.int_value = p_rt_flags;
+		sc.int_value = (int)p_rt_flags;
 		spec_constants.push_back(sc);
 	}
 
-	// Build a single combined shader from all base RT stages so they share one descriptor layout.
-	Vector<uint8_t> base_binary = RD::get_singleton()->shader_compile_binary_from_spirv(base_stages, "RT_base");
-	ERR_FAIL_COND_V(base_binary.is_empty(), EMPTY_BUNDLE);
+	RD::PipelineShader base_ps = { r_bundle.base_shader, spec_constants };
+	RD::HitGroup hg0_default;
+	hg0_default.closest_hit_shader = base_ps;
+	hg0_default.any_hit_shader = base_ps;
+	const RD::HitGroup empty_hg;
 
-	RID base_shader_rd = RD::get_singleton()->shader_create_from_bytecode(base_binary);
-	ERR_FAIL_COND_V(!base_shader_rd.is_valid(), EMPTY_BUNDLE);
-
-	PipelineBundle bundle;
-	bundle.base_shader = base_shader_rd;
-	bundle.owned_shaders.push_back(base_shader_rd);
-
-	RD::PipelineShader base_ps = { base_shader_rd, spec_constants };
-
-	// HG0 = default material hit group.
+	// HG[0]=default, HG[1]=empty until rebuild maps custom slots.
 	LocalVector<RD::HitGroup> hit_groups;
-	{
-		RD::HitGroup hg0;
-		hg0.closest_hit_shader = base_ps;
-		hg0.any_hit_shader = base_ps;
-		hit_groups.push_back(hg0);
-	}
+	hit_groups.push_back(hg0_default);
+	hit_groups.push_back(empty_hg);
 
-	// Custom shader hit groups (HG1..HGN).
-	if (!active_custom_shaders.is_empty()) {
-		String base_ch_src = sources[RD::SHADER_STAGE_CLOSEST_HIT];
-		String base_ah_src = sources[RD::SHADER_STAGE_ANY_HIT];
-		ERR_FAIL_COND_V(base_ch_src.is_empty(), EMPTY_BUNDLE);
-		ERR_FAIL_COND_V(base_ah_src.is_empty(), EMPTY_BUNDLE);
-
-		// Collect base raygen + miss SPIRV so custom HG binaries include all stages.
-		// Without this, the custom shader's set_formats won't match (different stages bits).
-		Vector<RD::ShaderStageSPIRVData> base_non_hit_stages;
-		for (const RD::ShaderStageSPIRVData &sd : base_stages) {
-			if (sd.shader_stage == RD::SHADER_STAGE_RAYGEN || sd.shader_stage == RD::SHADER_STAGE_MISS) {
-				base_non_hit_stages.push_back(sd);
-			}
-		}
-
-		static const String custom_hg_define = "#define RT_CUSTOM_HIT_GROUP\n";
-		int base_ch_ver = base_ch_src.find("#version");
-		int base_ah_ver = base_ah_src.find("#version");
-		ERR_FAIL_COND_V(base_ch_ver < 0 || base_ah_ver < 0, EMPTY_BUNDLE);
-
-		String ch_template = base_ch_src.insert(base_ch_src.find("\n", base_ch_ver) + 1, custom_hg_define);
-		String ah_template = base_ah_src.insert(base_ah_src.find("\n", base_ah_ver) + 1, custom_hg_define);
-
-		RD::HitGroup hg0_fallback;
-		hg0_fallback.closest_hit_shader = base_ps;
-		hg0_fallback.any_hit_shader = base_ps;
-
-		// Prepare intersection source template for procedural HGs.
-		String is_template;
-		if (!intersection_source_template.is_empty()) {
-			int base_is_ver = intersection_source_template.find("#version");
-			if (base_is_ver >= 0) {
-				is_template = intersection_source_template.insert(intersection_source_template.find("\n", base_is_ver) + 1, custom_hg_define);
-			}
-		}
-
-		String error;
-		for (uint32_t hg_i = 0; hg_i < active_custom_shaders.size(); hg_i++) {
-			const CustomShaderEntry &entry = active_custom_shaders[hg_i];
-
-			String tex_defines;
-			for (int ti = 0; ti < entry.texture_uniforms.size(); ti++) {
-				const TextureUniformInfo &tui = entry.texture_uniforms[ti];
-				tex_defines += "#define m_" + tui.name + " bindless_textures[nonuniformEXT(material.m_" + tui.name + ")]\n";
-			}
-			String uniform_members = entry.uniform_members.is_empty() ? "float _rt_pad;" : entry.uniform_members;
-
-			String vertex_function;
-			String vertex_call;
-			if (!entry.vertex_code.is_empty()) {
-				vertex_function = "void rt_run_vertex_shader() {\n" + entry.vertex_code + "\n}\n";
-				vertex_call = "rt_run_vertex_shader();";
-			}
-
-			// Procedural without custom fragment: fall back to standard material eval.
-			String fragment_code = entry.fragment_code;
-			if (fragment_code.is_empty() && entry.is_procedural) {
-				fragment_code =
-						"vec2 mat_uv = uv_interp * rt_mat.uv1_scale + rt_mat.uv1_offset;\n"
-						"vec4 albedo_tex = sample_material_texture(rt_mat.albedo_texture_idx, mat_uv, rt_mat.flags);\n"
-						"albedo = albedo_tex.rgb * rt_mat.albedo_color.rgb;\n"
-						"alpha = albedo_tex.a * rt_mat.albedo_color.a;\n"
-						"vec3 orm = sample_material_texture(rt_mat.orm_texture_idx, mat_uv, rt_mat.flags).rgb;\n"
-						"roughness = orm.g * rt_mat.roughness;\n"
-						"metallic = orm.b * rt_mat.metallic;\n"
-						"if ((rt_mat.flags & 1u) != 0u) {\n"
-						"    normal_map = sample_material_texture(rt_mat.normal_texture_idx, mat_uv, rt_mat.flags).rgb;\n"
-						"    normal_map_depth = rt_mat.normal_map_depth;\n"
-						"}\n"
-						"if ((rt_mat.flags & 2u) != 0u) {\n"
-						"    emission = sample_material_texture(rt_mat.emission_texture_idx, mat_uv, rt_mat.flags).rgb\n"
-						"             * rt_mat.emission_color * rt_mat.emission_strength;\n"
-						"}\n";
-			}
-
-			String ch_src = ch_template;
-			ch_src = ch_src.replace("/* RT_CUSTOM_FRAGMENT_GLOBALS */", entry.fragment_globals);
-			ch_src = ch_src.replace("/* RT_CUSTOM_FRAGMENT_CODE */", fragment_code);
-			ch_src = ch_src.replace("/* RT_CUSTOM_UNIFORM_MEMBERS */", uniform_members);
-			ch_src = ch_src.replace("/* RT_CUSTOM_TEXTURE_DEFINES */", tex_defines);
-			ch_src = ch_src.replace("/* RT_CUSTOM_VERTEX_FUNCTION */", vertex_function);
-			ch_src = ch_src.replace("/* RT_CUSTOM_VERTEX_CALL */", vertex_call);
-
-			Vector<uint8_t> ch_spirv = RD::get_singleton()->shader_compile_spirv_from_source(
-					RD::SHADER_STAGE_CLOSEST_HIT, ch_src, RD::SHADER_LANGUAGE_GLSL, &error);
-			if (ch_spirv.is_empty()) {
-				WARN_PRINT("Failed to compile HG" + itos(hg_i + 1) + " closest_hit, falling back to default material: " + error);
-				_dump_failed_shader(ch_src, "hg" + itos(hg_i + 1) + "_closest_hit");
-				hit_groups.push_back(hg0_fallback);
-				continue;
-			}
-
-			// Include base raygen + miss so per-HG shader matches base `stages` bits.
-			Vector<RD::ShaderStageSPIRVData> custom_stages = base_non_hit_stages;
-			{
-				RD::ShaderStageSPIRVData sd;
-				sd.shader_stage = RD::SHADER_STAGE_CLOSEST_HIT;
-				sd.spirv = ch_spirv;
-				custom_stages.push_back(sd);
-			}
-
-			if (entry.uses_alpha_clip) {
-				String ah_src = ah_template;
-				ah_src = ah_src.replace("/* RT_CUSTOM_FRAGMENT_GLOBALS */", entry.fragment_globals);
-				ah_src = ah_src.replace("/* RT_CUSTOM_FRAGMENT_CODE */", fragment_code);
-				ah_src = ah_src.replace("/* RT_CUSTOM_UNIFORM_MEMBERS */", uniform_members);
-				ah_src = ah_src.replace("/* RT_CUSTOM_TEXTURE_DEFINES */", tex_defines);
-				ah_src = ah_src.replace("/* RT_CUSTOM_VERTEX_FUNCTION */", vertex_function);
-				ah_src = ah_src.replace("/* RT_CUSTOM_VERTEX_CALL */", vertex_call);
-
-				Vector<uint8_t> ah_spirv = RD::get_singleton()->shader_compile_spirv_from_source(
-						RD::SHADER_STAGE_ANY_HIT, ah_src, RD::SHADER_LANGUAGE_GLSL, &error);
-				if (ah_spirv.is_empty()) {
-					WARN_PRINT("Failed to compile HG" + itos(hg_i + 1) + " any_hit, falling back to default material: " + error);
-					_dump_failed_shader(ah_src, "hg" + itos(hg_i + 1) + "_any_hit");
-					hit_groups.push_back(hg0_fallback);
-					continue;
-				}
-
-				RD::ShaderStageSPIRVData sd;
-				sd.shader_stage = RD::SHADER_STAGE_ANY_HIT;
-				sd.spirv = ah_spirv;
-				custom_stages.push_back(sd);
-			} else {
-				// Include base any_hit SPIRV for consistent stage reflection.
-				for (const RD::ShaderStageSPIRVData &sd : base_stages) {
-					if (sd.shader_stage == RD::SHADER_STAGE_ANY_HIT) {
-						custom_stages.push_back(sd);
-						break;
-					}
-				}
-			}
-
-			// Procedural HG: add intersection stage. Driver auto-promotes to PROCEDURAL_HIT_GROUP.
-			if (entry.is_procedural && !is_template.is_empty()) {
-				String is_src = is_template;
-				is_src = is_src.replace("/* RT_CUSTOM_INTERSECTION_GLOBALS */", entry.intersection_globals);
-				is_src = is_src.replace("/* RT_CUSTOM_INTERSECTION_CODE */", entry.intersection_code);
-				is_src = is_src.replace("/* RT_CUSTOM_UNIFORM_MEMBERS */", uniform_members);
-				is_src = is_src.replace("/* RT_CUSTOM_TEXTURE_DEFINES */", tex_defines);
-
-				Vector<uint8_t> is_spirv = RD::get_singleton()->shader_compile_spirv_from_source(
-						RD::SHADER_STAGE_INTERSECTION, is_src, RD::SHADER_LANGUAGE_GLSL, &error);
-				if (is_spirv.is_empty()) {
-					WARN_PRINT("Failed to compile HG" + itos(hg_i + 1) + " intersection, falling back to default material: " + error);
-					_dump_failed_shader(is_src, "hg" + itos(hg_i + 1) + "_intersection");
-					hit_groups.push_back(hg0_fallback);
-					continue;
-				}
-
-				RD::ShaderStageSPIRVData sd;
-				sd.shader_stage = RD::SHADER_STAGE_INTERSECTION;
-				sd.spirv = is_spirv;
-				custom_stages.push_back(sd);
-			}
-
-			Vector<uint8_t> custom_binary = RD::get_singleton()->shader_compile_binary_from_spirv(
-					custom_stages, "RT_hg" + itos(hg_i + 1));
-			if (custom_binary.is_empty()) {
-				WARN_PRINT("Failed to compile HG" + itos(hg_i + 1) + " binary, falling back to default material.");
-				hit_groups.push_back(hg0_fallback);
-				continue;
-			}
-
-			RID custom_shader_rd = RD::get_singleton()->shader_create_from_bytecode(custom_binary);
-			if (!custom_shader_rd.is_valid()) {
-				WARN_PRINT("Failed to create HG" + itos(hg_i + 1) + " shader, falling back to default material.");
-				hit_groups.push_back(hg0_fallback);
-				continue;
-			}
-			bundle.owned_shaders.push_back(custom_shader_rd);
-
-			RD::PipelineShader custom_ps = { custom_shader_rd, spec_constants };
-
-			RD::HitGroup hg;
-			hg.closest_hit_shader = custom_ps;
-			if (entry.uses_alpha_clip) {
-				hg.any_hit_shader = custom_ps;
-			}
-			if (entry.is_procedural && !is_template.is_empty()) {
-				hg.intersection_shader = custom_ps;
-			}
-
-			hit_groups.push_back(hg);
-		}
-	}
-
-	bundle.pipeline = RD::get_singleton()->raytracing_pipeline_create(
-			{ &base_ps, 1 },
-			{ &base_ps, 1 },
+	RID new_pipeline = RD::get_singleton()->raytracing_pipeline_create(
+			{ &base_ps, 1 }, { &base_ps, 1 },
 			{ hit_groups.ptr(), (uint64_t)hit_groups.size() },
 			RT_MAX_RECURSION_DEPTH);
-	ERR_FAIL_COND_V(bundle.pipeline.is_null(), EMPTY_BUNDLE);
-	RD::get_singleton()->set_resource_name(bundle.pipeline, String("RT Pipeline [flags=") + itos(p_rt_flags) + "]");
+	if (new_pipeline.is_null()) {
+		WARN_PRINT(vformat("RT: initial raytracing_pipeline_create failed for variant 0x%x.", p_rt_flags));
+		return false;
+	}
+	RD::get_singleton()->set_resource_name(new_pipeline, String("RT Pipeline initial [flags=") + itos(p_rt_flags) + "]");
 
-	// Pre-allocate a large identity-mapped hit SBT.
 	static constexpr uint32_t HIT_SBT_CAPACITY = 4096;
-	uint32_t hg_count = hit_groups.size();
-	uint32_t sbt_size = MAX(hg_count, HIT_SBT_CAPACITY);
+	uint32_t sbt_size = HIT_SBT_CAPACITY;
 
-	bundle.hit_sbt = RD::get_singleton()->hit_sbt_create(bundle.pipeline, sbt_size);
-	ERR_FAIL_COND_V(bundle.hit_sbt.is_null(), EMPTY_BUNDLE);
-	RD::get_singleton()->set_resource_name(bundle.hit_sbt, String("RT Hit SBT [flags=") + itos(p_rt_flags) + "]");
+	RID new_sbt = RD::get_singleton()->hit_sbt_create(new_pipeline, sbt_size);
+	if (new_sbt.is_null()) {
+		RD::get_singleton()->free_rid(new_pipeline);
+		return false;
+	}
+	RD::get_singleton()->set_resource_name(new_sbt, String("RT Hit SBT initial [flags=") + itos(p_rt_flags) + "]");
 
-	RD::HitShaderBindingTableRange sbt_range = RD::get_singleton()->hit_sbt_range_alloc(bundle.hit_sbt, sbt_size);
-	ERR_FAIL_COND_V(!sbt_range, EMPTY_BUNDLE);
+	RD::HitShaderBindingTableRange sbt_range = RD::get_singleton()->hit_sbt_range_alloc(new_sbt, sbt_size);
+	if (!sbt_range) {
+		RD::get_singleton()->free_rid(new_sbt);
+		RD::get_singleton()->free_rid(new_pipeline);
+		return false;
+	}
 
-	// Identity SBT: slot i -> HG i, past-end -> HG 0.
+	// Instance slot i maps to HG min(i,1) until full rebuild (custom TLAS-skipped meanwhile).
 	LocalVector<uint32_t> indices;
 	indices.resize(sbt_size);
 	for (uint32_t i = 0; i < sbt_size; i++) {
-		indices[i] = (i < hg_count) ? i : 0;
+		indices[i] = (i == 0) ? 0 : 1;
 	}
-	RD::get_singleton()->hit_sbt_range_update(bundle.hit_sbt, sbt_range, 0, indices);
+	RD::get_singleton()->hit_sbt_range_update(new_sbt, sbt_range, 0, indices);
 
-	return pipeline_bundles.insert(p_rt_flags, bundle)->value;
+	r_bundle.pipeline = new_pipeline;
+	r_bundle.hit_sbt = new_sbt;
+	r_bundle.live_hg_count = 1;
+	r_bundle.live_ready_mask.clear();
+	r_bundle.live_ready_mask.push_back(true);
+	return true;
+}
+
+SceneShaderRaytracing::PipelineBuildTask *SceneShaderRaytracing::_make_pipeline_build_task(uint32_t p_rt_flags, PipelineBundle &p_bundle) {
+	if (!_ensure_variant_compile_context(p_rt_flags)) {
+		return nullptr;
+	}
+	HashMap<uint32_t, VariantCompileContext>::ConstIterator cit = variant_compile_contexts.find(p_rt_flags);
+	if (cit == variant_compile_contexts.end()) {
+		return nullptr;
+	}
+	const VariantCompileContext &ctx = cit->value;
+
+	PipelineBuildTask *task = memnew(PipelineBuildTask);
+	task->rt_flags = p_rt_flags;
+	task->base_shader = p_bundle.base_shader;
+	task->base_non_hit_stages = ctx.base_non_hit_stages;
+	task->base_any_hit_stage = ctx.base_any_hit_stage;
+	task->base_any_hit_valid = ctx.base_any_hit_valid;
+	{
+		RD::PipelineSpecializationConstant sc;
+		sc.constant_id = 0;
+		sc.type = RD::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_INT;
+		sc.int_value = (int)p_rt_flags;
+		task->spec_constants.push_back(sc);
+	}
+
+	uint32_t slot_count = (uint32_t)hit_group_slots.size();
+	task->slots.resize(slot_count);
+
+	task->slots[0].existing_per_hg_shader = RID();
+	task->slots[0].needs_compile = false;
+
+	for (uint32_t i = 1; i < slot_count; i++) {
+		const HitGroupSlot &slot = hit_group_slots[i];
+		PipelineBuildTask::SlotInput &si = task->slots[i];
+
+		si.uses_alpha_clip = slot.entry.uses_alpha_clip;
+		si.is_procedural = slot.entry.is_procedural;
+
+		if (slot.state != HGState::Ready) {
+			si.needs_compile = false;
+			si.existing_per_hg_shader = RID();
+			continue;
+		}
+
+		if (i < p_bundle.per_hg_shaders.size() && p_bundle.per_hg_shaders[i].is_valid() &&
+				i < p_bundle.per_hg_states.size() && p_bundle.per_hg_states[i] == HGState::Ready) {
+			si.existing_per_hg_shader = p_bundle.per_hg_shaders[i];
+			si.needs_compile = false;
+			continue;
+		}
+		if (i < p_bundle.per_hg_states.size() && p_bundle.per_hg_states[i] == HGState::Failed) {
+			si.needs_compile = false;
+			continue;
+		}
+
+		const CustomShaderEntry &entry = slot.entry;
+		si.needs_compile = true;
+
+		String tex_defines;
+		for (int ti = 0; ti < entry.texture_uniforms.size(); ti++) {
+			const TextureUniformInfo &tui = entry.texture_uniforms[ti];
+			tex_defines += "#define m_" + tui.name + " bindless_textures[nonuniformEXT(material.m_" + tui.name + ")]\n";
+		}
+		String uniform_members = entry.uniform_members.is_empty() ? String("float _rt_pad;") : entry.uniform_members;
+
+		String vertex_function;
+		String vertex_call;
+		if (!entry.vertex_code.is_empty()) {
+			vertex_function = "void rt_run_vertex_shader() {\n" + entry.vertex_code + "\n}\n";
+			vertex_call = "rt_run_vertex_shader();";
+		}
+
+		// Procedural with no fragment stage: default material shading.
+		String fragment_code = entry.fragment_code;
+		if (fragment_code.is_empty() && entry.is_procedural) {
+			fragment_code =
+					"vec2 mat_uv = uv_interp * rt_mat.uv1_scale + rt_mat.uv1_offset;\n"
+					"vec4 albedo_tex = sample_material_texture(rt_mat.albedo_texture_idx, mat_uv, rt_mat.flags);\n"
+					"albedo = albedo_tex.rgb * rt_mat.albedo_color.rgb;\n"
+					"alpha = albedo_tex.a * rt_mat.albedo_color.a;\n"
+					"vec3 orm = sample_material_texture(rt_mat.orm_texture_idx, mat_uv, rt_mat.flags).rgb;\n"
+					"roughness = orm.g * rt_mat.roughness;\n"
+					"metallic = orm.b * rt_mat.metallic;\n"
+					"if ((rt_mat.flags & 1u) != 0u) {\n"
+					"    normal_map = sample_material_texture(rt_mat.normal_texture_idx, mat_uv, rt_mat.flags).rgb;\n"
+					"    normal_map_depth = rt_mat.normal_map_depth;\n"
+					"}\n"
+					"if ((rt_mat.flags & 2u) != 0u) {\n"
+					"    emission = sample_material_texture(rt_mat.emission_texture_idx, mat_uv, rt_mat.flags).rgb\n"
+					"             * rt_mat.emission_color * rt_mat.emission_strength;\n"
+					"}\n";
+		}
+
+		{
+			String s = ctx.ch_template;
+			s = s.replace("/* RT_CUSTOM_FRAGMENT_GLOBALS */", entry.fragment_globals);
+			s = s.replace("/* RT_CUSTOM_FRAGMENT_CODE */", fragment_code);
+			s = s.replace("/* RT_CUSTOM_UNIFORM_MEMBERS */", uniform_members);
+			s = s.replace("/* RT_CUSTOM_TEXTURE_DEFINES */", tex_defines);
+			s = s.replace("/* RT_CUSTOM_VERTEX_FUNCTION */", vertex_function);
+			s = s.replace("/* RT_CUSTOM_VERTEX_CALL */", vertex_call);
+			si.ch_src = s;
+		}
+		if (entry.uses_alpha_clip) {
+			String s = ctx.ah_template;
+			s = s.replace("/* RT_CUSTOM_FRAGMENT_GLOBALS */", entry.fragment_globals);
+			s = s.replace("/* RT_CUSTOM_FRAGMENT_CODE */", fragment_code);
+			s = s.replace("/* RT_CUSTOM_UNIFORM_MEMBERS */", uniform_members);
+			s = s.replace("/* RT_CUSTOM_TEXTURE_DEFINES */", tex_defines);
+			s = s.replace("/* RT_CUSTOM_VERTEX_FUNCTION */", vertex_function);
+			s = s.replace("/* RT_CUSTOM_VERTEX_CALL */", vertex_call);
+			si.ah_src = s;
+		}
+		if (entry.is_procedural && !ctx.is_template.is_empty()) {
+			String s = ctx.is_template;
+			s = s.replace("/* RT_CUSTOM_INTERSECTION_GLOBALS */", entry.intersection_globals);
+			s = s.replace("/* RT_CUSTOM_INTERSECTION_CODE */", entry.intersection_code);
+			s = s.replace("/* RT_CUSTOM_UNIFORM_MEMBERS */", uniform_members);
+			s = s.replace("/* RT_CUSTOM_TEXTURE_DEFINES */", tex_defines);
+			si.is_src = s;
+		}
+	}
+
+	return task;
+}
+
+void SceneShaderRaytracing::_build_pipeline_worker_static(void *p_userdata) {
+	PipelineBuildTask *t = static_cast<PipelineBuildTask *>(p_userdata);
+	if (singleton) {
+		singleton->_build_pipeline_worker(t);
+	} else {
+		t->done.set();
+	}
+}
+
+void SceneShaderRaytracing::_build_pipeline_worker(PipelineBuildTask *p_task) {
+	auto check_abort = [p_task]() {
+		return p_task->abort_requested.is_set();
+	};
+	auto finish = [p_task]() {
+		p_task->done.set();
+	};
+
+	uint32_t n = (uint32_t)p_task->slots.size();
+	p_task->new_per_hg_shaders.resize(n);
+	p_task->new_ready_mask.resize(n);
+
+	LocalVector<RID> created_here;
+	auto cleanup_created = [&]() {
+		for (const RID &r : created_here) {
+			if (r.is_valid()) {
+				RD::get_singleton()->free_rid(r);
+			}
+		}
+		created_here.clear();
+		for (uint32_t i = 0; i < n; i++) {
+			if (p_task->slots[i].existing_per_hg_shader.is_null()) {
+				p_task->new_per_hg_shaders[i] = RID();
+			}
+		}
+	};
+
+	if (n > 0) {
+		p_task->new_per_hg_shaders[0] = RID();
+		p_task->new_ready_mask[0] = true;
+	}
+
+	String error;
+	for (uint32_t i = 1; i < n; i++) {
+		if (check_abort()) {
+			cleanup_created();
+			p_task->failed = true;
+			finish();
+			return;
+		}
+
+		const PipelineBuildTask::SlotInput &si = p_task->slots[i];
+
+		if (si.existing_per_hg_shader.is_valid()) {
+			p_task->new_per_hg_shaders[i] = si.existing_per_hg_shader;
+			p_task->new_ready_mask[i] = true;
+			continue;
+		}
+		if (!si.needs_compile) {
+			p_task->new_per_hg_shaders[i] = RID();
+			p_task->new_ready_mask[i] = false;
+			continue;
+		}
+
+		Vector<RD::ShaderStageSPIRVData> custom_stages = p_task->base_non_hit_stages;
+
+		Vector<uint8_t> ch_spirv;
+		{
+			MutexLock lock(spirv_compile_mutex);
+			ch_spirv = RD::get_singleton()->shader_compile_spirv_from_source(
+					RD::SHADER_STAGE_CLOSEST_HIT, si.ch_src, RD::SHADER_LANGUAGE_GLSL, &error);
+		}
+		if (ch_spirv.is_empty()) {
+			_dump_failed_shader(si.ch_src, vformat("hg%d_v%x_closest_hit", i, p_task->rt_flags));
+			p_task->new_per_hg_shaders[i] = RID();
+			p_task->new_ready_mask[i] = false;
+			continue;
+		}
+		{
+			RD::ShaderStageSPIRVData sd;
+			sd.shader_stage = RD::SHADER_STAGE_CLOSEST_HIT;
+			sd.spirv = ch_spirv;
+			custom_stages.push_back(sd);
+		}
+
+		if (si.uses_alpha_clip) {
+			Vector<uint8_t> ah_spirv;
+			{
+				MutexLock lock(spirv_compile_mutex);
+				ah_spirv = RD::get_singleton()->shader_compile_spirv_from_source(
+						RD::SHADER_STAGE_ANY_HIT, si.ah_src, RD::SHADER_LANGUAGE_GLSL, &error);
+			}
+			if (ah_spirv.is_empty()) {
+				_dump_failed_shader(si.ah_src, vformat("hg%d_v%x_any_hit", i, p_task->rt_flags));
+				p_task->new_per_hg_shaders[i] = RID();
+				p_task->new_ready_mask[i] = false;
+				continue;
+			}
+			RD::ShaderStageSPIRVData sd;
+			sd.shader_stage = RD::SHADER_STAGE_ANY_HIT;
+			sd.spirv = ah_spirv;
+			custom_stages.push_back(sd);
+		} else if (p_task->base_any_hit_valid) {
+			custom_stages.push_back(p_task->base_any_hit_stage);
+		}
+
+		if (si.is_procedural && !si.is_src.is_empty()) {
+			Vector<uint8_t> is_spirv;
+			{
+				MutexLock lock(spirv_compile_mutex);
+				is_spirv = RD::get_singleton()->shader_compile_spirv_from_source(
+						RD::SHADER_STAGE_INTERSECTION, si.is_src, RD::SHADER_LANGUAGE_GLSL, &error);
+			}
+			if (is_spirv.is_empty()) {
+				_dump_failed_shader(si.is_src, vformat("hg%d_v%x_intersection", i, p_task->rt_flags));
+				p_task->new_per_hg_shaders[i] = RID();
+				p_task->new_ready_mask[i] = false;
+				continue;
+			}
+			RD::ShaderStageSPIRVData sd;
+			sd.shader_stage = RD::SHADER_STAGE_INTERSECTION;
+			sd.spirv = is_spirv;
+			custom_stages.push_back(sd);
+		}
+
+		Vector<uint8_t> binary;
+		{
+			MutexLock lock(spirv_compile_mutex);
+			binary = RD::get_singleton()->shader_compile_binary_from_spirv(
+					custom_stages, vformat("RT_hg%d_v%x", i, p_task->rt_flags));
+		}
+		if (binary.is_empty()) {
+			p_task->new_per_hg_shaders[i] = RID();
+			p_task->new_ready_mask[i] = false;
+			continue;
+		}
+
+		RID rid = RD::get_singleton()->shader_create_from_bytecode(binary);
+		if (!rid.is_valid()) {
+			p_task->new_per_hg_shaders[i] = RID();
+			p_task->new_ready_mask[i] = false;
+			continue;
+		}
+		p_task->new_per_hg_shaders[i] = rid;
+		p_task->new_ready_mask[i] = true;
+		created_here.push_back(rid);
+	}
+
+	if (check_abort()) {
+		cleanup_created();
+		p_task->failed = true;
+		finish();
+		return;
+	}
+
+	// raytracing_pipeline_create may run off render thread (RD uses internal sync).
+	RD::PipelineShader base_ps = { p_task->base_shader, p_task->spec_constants };
+	RD::HitGroup hg0_default;
+	hg0_default.closest_hit_shader = base_ps;
+	hg0_default.any_hit_shader = base_ps;
+
+	// No-op HG: failed / pending slots + trailing SBT sentinel (never default material).
+	const RD::HitGroup empty_hg;
+
+	// Layout: [0] default [1..n-1] custom or empty [n] sentinel.
+	LocalVector<RD::HitGroup> hit_groups;
+	hit_groups.resize(n + 1);
+	hit_groups[0] = hg0_default;
+	for (uint32_t i = 1; i < n; i++) {
+		if (!p_task->new_ready_mask[i] || p_task->new_per_hg_shaders[i].is_null()) {
+			hit_groups[i] = empty_hg;
+			continue;
+		}
+		RD::PipelineShader custom_ps = { p_task->new_per_hg_shaders[i], p_task->spec_constants };
+		RD::HitGroup hg;
+		hg.closest_hit_shader = custom_ps;
+		hg.any_hit_shader = p_task->slots[i].uses_alpha_clip ? custom_ps : base_ps;
+		if (p_task->slots[i].is_procedural) {
+			hg.intersection_shader = custom_ps;
+		}
+		hit_groups[i] = hg;
+	}
+	hit_groups[n] = empty_hg;
+
+	RID new_pipeline = RD::get_singleton()->raytracing_pipeline_create(
+			{ &base_ps, 1 }, { &base_ps, 1 },
+			{ hit_groups.ptr(), (uint64_t)hit_groups.size() },
+			RT_MAX_RECURSION_DEPTH);
+	if (new_pipeline.is_null()) {
+		cleanup_created();
+		p_task->failed = true;
+		p_task->error = "raytracing_pipeline_create returned null";
+		finish();
+		return;
+	}
+	p_task->new_pipeline = new_pipeline;
+	finish();
+}
+
+void SceneShaderRaytracing::_finalize_pipeline_build(PipelineBuildTask *p_task) {
+	HashMap<uint32_t, PipelineBundle>::Iterator bit = pipeline_bundles.find(p_task->rt_flags);
+	if (bit == pipeline_bundles.end()) {
+		for (uint32_t i = 0; i < p_task->slots.size(); i++) {
+			if (p_task->slots[i].existing_per_hg_shader.is_null() &&
+					i < p_task->new_per_hg_shaders.size() &&
+					p_task->new_per_hg_shaders[i].is_valid()) {
+				RD::get_singleton()->free_rid(p_task->new_per_hg_shaders[i]);
+			}
+		}
+		if (p_task->new_pipeline.is_valid()) {
+			RD::get_singleton()->free_rid(p_task->new_pipeline);
+		}
+		return;
+	}
+	PipelineBundle &bundle = bit->value;
+	_bundle_resize_for_slots(bundle);
+
+	if (p_task->failed) {
+		WARN_PRINT(vformat("RT: pipeline rebuild failed for variant 0x%x: %s",
+				p_task->rt_flags, p_task->error));
+		return;
+	}
+
+	// Install worker outputs into bundle arrays.
+	uint32_t n = (uint32_t)p_task->slots.size();
+	for (uint32_t i = 1; i < n; i++) {
+		const PipelineBuildTask::SlotInput &si = p_task->slots[i];
+		if (i >= bundle.per_hg_shaders.size()) {
+			break;
+		}
+		if (si.existing_per_hg_shader.is_valid()) {
+			continue;
+		}
+		if (si.needs_compile && i < p_task->new_per_hg_shaders.size() && p_task->new_per_hg_shaders[i].is_valid()) {
+			bundle.per_hg_shaders[i] = p_task->new_per_hg_shaders[i];
+			bundle.per_hg_states[i] = HGState::Ready;
+		} else if (si.needs_compile) {
+			bundle.per_hg_states[i] = HGState::Failed;
+		}
+	}
+
+	static constexpr uint32_t HIT_SBT_CAPACITY = 4096;
+	uint32_t sbt_size = MAX(n, HIT_SBT_CAPACITY);
+
+	RID new_sbt = RD::get_singleton()->hit_sbt_create(p_task->new_pipeline, sbt_size);
+	if (new_sbt.is_null()) {
+		WARN_PRINT(vformat("RT: hit_sbt_create failed for variant 0x%x.", p_task->rt_flags));
+		RD::get_singleton()->free_rid(p_task->new_pipeline);
+		return;
+	}
+	RD::get_singleton()->set_resource_name(new_sbt, String("RT Hit SBT [flags=") + itos(p_task->rt_flags) + "]");
+
+	RD::HitShaderBindingTableRange sbt_range = RD::get_singleton()->hit_sbt_range_alloc(new_sbt, sbt_size);
+	if (!sbt_range) {
+		WARN_PRINT(vformat("RT: hit_sbt_range_alloc failed for variant 0x%x.", p_task->rt_flags));
+		RD::get_singleton()->free_rid(new_sbt);
+		RD::get_singleton()->free_rid(p_task->new_pipeline);
+		return;
+	}
+
+	// Slots i >= n map to sentinel HG n.
+	LocalVector<uint32_t> indices;
+	indices.resize(sbt_size);
+	for (uint32_t i = 0; i < sbt_size; i++) {
+		indices[i] = (i < n) ? i : n;
+	}
+	RD::get_singleton()->hit_sbt_range_update(new_sbt, sbt_range, 0, indices);
+
+	if (bundle.pipeline.is_valid()) {
+		RD::get_singleton()->free_rid(bundle.pipeline);
+	}
+	if (bundle.hit_sbt.is_valid()) {
+		RD::get_singleton()->free_rid(bundle.hit_sbt);
+	}
+	RD::get_singleton()->set_resource_name(p_task->new_pipeline, String("RT Pipeline [flags=") + itos(p_task->rt_flags) + "]");
+	bundle.pipeline = p_task->new_pipeline;
+	bundle.hit_sbt = new_sbt;
+	bundle.live_hg_count = n;
+	bundle.live_ready_mask = p_task->new_ready_mask;
+}
+
+// Single-lane rebuild dispatcher.
+
+void SceneShaderRaytracing::_enqueue_build(PipelineBuildTask *p_task) {
+	MutexLock lock(compile_lane.mutex);
+	compile_lane.queue.push_back(p_task);
+	_dispatch_next_locked();
+}
+
+void SceneShaderRaytracing::_dispatch_next_locked() {
+	if (!async_compilation_enabled) {
+		return;
+	}
+	if (compile_lane.current != nullptr || compile_lane.queue.is_empty()) {
+		return;
+	}
+	PipelineBuildTask *t = compile_lane.queue[0];
+	compile_lane.queue.remove_at(0);
+	compile_lane.current = t;
+	t->worker_id = WorkerThreadPool::get_singleton()->add_native_task(
+			&SceneShaderRaytracing::_build_pipeline_worker_static, t, /*high_priority=*/false,
+			"RT Pipeline Build");
+}
+
+void SceneShaderRaytracing::_kick_rebuild_if_idle() {
+	bool lane_idle;
+	{
+		MutexLock lock(compile_lane.mutex);
+		lane_idle = (compile_lane.current == nullptr) && compile_lane.queue.is_empty();
+	}
+	if (!lane_idle) {
+		return;
+	}
+	for (KeyValue<uint32_t, PipelineBundle> &kv : pipeline_bundles) {
+		if (!kv.value.dirty || !kv.value.initial_pipeline_built) {
+			continue;
+		}
+		PipelineBuildTask *task = _make_pipeline_build_task(kv.key, kv.value);
+		if (task) {
+			kv.value.dirty = false;
+			_enqueue_build(task);
+		}
+		break;
+	}
+}
+
+void SceneShaderRaytracing::drain_completed_compiles() {
+	while (true) {
+		PipelineBuildTask *finished = nullptr;
+		{
+			MutexLock lock(compile_lane.mutex);
+			if (compile_lane.current && compile_lane.current->done.is_set()) {
+				finished = compile_lane.current;
+				compile_lane.current = nullptr;
+			}
+		}
+		if (!finished) {
+			break;
+		}
+		if (finished->worker_id != WorkerThreadPool::INVALID_TASK_ID) {
+			WorkerThreadPool::get_singleton()->wait_for_task_completion(finished->worker_id);
+		}
+		_finalize_pipeline_build(finished);
+		memdelete(finished);
+
+		{
+			MutexLock lock(compile_lane.mutex);
+			_dispatch_next_locked();
+		}
+	}
+}
+
+void SceneShaderRaytracing::_drain_lane_inline_main_thread() {
+	while (true) {
+		PipelineBuildTask *t = nullptr;
+		{
+			MutexLock lock(compile_lane.mutex);
+			if (compile_lane.current) {
+				break;
+			}
+			if (compile_lane.queue.is_empty()) {
+				break;
+			}
+			t = compile_lane.queue[0];
+			compile_lane.queue.remove_at(0);
+		}
+		_build_pipeline_worker(t);
+		_finalize_pipeline_build(t);
+		memdelete(t);
+	}
+}
+
+void SceneShaderRaytracing::_join_lane_for_shutdown() {
+	PipelineBuildTask *current = nullptr;
+	LocalVector<PipelineBuildTask *> queued;
+	{
+		MutexLock lock(compile_lane.mutex);
+		current = compile_lane.current;
+		compile_lane.current = nullptr;
+		queued = compile_lane.queue;
+		compile_lane.queue.clear();
+	}
+
+	if (current) {
+		current->abort_requested.set();
+		if (current->worker_id != WorkerThreadPool::INVALID_TASK_ID && WorkerThreadPool::get_singleton()) {
+			WorkerThreadPool::get_singleton()->wait_for_task_completion(current->worker_id);
+		}
+		if (current->new_pipeline.is_valid()) {
+			RD::get_singleton()->free_rid(current->new_pipeline);
+		}
+		memdelete(current);
+	}
+	for (PipelineBuildTask *t : queued) {
+		memdelete(t);
+	}
 }
 
 void SceneShaderRaytracing::init(const String p_defines) {
-	// For raytracing: The raygen shader has embedded code via setup_raytracing() in its constructor
-	// setup_raytracing() set pipeline_type = RAYTRACING, so initialize() will use raytracing stages
-	// Shader variants: one per bitmask of RAYGEN_SHADER_OPTIONS (see file-local table above).
+	GLOBAL_DEF(PropertyInfo(Variant::BOOL, "rendering/pathtracer/async_shader_compilation",
+					 PROPERTY_HINT_NONE, "",
+					 PROPERTY_USAGE_DEFAULT,
+					 "If true, HG SPIR-V compiles on a worker (materials may appear later). "
+					 "If false, compile at end-of-frame on the main thread."),
+			true);
+	async_compilation_enabled = (bool)GLOBAL_GET("rendering/pathtracer/async_shader_compilation");
+
+	// Raygen: one mode per bitmask of RAYGEN_SHADER_OPTIONS.
 	const uint32_t variant_count = 1u << RAYGEN_SHADER_OPTION_COUNT;
 	Vector<String> modes;
 	modes.resize((int)variant_count);
@@ -1027,10 +1438,16 @@ void SceneShaderRaytracing::init(const String p_defines) {
 	}
 	raygen_shader.initialize(modes, p_defines);
 
+	// Slot 0: default HG (source_hash stays zero).
+	{
+		HitGroupSlot default_slot;
+		default_slot.state = HGState::Ready;
+		hit_group_slots.push_back(default_slot);
+	}
+
 	// Now create a version to access the embedded raytracing shader
 	raygen_shader_version = raygen_shader.version_create();
 	if (raygen_shader_version.is_valid()) {
-		// Eagerly build the default pipeline bundle so first-frame doesn't stall.
 		const PipelineBundle &b = ensure_pipeline_bundle(RT_FLAG_NONE);
 		if (!b.pipeline.is_valid()) {
 			WARN_PRINT("Failed to create default raytracing pipeline bundle");
@@ -1255,9 +1672,7 @@ void SceneShaderRaytracing::init(const String p_defines) {
 		compiler.initialize(actions);
 	}
 
-	// For raytracing: we don't use the material system at all
-	// Materials, shaders, and variants are all skipped - we use the fixed raygen shader created above
-	// Set these to invalid/null for safety
+	// Raster shader/material/sampler defaults unused on RT path.
 	default_shader = RID();
 	default_material = RID();
 	default_shader_rd = RID();
@@ -1265,7 +1680,6 @@ void SceneShaderRaytracing::init(const String p_defines) {
 	default_material_shader_ptr = nullptr;
 	default_material_uniform_set = RID();
 
-	// Overdraw and debug materials are not used in raytracing mode
 	overdraw_material_shader = RID();
 	overdraw_material = RID();
 	overdraw_material_shader_ptr = nullptr;
@@ -1276,7 +1690,6 @@ void SceneShaderRaytracing::init(const String p_defines) {
 	debug_shadow_splits_material_shader_ptr = nullptr;
 	debug_shadow_splits_material_uniform_set = RID();
 
-	// Default vec4 xform buffer and shadow sampler are not used in raytracing mode
 	default_vec4_xform_buffer = RID();
 	default_vec4_xform_uniform_set = RID();
 	shadow_sampler = RID();
@@ -1291,16 +1704,13 @@ void SceneShaderRaytracing::set_default_specialization(const ShaderSpecializatio
 }
 
 void SceneShaderRaytracing::enable_advanced_shader_group(bool p_needs_multiview) {
-	// For raytracing: we don't use shader groups, no-op
 }
 
 bool SceneShaderRaytracing::is_multiview_shader_group_enabled() const {
-	// For raytracing: we don't use shader groups
 	return false;
 }
 
 bool SceneShaderRaytracing::is_advanced_shader_group_enabled(bool p_multiview) const {
-	// For raytracing: we don't use shader groups
 	return false;
 }
 

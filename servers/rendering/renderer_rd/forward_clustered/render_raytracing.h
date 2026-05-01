@@ -192,7 +192,8 @@ struct RTMaterialData {
 	uint32_t global_buffer_index = UINT32_MAX;
 	uint32_t rt_sbt_offset = 0;
 	bool is_custom_shader = false;
-	RID uniform_buffer;
+	RID uniform_buffer; // Buffer pointer for mats > 512 bytes.
+	uint32_t uniform_pool_slot = UINT32_MAX; // Index into the material UBO pool, or UINT32_MAX (unused)
 	RID albedo_texture_rd;
 	RID normal_texture_rd;
 	RID orm_texture_rd;
@@ -258,8 +259,21 @@ class RenderRaytracing {
 	LocalVector<uint32_t> sbt_offsets; // 0 = default material hit group
 	RID tlas;
 	uint32_t tlas_max_instances = 0;
-
 	uint32_t frame_counter = 0;
+
+	// Material UBO sub-allocation pool. One large device-address buffer divided
+	// into fixed-size slots for performance reasons, and easier to debug.
+	RID mat_ubo_pool_buffer;
+	uint64_t mat_ubo_pool_bda = 0;
+	LocalVector<uint32_t> mat_ubo_pool_free_slots;
+	uint32_t mat_ubo_pool_free_count = 0;
+	uint32_t mat_ubo_pool_next_slot = 0;
+
+	void mat_ubo_pool_ensure_initialized();
+	uint32_t mat_ubo_pool_allocate(); // Returns slot index or UINT32_MAX if pool is exhausted.
+	void mat_ubo_pool_release(uint32_t p_slot);
+	void mat_ubo_pool_update(uint32_t p_slot, const void *p_data, uint32_t p_size);
+	uint64_t mat_ubo_pool_get_address(uint32_t p_slot) const;
 
 	// Cache helpers.
 	static uint32_t get_rid_index(RID p_rid);
@@ -285,7 +299,7 @@ public:
 
 	void cleanup_caches();
 	void prepare_frame();
-	void build_tlas(const RenderDataRD *p_render_data);
+	void build_tlas(const RenderDataRD *p_render_data, uint32_t p_rt_flags); // p_rt_flags must match uniform_set/dispatch path.
 	uint32_t gather_lights(const RenderDataRD *p_render_data, RT_LightData *r_light_data, uint32_t p_max_lights);
 	void update_uniform_set(const RenderDataRD *p_render_data, uint32_t p_rt_flags);
 	void copy_output_texture(const RenderDataRD *p_render_data);
@@ -294,6 +308,7 @@ public:
 	RID get_tlas() const { return tlas; }
 	RID get_uniform_set() const { return uniform_set; }
 	RID get_bindless_uniform_set() const { return bindless_uniform_set; }
+	RID get_mat_ubo_pool_buffer() const { return mat_ubo_pool_buffer; }
 
 	~RenderRaytracing();
 };
