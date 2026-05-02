@@ -37,7 +37,7 @@
 
 #include <cfloat> // FLT_MAX
 
-Vector<Vector3> HeightMapShape3D::get_debug_mesh_lines() const {
+Vector<Vector3> HeightMapShape3D::_build_debug_mesh_lines() const {
 	Vector<Vector3> points;
 
 	if ((map_width != 0) && (map_depth != 0)) {

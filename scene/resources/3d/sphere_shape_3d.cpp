@@ -34,7 +34,7 @@
 #include "scene/resources/3d/primitive_meshes.h"
 #include "servers/physics_3d/physics_server_3d.h"
 
-Vector<Vector3> SphereShape3D::get_debug_mesh_lines() const {
+Vector<Vector3> SphereShape3D::_build_debug_mesh_lines() const {
 	float r = get_radius();
 
 	Vector<Vector3> points;

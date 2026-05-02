@@ -34,7 +34,7 @@
 #include "scene/resources/mesh.h"
 #include "servers/physics_3d/physics_server_3d.h"
 
-Vector<Vector3> WorldBoundaryShape3D::get_debug_mesh_lines() const {
+Vector<Vector3> WorldBoundaryShape3D::_build_debug_mesh_lines() const {
 	Plane p = get_plane();
 
 	Vector3 n1 = p.get_any_perpendicular_normal();

@@ -34,7 +34,7 @@
 #include "scene/resources/mesh.h"
 #include "servers/physics_3d/physics_server_3d.h"
 
-Vector<Vector3> SeparationRayShape3D::get_debug_mesh_lines() const {
+Vector<Vector3> SeparationRayShape3D::_build_debug_mesh_lines() const {
 	Vector<Vector3> points = {
 		Vector3(),
 		Vector3(0, 0, get_length())
