@@ -72,11 +72,22 @@ void EditorNode3DGizmo::clear() {
 	collision_segments.clear();
 	collision_meshes.clear();
 	collision_meshes_are_snap_source = false;
+	collision_aabb = AABB();
+	collision_aabb_has_points = false;
 	instances.clear();
 	handles.clear();
 	handle_ids.clear();
 	secondary_handles.clear();
 	secondary_handle_ids.clear();
+}
+
+void EditorNode3DGizmo::_expand_collision_aabb_to(const Vector3 &p_point) {
+	if (collision_aabb_has_points) {
+		collision_aabb.expand_to(p_point);
+	} else {
+		collision_aabb = AABB(p_point, Vector3());
+		collision_aabb_has_points = true;
+	}
 }
 
 void EditorNode3DGizmo::redraw() {
@@ -259,20 +270,11 @@ void EditorNode3DGizmo::_update_bvh() {
 	Vector3 icon_size_vector3 = Vector3(effective_icon_size, effective_icon_size, effective_icon_size);
 	AABB aabb(transform.origin - icon_size_vector3 * 100.0f, icon_size_vector3 * 200.0f);
 
-	for (const Vector3 &segment_end : collision_segments) {
-		aabb.expand_to(transform.xform(segment_end));
-	}
-
-	if (!collision_meshes.is_empty()) {
-		for (Ref<TriangleMesh> collision_mesh : collision_meshes) {
-			if (collision_mesh.is_valid()) {
-				for (const Face3 &face : collision_mesh->get_faces()) {
-					aabb.expand_to(transform.xform(face.vertex[0]));
-					aabb.expand_to(transform.xform(face.vertex[1]));
-					aabb.expand_to(transform.xform(face.vertex[2]));
-				}
-			}
-		}
+	// The local-space collision AABB is precomputed by add_collision_*; here
+	// we only need a single O(1) transform of that box, regardless of how
+	// many segments / triangle vertices the gizmo holds.
+	if (collision_aabb_has_points) {
+		aabb.merge_with(transform.xform(collision_aabb));
 	}
 
 	Node3DEditor::get_singleton()->update_gizmo_bvh_node(
@@ -385,13 +387,25 @@ void EditorNode3DGizmo::add_unscaled_billboard(const Ref<Material> &p_material, 
 
 void EditorNode3DGizmo::add_collision_triangles(const Ref<TriangleMesh> &p_tmesh) {
 	collision_meshes.push_back(p_tmesh);
+	if (p_tmesh.is_valid()) {
+		const Vector<Vector3> &verts = p_tmesh->get_vertices();
+		const Vector3 *src = verts.ptr();
+		const int count = verts.size();
+		for (int i = 0; i < count; i++) {
+			_expand_collision_aabb_to(src[i]);
+		}
+	}
 }
 
 void EditorNode3DGizmo::add_collision_segments(const Vector<Vector3> &p_lines) {
-	int from = collision_segments.size();
-	collision_segments.resize(from + p_lines.size());
-	for (int i = 0; i < p_lines.size(); i++) {
-		collision_segments.write[from + i] = p_lines[i];
+	const int count = p_lines.size();
+	const int from = collision_segments.size();
+	collision_segments.resize(from + count);
+	const Vector3 *src = p_lines.ptr();
+	Vector3 *dst = collision_segments.ptrw() + from;
+	for (int i = 0; i < count; i++) {
+		dst[i] = src[i];
+		_expand_collision_aabb_to(src[i]);
 	}
 }
 
