@@ -108,6 +108,9 @@ Vector<Vector3> ConcavePolygonShape3D::get_faces() const {
 }
 
 void ConcavePolygonShape3D::set_backface_collision_enabled(bool p_enabled) {
+	if (backface_collision == p_enabled) {
+		return;
+	}
 	backface_collision = p_enabled;
 
 	if (!faces.is_empty()) {
