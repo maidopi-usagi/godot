@@ -62,7 +62,7 @@ Vector<Vector3> CylinderShape3D::_build_debug_mesh_lines() const {
 	return points;
 }
 
-Ref<ArrayMesh> CylinderShape3D::get_debug_arraymesh_faces(const Color &p_modulate) const {
+Ref<ArrayMesh> CylinderShape3D::_build_debug_arraymesh_faces(const Color &p_modulate) const {
 	Array cylinder_array;
 	cylinder_array.resize(RSE::ARRAY_MAX);
 	CylinderMesh::create_mesh_array(cylinder_array, radius, radius, height, 32);

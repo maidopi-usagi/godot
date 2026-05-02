@@ -65,6 +65,8 @@ class EditorNode3DGizmo : public Node3DGizmo {
 
 	void _expand_collision_aabb_to(const Vector3 &p_point);
 
+	bool visual_suppressed = false;
+
 	Vector<Vector3> handles;
 	Vector<int> handle_ids;
 	Vector<Vector3> secondary_handles;

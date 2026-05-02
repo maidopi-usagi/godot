@@ -43,7 +43,7 @@ Vector<Vector3> SeparationRayShape3D::_build_debug_mesh_lines() const {
 	return points;
 }
 
-Ref<ArrayMesh> SeparationRayShape3D::get_debug_arraymesh_faces(const Color &p_modulate) const {
+Ref<ArrayMesh> SeparationRayShape3D::_build_debug_arraymesh_faces(const Color &p_modulate) const {
 	return memnew(ArrayMesh);
 }
 

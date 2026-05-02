@@ -56,7 +56,7 @@ Vector<Vector3> ConvexPolygonShape3D::_build_debug_mesh_lines() const {
 	return Vector<Vector3>();
 }
 
-Ref<ArrayMesh> ConvexPolygonShape3D::get_debug_arraymesh_faces(const Color &p_modulate) const {
+Ref<ArrayMesh> ConvexPolygonShape3D::_build_debug_arraymesh_faces(const Color &p_modulate) const {
 	const Vector<Vector3> hull_points = get_points();
 
 	Vector<Vector3> verts;

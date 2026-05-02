@@ -91,6 +91,9 @@ void EditorNode3DGizmo::_expand_collision_aabb_to(const Vector3 &p_point) {
 }
 
 void EditorNode3DGizmo::redraw() {
+	const Node3DEditor *editor = Node3DEditor::get_singleton();
+	visual_suppressed = editor && editor->is_visual_suppressed_for(gizmo_plugin);
+
 	if (!GDVIRTUAL_CALL(_redraw)) {
 		ERR_FAIL_NULL(gizmo_plugin);
 		gizmo_plugin->redraw(this);
@@ -241,6 +244,9 @@ void EditorNode3DGizmo::Instance::create_instance(Node3D *p_base, bool p_hidden)
 }
 
 void EditorNode3DGizmo::add_mesh(const Ref<Mesh> &p_mesh, const Ref<Material> &p_material, const Transform3D &p_xform, const Ref<SkinReference> &p_skin_reference) {
+	if (visual_suppressed) {
+		return;
+	}
 	ERR_FAIL_NULL(spatial_node);
 	ERR_FAIL_COND_MSG(p_mesh.is_null(), "EditorNode3DGizmo.add_mesh() requires a valid Mesh resource.");
 
@@ -270,9 +276,6 @@ void EditorNode3DGizmo::_update_bvh() {
 	Vector3 icon_size_vector3 = Vector3(effective_icon_size, effective_icon_size, effective_icon_size);
 	AABB aabb(transform.origin - icon_size_vector3 * 100.0f, icon_size_vector3 * 200.0f);
 
-	// The local-space collision AABB is precomputed by add_collision_*; here
-	// we only need a single O(1) transform of that box, regardless of how
-	// many segments / triangle vertices the gizmo holds.
 	if (collision_aabb_has_points) {
 		aabb.merge_with(transform.xform(collision_aabb));
 	}
@@ -287,7 +290,7 @@ void EditorNode3DGizmo::add_lines(const Vector<Vector3> &p_lines, const Ref<Mate
 }
 
 void EditorNode3DGizmo::add_vertices(const Vector<Vector3> &p_vertices, const Ref<Material> &p_material, Mesh::PrimitiveType p_primitive_type, bool p_billboard, const Color &p_modulate) {
-	if (p_vertices.is_empty()) {
+	if (visual_suppressed || p_vertices.is_empty()) {
 		return;
 	}
 
@@ -336,6 +339,10 @@ void EditorNode3DGizmo::add_vertices(const Vector<Vector3> &p_vertices, const Re
 
 void EditorNode3DGizmo::add_unscaled_billboard(const Ref<Material> &p_material, real_t p_scale, const Color &p_modulate) {
 	ERR_FAIL_NULL(spatial_node);
+	selectable_icon_size = p_scale;
+	if (visual_suppressed) {
+		return;
+	}
 	Instance ins;
 
 	Vector<Vector3> vs = {
@@ -412,7 +419,7 @@ void EditorNode3DGizmo::add_collision_segments(const Vector<Vector3> &p_lines) {
 void EditorNode3DGizmo::add_handles(const Vector<Vector3> &p_handles, const Ref<Material> &p_material, const Vector<int> &p_ids, bool p_billboard, bool p_secondary) {
 	billboard_handle = p_billboard;
 
-	if (!is_selected() || !is_editable()) {
+	if (visual_suppressed || !is_selected() || !is_editable()) {
 		return;
 	}
 
@@ -495,6 +502,10 @@ void EditorNode3DGizmo::add_handles(const Vector<Vector3> &p_handles, const Ref<
 
 void EditorNode3DGizmo::add_solid_box(const Ref<Material> &p_material, Vector3 p_size, Vector3 p_position, const Transform3D &p_xform) {
 	ERR_FAIL_NULL(spatial_node);
+
+	if (visual_suppressed) {
+		return;
+	}
 
 	Array arrays;
 	arrays.resize(RSE::ARRAY_MAX);
@@ -913,8 +924,6 @@ EditorNode3DGizmo::~EditorNode3DGizmo() {
 	clear();
 }
 
-/////
-
 void EditorNode3DGizmoPlugin::create_material(const String &p_name, const Color &p_color, bool p_billboard, bool p_on_top, bool p_use_vertex_color) {
 	Color instantiated_color = EDITOR_GET("editors/3d_gizmos/gizmo_colors/instantiated");
 
@@ -1254,4 +1263,3 @@ EditorNode3DGizmoPlugin::~EditorNode3DGizmoPlugin() {
 	}
 }
 
-//////

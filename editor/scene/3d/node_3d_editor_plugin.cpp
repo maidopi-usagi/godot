@@ -681,6 +681,18 @@ Vector3 Node3DEditorViewport::get_ray(const Vector2 &p_pos) const {
 	return camera->project_ray_normal(p_pos);
 }
 
+bool Node3DEditorViewport::is_view_gizmos_enabled() const {
+	if (!view_display_menu) {
+		return true;
+	}
+	PopupMenu *popup = view_display_menu->get_popup();
+	const int idx = popup->get_item_index(VIEW_GIZMOS);
+	if (idx < 0) {
+		return true;
+	}
+	return popup->is_item_checked(idx);
+}
+
 void Node3DEditorViewport::_clear_selected() {
 	if (previewing) {
 		return;
@@ -4547,6 +4559,8 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 		case VIEW_GIZMOS: {
 			int idx = view_display_menu->get_popup()->get_item_index(VIEW_GIZMOS);
 			bool current = view_display_menu->get_popup()->is_item_checked(idx);
+			Node3DEditor *editor = Node3DEditor::get_singleton();
+			const bool was_globally_off = editor && !editor->is_any_view_gizmos_enabled();
 			current = !current;
 			uint32_t layers = camera->get_cull_mask();
 			layers &= ~(1 << GIZMO_EDIT_LAYER);
@@ -4555,6 +4569,13 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 			}
 			camera->set_cull_mask(layers);
 			view_display_menu->get_popup()->set_item_checked(idx, current);
+
+			// If we are the first viewport bringing gizmos back, every
+			// gizmo in the edited scene was visually suppressed during its
+			// last redraw and now needs to actually populate its meshes.
+			if (was_globally_off && current && editor) {
+				editor->update_all_gizmos();
+			}
 
 		} break;
 		case VIEW_TRANSFORM_GIZMO: {
@@ -7218,6 +7239,9 @@ void Node3DEditorViewportContainer::set_view(View p_view) {
 		ERR_FAIL_NULL(viewports[i]);
 	}
 
+	Node3DEditor *editor = Node3DEditor::get_singleton();
+	const bool was_globally_off = editor && !editor->is_any_view_gizmos_enabled();
+
 	const bool previous_main_vertical = !first_split->is_vertical();
 	const float horizontal_offset = previous_main_vertical ? first_split->get_split_offset() : main_split->get_split_offset();
 	const float vertical_offset = previous_main_vertical ? main_split->get_split_offset() : first_split->get_split_offset();
@@ -7274,6 +7298,10 @@ void Node3DEditorViewportContainer::set_view(View p_view) {
 			first_split->set_dragging_enabled(false);
 			_update_split_drag_margin();
 		} break;
+	}
+
+	if (was_globally_off && editor && editor->is_any_view_gizmos_enabled()) {
+		editor->update_all_gizmos();
 	}
 }
 
@@ -9690,6 +9718,12 @@ void Node3DEditor::_notification(int p_what) {
 			_finish_indicators();
 		} break;
 
+		case NOTIFICATION_VISIBILITY_CHANGED: {
+			if (is_visible_in_tree() && is_any_view_gizmos_enabled()) {
+				update_all_gizmos();
+			}
+		} break;
+
 		case NOTIFICATION_THEME_CHANGED: {
 			_update_theme();
 			_update_gizmos_menu_theme();
@@ -11278,6 +11312,23 @@ void Node3DEditor::update_gizmo_bvh_node(DynamicBVH::ID p_id, const AABB &p_aabb
 
 void Node3DEditor::remove_gizmo_bvh_node(DynamicBVH::ID p_id) {
 	gizmo_bvh.remove(p_id);
+}
+
+bool Node3DEditor::is_any_view_gizmos_enabled() const {
+	for (uint32_t i = 0; i < VIEWPORTS_COUNT; i++) {
+		const Node3DEditorViewport *viewport = viewports[i];
+		if (viewport && viewport->is_visible_in_tree() && viewport->is_view_gizmos_enabled()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool Node3DEditor::is_visual_suppressed_for(const EditorNode3DGizmoPlugin *p_plugin) const {
+	if (p_plugin && p_plugin->get_state() == EditorNode3DGizmoPlugin::HIDDEN) {
+		return true;
+	}
+	return !is_any_view_gizmos_enabled();
 }
 
 Vector<Node3D *> Node3DEditor::gizmo_bvh_ray_query(const Vector3 &p_ray_start, const Vector3 &p_ray_end) {

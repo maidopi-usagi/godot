@@ -61,7 +61,7 @@ Vector<Vector3> ConcavePolygonShape3D::_build_debug_mesh_lines() const {
 	return points;
 }
 
-Ref<ArrayMesh> ConcavePolygonShape3D::get_debug_arraymesh_faces(const Color &p_modulate) const {
+Ref<ArrayMesh> ConcavePolygonShape3D::_build_debug_arraymesh_faces(const Color &p_modulate) const {
 	Vector<Color> colors;
 	colors.resize(faces.size());
 	colors.fill(p_modulate);

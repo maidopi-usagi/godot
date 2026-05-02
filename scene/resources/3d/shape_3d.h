@@ -47,6 +47,10 @@ class Shape3D : public Resource {
 	Vector<Vector3> debug_mesh_lines_cache;
 	bool debug_mesh_lines_cache_dirty = true;
 
+	Ref<ArrayMesh> debug_arraymesh_faces_cache;
+	Color debug_arraymesh_faces_cache_modulate;
+	bool debug_arraymesh_faces_cache_valid = false;
+
 	// Not wrapped in `#ifdef DEBUG_ENABLED` as it is used for rendering.
 	Color debug_color = Color(0.0, 0.0, 0.0, 0.0);
 	bool debug_fill = true;
@@ -63,6 +67,7 @@ protected:
 	virtual void _update_shape();
 
 	virtual Vector<Vector3> _build_debug_mesh_lines() const = 0;
+	virtual Ref<ArrayMesh> _build_debug_arraymesh_faces(const Color &p_modulate) const = 0;
 
 public:
 	virtual RID get_rid() const override { return shape; }
@@ -71,7 +76,7 @@ public:
 
 	Vector<Vector3> get_debug_mesh_lines();
 
-	virtual Ref<ArrayMesh> get_debug_arraymesh_faces(const Color &p_modulate) const = 0;
+	Ref<ArrayMesh> get_debug_arraymesh_faces(const Color &p_modulate);
 	/// Returns the radius of a sphere that fully enclose this shape
 	virtual real_t get_enclosing_radius() const = 0;
 

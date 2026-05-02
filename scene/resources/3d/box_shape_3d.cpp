@@ -50,7 +50,7 @@ Vector<Vector3> BoxShape3D::_build_debug_mesh_lines() const {
 	return lines;
 }
 
-Ref<ArrayMesh> BoxShape3D::get_debug_arraymesh_faces(const Color &p_modulate) const {
+Ref<ArrayMesh> BoxShape3D::_build_debug_arraymesh_faces(const Color &p_modulate) const {
 	Array box_array;
 	box_array.resize(RSE::ARRAY_MAX);
 	BoxMesh::create_mesh_array(box_array, size);

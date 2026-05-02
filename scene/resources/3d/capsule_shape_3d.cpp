@@ -69,7 +69,7 @@ Vector<Vector3> CapsuleShape3D::_build_debug_mesh_lines() const {
 	return points;
 }
 
-Ref<ArrayMesh> CapsuleShape3D::get_debug_arraymesh_faces(const Color &p_modulate) const {
+Ref<ArrayMesh> CapsuleShape3D::_build_debug_arraymesh_faces(const Color &p_modulate) const {
 	Array capsule_array;
 	capsule_array.resize(RSE::ARRAY_MAX);
 	CapsuleMesh::create_mesh_array(capsule_array, radius, height, 32, 8);
