@@ -35,6 +35,7 @@
 #include "core/io/file_access.h"
 
 #include <cstdio>
+#include <cstring>
 
 class FileAccessWindows : public FileAccess {
 	GDSOFTCLASS(FileAccessWindows, FileAccess);
@@ -51,19 +52,39 @@ class FileAccessWindows : public FileAccess {
 	// avoid the per-call CRT fread overhead (function call + _lock_file). All
 	// OS reads go through _fread_nolock in cache-sized chunks. Invalidated on
 	// seek / write / resize / close.
-	static constexpr uint64_t READ_CACHE_SIZE = 8192;
+	static constexpr uint64_t READ_CACHE_SIZE = 32768;
 	mutable uint8_t read_cache[READ_CACHE_SIZE];
 	mutable uint64_t read_cache_pos = 0; // File offset of read_cache[0].
 	mutable uint32_t read_cache_filled = 0; // Valid bytes in read_cache.
 	mutable uint32_t read_cache_consumed = 0; // Bytes already served to callers.
+	mutable bool read_eof_seen = false;
 
 	void _invalidate_read_cache() const;
-	// Refills read_cache starting from the current CRT file cursor. Returns
-	// the number of bytes read. Caller must ensure the cache is drained first.
 	uint64_t _fill_read_cache() const;
-	// Before a write in READ_WRITE/WRITE_READ mode, align the CRT cursor with
-	// the logical read position and invalidate the read cache.
 	void _sync_for_write() const;
+	_FORCE_INLINE_ void _ensure_read_mode() const {
+		if (flags == READ_WRITE || flags == WRITE_READ) {
+			if (prev_op == WRITE) {
+				fflush(f);
+				_invalidate_read_cache();
+			}
+			prev_op = READ;
+		}
+	}
+
+	// Shared fast path for get_16/32/64: little-endian read from the cache,
+	// falls through to get_buffer when the value straddles a refill boundary.
+	template <typename T>
+	_FORCE_INLINE_ T _get_cached_le() const {
+		T data = 0;
+		if ((uint64_t)(read_cache_filled - read_cache_consumed) >= sizeof(T)) {
+			memcpy(&data, &read_cache[read_cache_consumed], sizeof(T));
+			read_cache_consumed += sizeof(T);
+			return data;
+		}
+		get_buffer(reinterpret_cast<uint8_t *>(&data), sizeof(T));
+		return data;
+	}
 
 	void _close();
 
@@ -85,6 +106,13 @@ public:
 	virtual uint64_t get_length() const override; ///< get size of the file
 
 	virtual bool eof_reached() const override; ///< reading passed EOF
+
+	// Hot-path override: serve a single byte directly from the read cache,
+	// bypassing the get_buffer virtual dispatch and its mode/length checks.
+	virtual uint8_t get_8() const override;
+	virtual uint16_t get_16() const override;
+	virtual uint32_t get_32() const override;
+	virtual uint64_t get_64() const override;
 
 	virtual uint64_t get_buffer(uint8_t *p_dst, uint64_t p_length) const override;
 

@@ -62,7 +62,9 @@ void FileAccessWindows::check_errors(bool p_write) const {
 			last_error = ERR_FILE_CANT_READ;
 		}
 	}
-	if (!p_write && feof(f)) {
+	// Use the logical EOF flag (see read_eof_seen) instead of feof(f). Only
+	// report EOF once the cache is also drained.
+	if (!p_write && read_eof_seen && read_cache_consumed >= read_cache_filled) {
 		last_error = ERR_FILE_EOF;
 	}
 }
@@ -234,6 +236,7 @@ Error FileAccessWindows::open_internal(const String &p_path, int p_mode_flags) {
 		// Fresh file: reset the read cache base to the CRT's starting position.
 		read_cache_filled = 0;
 		read_cache_consumed = 0;
+		read_eof_seen = false;
 		int64_t aux = _ftelli64(f);
 		read_cache_pos = (aux < 0) ? 0 : (uint64_t)aux;
 		return OK;
@@ -300,6 +303,7 @@ bool FileAccessWindows::is_open() const {
 void FileAccessWindows::_invalidate_read_cache() const {
 	read_cache_filled = 0;
 	read_cache_consumed = 0;
+	read_eof_seen = false;
 	// read_cache_pos is re-established on the next fill / seek.
 }
 
@@ -315,6 +319,12 @@ uint64_t FileAccessWindows::_fill_read_cache() const {
 	// Godot's FileAccess instances are not shared across threads concurrently.
 	size_t n = _fread_nolock(read_cache, 1, READ_CACHE_SIZE, f);
 	read_cache_filled = (uint32_t)n;
+	// Only a zero-byte read means the caller has hit logical EOF. A short
+	// non-zero fill is just readahead finding less than a full chunk left;
+	// the caller still has bytes to consume from the cache.
+	if (n == 0) {
+		read_eof_seen = true;
+	}
 	return n;
 }
 
@@ -332,28 +342,38 @@ void FileAccessWindows::seek(uint64_t p_position) {
 	// Fast path: seek landing inside the currently cached range needs no syscall.
 	if (read_cache_filled > 0 && p_position >= read_cache_pos && p_position <= read_cache_pos + read_cache_filled) {
 		read_cache_consumed = (uint32_t)(p_position - read_cache_pos);
+		read_eof_seen = false; // Seeking backwards clears any sticky EOF.
+		prev_op = 0;
+		return;
+	}
+
+	// Try the CRT seek first. Only invalidate the cache on success so that a
+	// failed seek leaves the caller's logical position intact (matching the
+	// CRT contract: "on error, the file position is not changed").
+	if (_fseeki64(f, p_position, SEEK_SET) != 0) {
+		check_errors();
 		prev_op = 0;
 		return;
 	}
 
 	_invalidate_read_cache();
 	read_cache_pos = p_position;
-
-	if (_fseeki64(f, p_position, SEEK_SET)) {
-		check_errors();
-	}
 	prev_op = 0;
 }
 
 void FileAccessWindows::seek_end(int64_t p_position) {
 	ERR_FAIL_NULL(f);
 
-	_invalidate_read_cache();
-
-	if (_fseeki64(f, p_position, SEEK_END)) {
+	// Same failure contract as seek(): keep the cache on error so the caller's
+	// logical position stays valid (e.g. seek_end(-len - 10) on a short file
+	// should be a no-op, not a trip to EOF).
+	if (_fseeki64(f, p_position, SEEK_END) != 0) {
 		check_errors();
+		prev_op = 0;
+		return;
 	}
-	// Sync our notion of the position with the CRT after a SEEK_END.
+
+	_invalidate_read_cache();
 	int64_t aux = _ftelli64(f);
 	read_cache_pos = (aux < 0) ? 0 : (uint64_t)aux;
 	prev_op = 0;
@@ -394,30 +414,70 @@ uint64_t FileAccessWindows::get_length() const {
 }
 
 bool FileAccessWindows::eof_reached() const {
-	// Bytes still queued in the cache mean we are not at logical EOF, even if
-	// the underlying stream already signalled EOF on its last refill.
+	// Logical EOF: cache drained AND we've actually observed a read that
+	// produced fewer bytes than asked for. Avoids false positives from a
+	// short readahead on a small file.
+	return read_eof_seen && read_cache_consumed >= read_cache_filled;
+}
+
+uint8_t FileAccessWindows::get_8() const {
+	ERR_FAIL_NULL_V(f, 0);
+	_ensure_read_mode();
+
 	if (read_cache_consumed < read_cache_filled) {
-		return false;
+		return read_cache[read_cache_consumed++];
 	}
-	return f && feof(f);
+
+	// Cache empty: refill and serve. Base class returns 0 on EOF; match that.
+	if (_fill_read_cache() == 0) {
+		check_errors();
+		return 0;
+	}
+	check_errors();
+	return read_cache[read_cache_consumed++];
+}
+
+uint16_t FileAccessWindows::get_16() const {
+	ERR_FAIL_NULL_V(f, 0);
+	_ensure_read_mode();
+	uint16_t data = _get_cached_le<uint16_t>();
+	if (big_endian) {
+		data = BSWAP16(data);
+	}
+	return data;
+}
+
+uint32_t FileAccessWindows::get_32() const {
+	ERR_FAIL_NULL_V(f, 0);
+	_ensure_read_mode();
+	uint32_t data = _get_cached_le<uint32_t>();
+	if (big_endian) {
+		data = BSWAP32(data);
+	}
+	return data;
+}
+
+uint64_t FileAccessWindows::get_64() const {
+	ERR_FAIL_NULL_V(f, 0);
+	_ensure_read_mode();
+	uint64_t data = _get_cached_le<uint64_t>();
+	if (big_endian) {
+		data = BSWAP64(data);
+	}
+	return data;
 }
 
 uint64_t FileAccessWindows::get_buffer(uint8_t *p_dst, uint64_t p_length) const {
 	ERR_FAIL_NULL_V(f, -1);
 	ERR_FAIL_COND_V(!p_dst && p_length > 0, -1);
 
-	if (flags == READ_WRITE || flags == WRITE_READ) {
-		if (prev_op == WRITE) {
-			fflush(f);
-			_invalidate_read_cache();
-		}
-		prev_op = READ;
-	}
+	_ensure_read_mode();
 
 	if (p_length == 0) {
 		return 0;
 	}
 
+	const uint64_t requested = p_length;
 	uint64_t total_read = 0;
 
 	// 1) Drain whatever is already sitting in the cache.
@@ -431,34 +491,34 @@ uint64_t FileAccessWindows::get_buffer(uint8_t *p_dst, uint64_t p_length) const 
 		p_length -= to_copy;
 	}
 
-	if (p_length == 0) {
-		return total_read;
+	if (p_length > 0) {
+		if (p_length >= READ_CACHE_SIZE) {
+			// 2) Bypass: request is large enough to skip the cache entirely.
+			read_cache_pos += read_cache_filled;
+			read_cache_filled = 0;
+			read_cache_consumed = 0;
+
+			const size_t n = _fread_nolock(p_dst, 1, p_length, f);
+			read_cache_pos += n;
+			total_read += n;
+		} else {
+			// 3) Small tail: refill cache and serve from it.
+			const uint64_t filled = _fill_read_cache();
+			if (filled > 0) {
+				const uint32_t to_copy = (uint32_t)MIN(filled, p_length);
+				memcpy(p_dst, &read_cache[0], to_copy);
+				read_cache_consumed += to_copy;
+				total_read += to_copy;
+			}
+		}
 	}
 
-	// 2) Cache is empty. For reads at least as large as a cache-full, go
-	// straight to the OS. Small reads refill the cache to amortize future calls.
-	if (p_length >= READ_CACHE_SIZE) {
-		read_cache_pos += read_cache_filled;
-		read_cache_filled = 0;
-		read_cache_consumed = 0;
-
-		const size_t n = _fread_nolock(p_dst, 1, p_length, f);
-		read_cache_pos += n;
-		total_read += n;
-		check_errors();
-		return total_read;
+	// A short overall read tells the caller they hit logical EOF during this
+	// operation, matching the original "feof set after short fread" contract.
+	if (total_read < requested) {
+		read_eof_seen = true;
 	}
-
-	// 3) Small tail: refill cache and serve from it.
-	const uint64_t filled = _fill_read_cache();
 	check_errors();
-	if (filled == 0) {
-		return total_read;
-	}
-	const uint32_t to_copy = (uint32_t)MIN(filled, p_length);
-	memcpy(p_dst, &read_cache[0], to_copy);
-	read_cache_consumed += to_copy;
-	total_read += to_copy;
 	return total_read;
 }
 
