@@ -41,11 +41,6 @@ TEST_FORCE_LINK(test_concave_polygon_shape_3d)
 
 namespace TestConcavePolygonShape3D {
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// A flat unit triangle in the XZ plane, vertices in CCW order from above.
 static Vector<Vector3> make_one_triangle() {
 	Vector<Vector3> f;
 	f.push_back(Vector3(0, 0, 0));
@@ -54,14 +49,11 @@ static Vector<Vector3> make_one_triangle() {
 	return f;
 }
 
-// Two triangles sharing an edge: a quad split diagonally.
 static Vector<Vector3> make_two_triangles() {
 	Vector<Vector3> f;
-	// Triangle 1
 	f.push_back(Vector3(0, 0, 0));
 	f.push_back(Vector3(1, 0, 0));
 	f.push_back(Vector3(1, 0, 1));
-	// Triangle 2 - shares edge (0,0,0)-(1,0,1)
 	f.push_back(Vector3(0, 0, 0));
 	f.push_back(Vector3(1, 0, 1));
 	f.push_back(Vector3(0, 0, 1));
@@ -90,7 +82,6 @@ TEST_CASE("[SceneTree][ConcavePolygonShape3D] set_faces emits changed signal") {
 	Ref<ConcavePolygonShape3D> shape;
 	shape.instantiate();
 
-	// set_faces calls _update_shape() (which emits) and then emit_changed() => 2 emissions.
 	Array two_signals_no_args = { Array(), Array() };
 
 	SIGNAL_WATCH(shape.ptr(), "changed");
@@ -111,7 +102,6 @@ TEST_CASE("[SceneTree][ConcavePolygonShape3D] get_enclosing_radius with faces") 
 	shape.instantiate();
 	shape->set_faces(make_one_triangle());
 
-	// Triangle vertices: (0,0,0), (1,0,0), (0,0,1). Furthest from origin is distance 1.
 	CHECK(Math::is_equal_approx(shape->get_enclosing_radius(), (real_t)1.0));
 }
 
@@ -134,7 +124,6 @@ TEST_CASE("[SceneTree][ConcavePolygonShape3D] set_backface_collision_enabled emi
 	shape.instantiate();
 	shape->set_faces(make_one_triangle());
 
-	// Like set_faces, the setter calls _update_shape() (emits) + emit_changed() => 2 emissions per toggle.
 	Array two_signals_no_args = { Array(), Array() };
 
 	SIGNAL_WATCH(shape.ptr(), "changed");
@@ -148,8 +137,6 @@ TEST_CASE("[SceneTree][ConcavePolygonShape3D] set_backface_collision_enabled emi
 	SIGNAL_UNWATCH(shape.ptr(), "changed");
 }
 
-// Regression test for the early-return guard added to set_backface_collision_enabled.
-// Setting the same value must not fire changed or trigger an update.
 TEST_CASE("[SceneTree][ConcavePolygonShape3D] set_backface_collision_enabled no-op when value unchanged") {
 	Ref<ConcavePolygonShape3D> shape;
 	shape.instantiate();
@@ -157,21 +144,18 @@ TEST_CASE("[SceneTree][ConcavePolygonShape3D] set_backface_collision_enabled no-
 
 	SIGNAL_WATCH(shape.ptr(), "changed");
 
-	// Default is false; setting false again must be a no-op.
 	shape->set_backface_collision_enabled(false);
 	SIGNAL_CHECK_FALSE("changed");
 
 	shape->set_backface_collision_enabled(true);
 	SIGNAL_DISCARD("changed");
 
-	// Now true; setting true again must be a no-op.
 	shape->set_backface_collision_enabled(true);
 	SIGNAL_CHECK_FALSE("changed");
 
 	SIGNAL_UNWATCH(shape.ptr(), "changed");
 }
 
-// When faces is empty, toggling backface must not emit changed (existing guard: !faces.is_empty()).
 TEST_CASE("[SceneTree][ConcavePolygonShape3D] set_backface_collision_enabled no changed when faces empty") {
 	Ref<ConcavePolygonShape3D> shape;
 	shape.instantiate();
@@ -191,7 +175,6 @@ TEST_CASE("[SceneTree][ConcavePolygonShape3D] get_debug_mesh_lines deduplicates 
 
 	Vector<Vector3> lines = shape->get_debug_mesh_lines();
 
-	// Two triangles sharing one edge have 5 unique edges => 10 points.
 	CHECK(lines.size() == 10);
 }
 
@@ -202,12 +185,44 @@ TEST_CASE("[SceneTree][ConcavePolygonShape3D] get_debug_mesh_lines empty on empt
 	CHECK(shape->get_debug_mesh_lines().is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// BVH helpers
-// ---------------------------------------------------------------------------
+TEST_CASE("[SceneTree][ConcavePolygonShape3D] get_debug_mesh_lines is stable across repeated calls") {
+	Ref<ConcavePolygonShape3D> shape;
+	shape.instantiate();
+	shape->set_faces(make_two_triangles());
 
-// Build a flat grid of triangles covering [0,W] x [0, D] in XZ at y=0.
-// Each cell is split into 2 triangles; returns packed face-vertex triples.
+	const Vector<Vector3> first = shape->get_debug_mesh_lines();
+	const Vector<Vector3> second = shape->get_debug_mesh_lines();
+
+	REQUIRE(first.size() == second.size());
+	for (int i = 0; i < first.size(); i++) {
+		CHECK(first[i] == second[i]);
+	}
+}
+
+TEST_CASE("[SceneTree][ConcavePolygonShape3D] get_debug_mesh_lines invalidates on geometry change") {
+	Ref<ConcavePolygonShape3D> shape;
+	shape.instantiate();
+	shape->set_faces(make_one_triangle());
+
+	const Vector<Vector3> before = shape->get_debug_mesh_lines();
+	CHECK(before.size() == 6);
+
+	shape->set_faces(make_two_triangles());
+
+	const Vector<Vector3> after = shape->get_debug_mesh_lines();
+	CHECK(after.size() == 10);
+}
+
+TEST_CASE("[SceneTree][ConcavePolygonShape3D] get_debug_mesh_lines invalidates on clear") {
+	Ref<ConcavePolygonShape3D> shape;
+	shape.instantiate();
+	shape->set_faces(make_two_triangles());
+	CHECK(shape->get_debug_mesh_lines().size() == 10);
+
+	shape->set_faces(Vector<Vector3>());
+	CHECK(shape->get_debug_mesh_lines().is_empty());
+}
+
 static Vector<Vector3> make_grid(int p_cols, int p_rows) {
 	Vector<Vector3> f;
 	for (int r = 0; r < p_rows; r++) {
@@ -227,13 +242,6 @@ static Vector<Vector3> make_grid(int p_cols, int p_rows) {
 	return f;
 }
 
-// Validate structural invariants of a fully-built GodotConcavePolygonShape3D BVH:
-//   - node count == 2*N-1 for N faces
-//   - every leaf has face_index in [0, N)
-//   - every internal node has face_index == -1
-//   - child indices are valid or -1
-//   - leaf AABB contains all three of its triangle's vertices
-//   - internal node AABB == union of its two children's AABBs
 static void check_bvh_invariants(const GodotConcavePolygonShape3D &p_shape) {
 	const int face_count = p_shape.faces.size();
 	REQUIRE(face_count > 0);
@@ -245,19 +253,14 @@ static void check_bvh_invariants(const GodotConcavePolygonShape3D &p_shape) {
 	const GodotConcavePolygonShape3D::Face *faces = p_shape.faces.ptr();
 	const Vector3 *verts = p_shape.vertices.ptr();
 
-	// Small epsilon to absorb rounding in `AABB::has_point`, which evaluates
-	// `position + size` whose float32 result can differ from the originally
-	// stored max vertex by a ULP.
 	const real_t EPS = 1e-4f;
 
 	for (int i = 0; i < expected_node_count; i++) {
 		const GodotConcavePolygonShape3D::BVH &node = bvh[i];
 		if (node.face_index >= 0) {
-			// Leaf
 			CHECK(node.left == -1);
 			CHECK(node.right == -1);
 			CHECK(node.face_index < face_count);
-			// AABB must contain all three vertices of this face (within epsilon).
 			AABB grown = node.aabb;
 			grown.grow_by(EPS);
 			const GodotConcavePolygonShape3D::Face &f = faces[node.face_index];
@@ -265,12 +268,10 @@ static void check_bvh_invariants(const GodotConcavePolygonShape3D &p_shape) {
 				CHECK(grown.has_point(verts[f.indices[j]]));
 			}
 		} else {
-			// Internal
 			CHECK(node.left >= 0);
 			CHECK(node.right >= 0);
 			CHECK(node.left < expected_node_count);
 			CHECK(node.right < expected_node_count);
-			// AABB must equal union of children.
 			AABB merged = bvh[node.left].aabb;
 			merged.merge_with(bvh[node.right].aabb);
 			CHECK(node.aabb.is_equal_approx(merged));
@@ -278,15 +279,10 @@ static void check_bvh_invariants(const GodotConcavePolygonShape3D &p_shape) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// BVH structural invariants
-// ---------------------------------------------------------------------------
-
 TEST_CASE("[GodotConcavePolygonShape3D] BVH: single triangle invariants") {
 	GodotConcavePolygonShape3D shape;
 	shape._setup(make_one_triangle(), false);
 	shape._wait_for_bvh_build();
-	// 1 face -> 1 node, which is also a leaf
 	REQUIRE(shape.bvh.size() == 1);
 	CHECK(shape.bvh[0].face_index == 0);
 	CHECK(shape.bvh[0].left == -1);
@@ -308,7 +304,6 @@ TEST_CASE("[GodotConcavePolygonShape3D] BVH: grid 3x3 invariants") {
 }
 
 TEST_CASE("[GodotConcavePolygonShape3D] BVH: node count equals 2N-1") {
-	// Try several sizes, including odd, even, and powers of two.
 	for (int cols : { 1, 2, 3, 4, 7, 8, 15, 16 }) {
 		GodotConcavePolygonShape3D shape;
 		shape._setup(make_grid(cols, cols), false);
@@ -318,13 +313,6 @@ TEST_CASE("[GodotConcavePolygonShape3D] BVH: node count equals 2N-1") {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// BVH correctness: intersect_segment vs brute-force oracle
-// ---------------------------------------------------------------------------
-
-// A grid of N*N cells (2*N*N triangles) is the mesh.
-// Rays straight down from above each cell center must all hit.
-// Rays fired upward (away) must all miss.
 TEST_CASE("[GodotConcavePolygonShape3D] BVH intersect_segment: hit above each grid cell") {
 	const int N = 5;
 	Vector<Vector3> faces = make_grid(N, N);
@@ -352,7 +340,6 @@ TEST_CASE("[GodotConcavePolygonShape3D] BVH intersect_segment: miss when segment
 
 	Vector3 result, normal;
 	int face_index;
-	// Segment entirely above the mesh, never crosses y=0.
 	bool hit = shape.intersect_segment(Vector3(2, 5, 2), Vector3(2, 1, 2), result, normal, face_index, false);
 	CHECK_FALSE(hit);
 }
@@ -363,7 +350,6 @@ TEST_CASE("[GodotConcavePolygonShape3D] BVH intersect_segment: miss when segment
 
 	Vector3 result, normal;
 	int face_index;
-	// Entirely beside the [0,4]x[0,4] grid in XZ.
 	bool hit = shape.intersect_segment(Vector3(10, 2, 2), Vector3(10, -2, 2), result, normal, face_index, false);
 	CHECK_FALSE(hit);
 }
@@ -377,29 +363,10 @@ TEST_CASE("[GodotConcavePolygonShape3D] BVH intersect_segment: empty mesh always
 	CHECK_FALSE(shape.intersect_segment(Vector3(0, 1, 0), Vector3(0, -1, 0), result, normal, face_index, false));
 }
 
-// ---------------------------------------------------------------------------
-// BVH fuzz: randomized meshes of well-formed unit quads, strict geometric guarantees
-// ---------------------------------------------------------------------------
-//
-// We can't compare BVH results to `Geometry3D::segment_intersects_triangle` as an
-// oracle because the BVH path uses `GodotFaceShape3D::intersect_segment` which has
-// different numerics and degenerate-triangle behavior. Instead we construct a
-// mesh where every triangle is a known non-degenerate quad at a known center,
-// and assert two strict, mesh-independent invariants for every ray:
-//
-//   1. A ray fired straight down through the center of a quad MUST hit, and the
-//      hit point's y must equal the quad's y (+/- epsilon).
-//   2. A ray fired entirely outside the scene bounds MUST miss.
-//
-// This exercises BVH tree traversal, leaf AABB correctness, and async build
-// plumbing under random tree shapes.
-
-// Deterministic LCG so tests are reproducible without external RNG deps.
 struct SimpleLCG {
 	uint64_t state;
 	explicit SimpleLCG(uint64_t p_seed) :
 			state(p_seed) {}
-	// Returns a float in [0, 1).
 	float next_float() {
 		state = state * 6364136223846793005ULL + 1442695040888963407ULL;
 		return (float)((state >> 33) & 0x7FFFFFFF) / (float)0x7FFFFFFF;
@@ -407,27 +374,19 @@ struct SimpleLCG {
 	float next_range(float lo, float hi) { return lo + next_float() * (hi - lo); }
 };
 
-// Scatter `p_num_quads` unit quads (2 triangles each) on an XZ grid so that no
-// two quads' XZ footprints overlap, but with randomized Y heights. That way a
-// ray fired straight down through any quad's center uniquely hits that quad.
-// The XZ positions are jittered within their grid cell for randomness, but the
-// jitter is bounded so cells remain non-overlapping.
 static Vector<Vector3> scatter_unit_quads(int p_num_quads, SimpleLCG &p_rng,
 		float p_y_extent, Vector<Vector3> &r_centers) {
 	Vector<Vector3> faces;
 	faces.resize(p_num_quads * 6);
 	r_centers.resize(p_num_quads);
 
-	// Cell size of 4 guarantees 3 units of slack between unit quads.
 	const float CELL = 4.0f;
-	// Enough columns so every quad fits in its own cell.
 	const int cols = (int)Math::ceil(Math::sqrt((real_t)p_num_quads));
 
 	for (int q = 0; q < p_num_quads; q++) {
 		const int row = q / cols;
 		const int col = q % cols;
 
-		// Jitter range ensures quads never touch cell boundaries.
 		const float jitter = (CELL - 1.5f) * 0.5f;
 
 		Vector3 c(
@@ -466,11 +425,8 @@ TEST_CASE("[GodotConcavePolygonShape3D] BVH fuzz: scattered quads must be hit fr
 		shape._wait_for_bvh_build();
 
 		check_bvh_invariants(shape);
-		// 2 triangles per quad, 2N-1 nodes per N triangles.
 		CHECK(shape.bvh.size() == 2 * num_quads * 2 - 1);
 
-		// Invariant: ray through each quad center uniquely hits that quad
-		// (XZ footprints are guaranteed non-overlapping by the grid layout).
 		for (int q = 0; q < num_quads; q++) {
 			const Vector3 &c = centers[q];
 			Vector3 from = c + Vector3(0, Y_EXTENT + 10, 0);
@@ -496,7 +452,6 @@ TEST_CASE("[GodotConcavePolygonShape3D] BVH fuzz: rays outside scene AABB must m
 	shape._setup(faces, false);
 	shape._wait_for_bvh_build();
 
-	// Compute actual scene AABB and shoot rays well outside it.
 	AABB scene;
 	for (int i = 0; i < faces.size(); i++) {
 		if (i == 0) {
@@ -507,7 +462,6 @@ TEST_CASE("[GodotConcavePolygonShape3D] BVH fuzz: rays outside scene AABB must m
 	}
 
 	for (int i = 0; i < 64; i++) {
-		// Start far to the +X side of the scene; fire further +X.
 		Vector3 from(scene.position.x + scene.size.x + 100.0f + rng.next_range(0, 10),
 				rng.next_range(-500, 500),
 				rng.next_range(-500, 500));
@@ -521,9 +475,6 @@ TEST_CASE("[GodotConcavePolygonShape3D] BVH fuzz: rays outside scene AABB must m
 }
 
 TEST_CASE("[GodotConcavePolygonShape3D] BVH fuzz: random rays don't crash, hit points valid") {
-	// Tree-shape / traversal robustness fuzz. We don't assert specific hit
-	// semantics (edge-grazing rays have inherent numerical ambiguity), only
-	// that any reported hit is internally consistent.
 	SimpleLCG rng(0xBADC0FFEE0DDF00DULL);
 
 	Vector<Vector3> centers;
@@ -533,7 +484,6 @@ TEST_CASE("[GodotConcavePolygonShape3D] BVH fuzz: random rays don't crash, hit p
 	shape._setup(faces, false);
 	shape._wait_for_bvh_build();
 
-	// Compute actual scene AABB for validation.
 	AABB scene;
 	for (int i = 0; i < faces.size(); i++) {
 		if (i == 0) {
@@ -542,7 +492,6 @@ TEST_CASE("[GodotConcavePolygonShape3D] BVH fuzz: random rays don't crash, hit p
 			scene.expand_to(faces[i]);
 		}
 	}
-	// Grow slightly to avoid floating-point boundary rejection.
 	scene.grow_by(0.01f);
 
 	const int RAYS = 512;
@@ -565,28 +514,18 @@ TEST_CASE("[GodotConcavePolygonShape3D] BVH fuzz: random rays don't crash, hit p
 	}
 }
 
-// ---------------------------------------------------------------------------
-// BVH async: re-setup while build in-flight must not crash or corrupt
-// ---------------------------------------------------------------------------
-
 TEST_CASE("[GodotConcavePolygonShape3D] BVH async: re-setup flushes previous build") {
 	GodotConcavePolygonShape3D shape;
-	// First setup - kicks off async build.
 	shape._setup(make_grid(8, 8), false);
-	// Immediately re-setup before the first build may have finished.
-	// _setup must call _wait_for_bvh_build internally, so this must not crash.
 	shape._setup(make_grid(4, 4), false);
 	shape._wait_for_bvh_build();
 
-	// Final state must reflect the second setup only.
 	const int expected_faces = (int)shape.faces.size();
 	CHECK(shape.bvh.size() == 2 * expected_faces - 1);
 	check_bvh_invariants(shape);
 }
 
 TEST_CASE("[GodotConcavePolygonShape3D] BVH async: query immediately after setup") {
-	// Kick off the async build and immediately issue a query.
-	// _ensure_bvh_built() inside intersect_segment must block until ready.
 	GodotConcavePolygonShape3D shape;
 	shape._setup(make_grid(16, 16), false);
 
@@ -599,13 +538,10 @@ TEST_CASE("[GodotConcavePolygonShape3D] BVH async: query immediately after setup
 }
 
 TEST_CASE("[GodotConcavePolygonShape3D] BVH async: destructor while build in-flight") {
-	// Ensure ~GodotConcavePolygonShape3D waits for the task and doesn't crash.
 	{
 		GodotConcavePolygonShape3D shape;
 		shape._setup(make_grid(32, 32), false);
-		// shape goes out of scope here; destructor must join the task.
 	}
-	// If we reach this line without a crash/assert the test passes.
 	CHECK(true);
 }
 
