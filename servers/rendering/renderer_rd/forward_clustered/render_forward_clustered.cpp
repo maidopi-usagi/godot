@@ -84,6 +84,55 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_voxelgi() 
 	}
 }
 
+void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_avboit(const Size2i &p_size, uint32_t p_slice_count) {
+	ERR_FAIL_NULL(render_buffers);
+	ERR_FAIL_COND(p_size.x <= 0 || p_size.y <= 0 || p_slice_count == 0);
+
+	const uint32_t usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
+	const uint32_t color_usage_bits = RenderSceneBuffersRD::get_color_usage_bits(false, false, true) | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
+
+	if (render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_SPLAT)) {
+		const RD::TextureFormat splat_format = render_buffers->get_texture_format(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_SPLAT);
+		const RD::TextureFormat extinction_format = render_buffers->get_texture_format(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_EXTINCTION);
+		if (splat_format.width != (uint32_t)p_size.x || splat_format.height != (uint32_t)p_size.y || extinction_format.array_layers != p_slice_count) {
+			render_buffers->free_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_SPLAT);
+			render_buffers->free_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_EXTINCTION);
+			render_buffers->free_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_INTEGRAL);
+		}
+	}
+
+	if (!render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_SPLAT)) {
+		render_buffers->create_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_SPLAT, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, color_usage_bits, RD::TEXTURE_SAMPLES_1, p_size);
+	}
+
+	if (!render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_EXTINCTION)) {
+		render_buffers->create_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_EXTINCTION, RD::DATA_FORMAT_R32_UINT, usage_bits | RD::TEXTURE_USAGE_STORAGE_ATOMIC_BIT, RD::TEXTURE_SAMPLES_1, p_size, p_slice_count);
+	}
+
+	if (!render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_INTEGRAL)) {
+		render_buffers->create_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_INTEGRAL, RD::DATA_FORMAT_R16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, p_size, p_slice_count);
+	}
+}
+
+RendererRD::AVBOIT::Buffers RenderForwardClustered::RenderBufferDataForwardClustered::get_avboit_buffers(const Size2i &p_size, const Size2i &p_full_size, uint32_t p_slice_count) {
+	ensure_avboit(p_size, p_slice_count);
+
+	RendererRD::AVBOIT::Buffers buffers;
+	buffers.splat = render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_SPLAT);
+	buffers.extinction = render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_EXTINCTION);
+	buffers.integral = render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_INTEGRAL);
+	buffers.size = p_size;
+	buffers.full_size = p_full_size;
+	buffers.slice_count = p_slice_count;
+	return buffers;
+}
+
+RID RenderForwardClustered::RenderBufferDataForwardClustered::get_avboit_splat_fb() {
+	ERR_FAIL_NULL_V(render_buffers, RID());
+	RID splat = render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_SPLAT);
+	return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), splat);
+}
+
 void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_fsr2(RendererRD::FSR2Effect *p_effect) {
 	if (fsr2_context == nullptr) {
 		fsr2_context = p_effect->create_context(render_buffers->get_internal_size(), render_buffers->get_target_size());
@@ -452,6 +501,10 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 					pipeline_key.color_pass_flags |= SceneShaderForwardClustered::PIPELINE_COLOR_PASS_FLAG_TRANSPARENT;
 				}
 
+				if constexpr ((p_color_pass_flags & COLOR_PASS_FLAG_AVBOIT_ACCUM) != 0) {
+					pipeline_key.color_pass_flags |= SceneShaderForwardClustered::PIPELINE_COLOR_PASS_FLAG_AVBOIT_ACCUM;
+				}
+
 				if constexpr ((p_color_pass_flags & COLOR_PASS_FLAG_MULTIVIEW) != 0) {
 					pipeline_key.color_pass_flags |= SceneShaderForwardClustered::PIPELINE_COLOR_PASS_FLAG_MULTIVIEW;
 				}
@@ -637,6 +690,8 @@ void RenderForwardClustered::_render_list(RenderingDevice::DrawListID p_draw_lis
 				VALID_FLAG_COMBINATION(0);
 				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_TRANSPARENT);
 				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_TRANSPARENT | COLOR_PASS_FLAG_MULTIVIEW);
+				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_TRANSPARENT | COLOR_PASS_FLAG_AVBOIT_ACCUM);
+				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_TRANSPARENT | COLOR_PASS_FLAG_AVBOIT_ACCUM | COLOR_PASS_FLAG_MULTIVIEW);
 				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_TRANSPARENT | COLOR_PASS_FLAG_MOTION_VECTORS);
 				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_SEPARATE_SPECULAR);
 				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_SEPARATE_SPECULAR | COLOR_PASS_FLAG_MULTIVIEW);
@@ -2362,12 +2417,14 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		}
 	}
 
-	if (scene_state.used_depth_texture || global_surface_data.depth_texture_used) {
+	bool use_avboit = rb_data.is_valid() && avboit != nullptr && !render_list[RENDER_LIST_ALPHA].elements.is_empty() && GLOBAL_GET_CACHED(bool, "rendering/transparent/avboit/enabled");
+
+	if (scene_state.used_depth_texture || global_surface_data.depth_texture_used || use_avboit) {
 		RENDER_TIMESTAMP("Copy Depth Texture");
 
 		_render_buffers_ensure_depth_texture(p_render_data);
 
-		if (scene_state.used_depth_texture) {
+		if (scene_state.used_depth_texture || use_avboit) {
 			// Copy depth texture to backbuffer so we can read from it
 			_render_buffers_copy_depth_texture(p_render_data);
 		}
@@ -2400,6 +2457,16 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	RD::get_singleton()->draw_command_begin_label("Render 3D Transparent Pass");
 
+	RendererRD::AVBOIT::Buffers avboit_buffers;
+	if (use_avboit) {
+		const int slice_count = CLAMP(int(GLOBAL_GET_CACHED(int, "rendering/transparent/avboit/slices")), 4, 256);
+		const int downscale = CLAMP(int(GLOBAL_GET_CACHED(int, "rendering/transparent/avboit/downscale")), 1, 16);
+		Size2i avboit_size = Size2i(MAX(1, (screen_size.x + downscale - 1) / downscale), MAX(1, (screen_size.y + downscale - 1) / downscale));
+
+		avboit_buffers = rb_data->get_avboit_buffers(avboit_size, screen_size, slice_count);
+		avboit->clear(avboit_buffers);
+	}
+
 	uint32_t transparent_pass_uniform_buffer_index = _setup_environment(p_render_data, is_reflection_probe, screen_size, screen_size, p_default_bg_color, false);
 
 	rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_ALPHA, p_render_data, radiance_texture, samplers, transparent_pass_uniform_buffer_index, true);
@@ -2409,9 +2476,20 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		// Motion vectors should not be overwritten by transparent objects.
 		transparent_color_pass_flags &= ~uint32_t(COLOR_PASS_FLAG_MOTION_VECTORS);
 
-		RID alpha_framebuffer = rb_data.is_valid() ? rb_data->get_color_pass_fb(transparent_color_pass_flags) : color_only_framebuffer;
-		RenderListParameters render_list_params(render_list[RENDER_LIST_ALPHA].elements.ptr(), render_list[RENDER_LIST_ALPHA].element_info.ptr(), render_list[RENDER_LIST_ALPHA].elements.size(), reverse_cull, PASS_MODE_COLOR, transparent_color_pass_flags, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, base_specialization);
-		_render_list_with_draw_list(&render_list_params, alpha_framebuffer, RD::DRAW_DEFAULT_ALL, Vector<Color>(), 0.0f, 0u, p_render_data->render_region);
+		if (use_avboit) {
+			uint32_t avboit_color_pass_flags = transparent_color_pass_flags | uint32_t(COLOR_PASS_FLAG_AVBOIT_ACCUM);
+			RID avboit_splat_fb = rb_data->get_avboit_splat_fb();
+			RenderListParameters avboit_render_list_params(render_list[RENDER_LIST_ALPHA].elements.ptr(), render_list[RENDER_LIST_ALPHA].element_info.ptr(), render_list[RENDER_LIST_ALPHA].elements.size(), reverse_cull, PASS_MODE_COLOR, avboit_color_pass_flags, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, base_specialization);
+			_render_list_with_draw_list(&avboit_render_list_params, avboit_splat_fb, RD::DRAW_DEFAULT_ALL, Vector<Color>(), 0.0f, 0u, Rect2());
+			avboit->integrate(avboit_buffers);
+			if (!use_msaa) {
+				avboit->resolve(avboit_buffers, rb->get_internal_texture());
+			}
+		} else {
+			RID alpha_framebuffer = rb_data.is_valid() ? rb_data->get_color_pass_fb(transparent_color_pass_flags) : color_only_framebuffer;
+			RenderListParameters render_list_params(render_list[RENDER_LIST_ALPHA].elements.ptr(), render_list[RENDER_LIST_ALPHA].element_info.ptr(), render_list[RENDER_LIST_ALPHA].elements.size(), reverse_cull, PASS_MODE_COLOR, transparent_color_pass_flags, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, base_specialization);
+			_render_list_with_draw_list(&render_list_params, alpha_framebuffer, RD::DRAW_DEFAULT_ALL, Vector<Color>(), 0.0f, 0u, p_render_data->render_region);
+		}
 	}
 
 	RD::get_singleton()->draw_command_end_label();
@@ -3747,6 +3825,15 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 		RID ssr_mip_level = (rb_data.is_valid() && !rb_data->ss_effects_data.ssr.half_size && rb->has_texture(RB_SCOPE_SSR, RB_MIP_LEVEL)) ? rb->get_texture(RB_SCOPE_SSR, RB_MIP_LEVEL) : RID();
 		RID texture = ssr_mip_level.is_valid() ? ssr_mip_level : texture_storage->texture_rd_get_default(is_multiview ? RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_BLACK : RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
 		u.append_id(texture);
+		uniforms.push_back(u);
+	}
+
+	{
+		RD::Uniform u;
+		u.binding = 37;
+		u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+		RID extinction = (rb_data.is_valid() && rb_data->has_avboit()) ? rb->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_EXTINCTION) : avboit_default_extinction;
+		u.append_id(extinction);
 		uniforms.push_back(u);
 	}
 
@@ -5148,6 +5235,20 @@ RenderForwardClustered::RenderForwardClustered() {
 	}
 
 	{
+		RD::TextureFormat tf;
+		tf.format = RD::DATA_FORMAT_R32_UINT;
+		tf.width = 1;
+		tf.height = 1;
+		tf.depth = 1;
+		tf.array_layers = 1;
+		tf.texture_type = RD::TEXTURE_TYPE_2D_ARRAY;
+		tf.usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT | RD::TEXTURE_USAGE_STORAGE_ATOMIC_BIT;
+		avboit_default_extinction = RD::get_singleton()->texture_create(tf, RD::TextureView());
+		RD::get_singleton()->set_resource_name(avboit_default_extinction, "AVBOIT default extinction");
+		RD::get_singleton()->texture_clear(avboit_default_extinction, Color(0, 0, 0, 0), 0, 1, 0, 1);
+	}
+
+	{
 		Vector<String> modes;
 		modes.push_back("\n");
 		best_fit_normal.shader.initialize(modes);
@@ -5226,6 +5327,7 @@ RenderForwardClustered::RenderForwardClustered() {
 	taa = memnew(RendererRD::TAA);
 	fsr2_effect = memnew(RendererRD::FSR2Effect);
 	ss_effects = memnew(RendererRD::SSEffects);
+	avboit = memnew(RendererRD::AVBOIT);
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
 	mfx_temporal_effect = memnew(RendererRD::MFXTemporalEffect);
@@ -5248,6 +5350,11 @@ RenderForwardClustered::~RenderForwardClustered() {
 		fsr2_effect = nullptr;
 	}
 
+	if (avboit) {
+		memdelete(avboit);
+		avboit = nullptr;
+	}
+
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	if (mfx_temporal_effect) {
 		memdelete(mfx_temporal_effect);
@@ -5261,6 +5368,9 @@ RenderForwardClustered::~RenderForwardClustered() {
 #endif
 
 	RD::get_singleton()->free_rid(shadow_sampler);
+	if (avboit_default_extinction.is_valid()) {
+		RD::get_singleton()->free_rid(avboit_default_extinction);
+	}
 	RSG::light_storage->directional_shadow_atlas_set_size(0);
 
 	RD::get_singleton()->free_rid(best_fit_normal.pipeline);

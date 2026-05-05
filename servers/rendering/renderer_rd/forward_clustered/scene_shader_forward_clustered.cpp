@@ -316,6 +316,10 @@ uint16_t SceneShaderForwardClustered::ShaderData::_get_shader_version(PipelineVe
 				shader_flags |= SHADER_COLOR_PASS_FLAG_MULTIVIEW;
 			}
 
+			if (p_color_pass_flags & PIPELINE_COLOR_PASS_FLAG_AVBOIT_ACCUM) {
+				shader_flags |= SHADER_COLOR_PASS_FLAG_AVBOIT_ACCUM;
+			}
+
 			return ShaderVersion::SHADER_VERSION_COLOR_PASS * 2 + shader_flags;
 		} break;
 		default: {
@@ -342,8 +346,18 @@ void SceneShaderForwardClustered::ShaderData::_create_pipeline(PipelineKey p_pip
 
 	// Color pass -> attachment 0: Color/Diffuse, attachment 1: Separate Specular, attachment 2: Motion Vectors
 	RD::PipelineColorBlendState::Attachment blend_attachment = blend_mode_to_blend_attachment(BlendMode(blend_mode));
+	RD::PipelineColorBlendState::Attachment blend_attachment_avboit;
+	blend_attachment_avboit.enable_blend = true;
+	blend_attachment_avboit.src_color_blend_factor = RD::BLEND_FACTOR_ONE;
+	blend_attachment_avboit.dst_color_blend_factor = RD::BLEND_FACTOR_ONE;
+	blend_attachment_avboit.color_blend_op = RD::BLEND_OP_ADD;
+	blend_attachment_avboit.src_alpha_blend_factor = RD::BLEND_FACTOR_ONE;
+	blend_attachment_avboit.dst_alpha_blend_factor = RD::BLEND_FACTOR_ONE;
+	blend_attachment_avboit.alpha_blend_op = RD::BLEND_OP_ADD;
 	RD::PipelineColorBlendState blend_state_color_blend;
 	blend_state_color_blend.attachments = { blend_attachment, RD::PipelineColorBlendState::Attachment(), RD::PipelineColorBlendState::Attachment() };
+	RD::PipelineColorBlendState blend_state_avboit_blend;
+	blend_state_avboit_blend.attachments = { blend_attachment_avboit };
 	RD::PipelineColorBlendState blend_state_color_opaque = RD::PipelineColorBlendState::create_disabled(3);
 	RD::PipelineColorBlendState blend_state_depth_normal_roughness = RD::PipelineColorBlendState::create_disabled(1);
 	RD::PipelineColorBlendState blend_state_depth_normal_roughness_giprobe = RD::PipelineColorBlendState::create_disabled(2);
@@ -430,7 +444,11 @@ void SceneShaderForwardClustered::ShaderData::_create_pipeline(PipelineKey p_pip
 
 	RD::PipelineColorBlendState blend_state;
 	if (p_pipeline_key.version == PIPELINE_VERSION_COLOR_PASS) {
-		if (p_pipeline_key.color_pass_flags & PIPELINE_COLOR_PASS_FLAG_TRANSPARENT) {
+		if (p_pipeline_key.color_pass_flags & PIPELINE_COLOR_PASS_FLAG_AVBOIT_ACCUM) {
+			blend_state = blend_state_avboit_blend;
+			depth_stencil_state.enable_depth_test = false;
+			depth_stencil_state.enable_depth_write = false;
+		} else if (p_pipeline_key.color_pass_flags & PIPELINE_COLOR_PASS_FLAG_TRANSPARENT) {
 			if (alpha_antialiasing_mode == ALPHA_ANTIALIASING_ALPHA_TO_COVERAGE) {
 				multisample_state.enable_alpha_to_coverage = true;
 			} else if (alpha_antialiasing_mode == ALPHA_ANTIALIASING_ALPHA_TO_COVERAGE_AND_TO_ONE) {
@@ -659,6 +677,7 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 			"\n#define USE_LIGHTMAP\n", // SHADER_COLOR_PASS_FLAG_LIGHTMAP
 			"\n#define USE_MULTIVIEW\n", // SHADER_COLOR_PASS_FLAG_MULTIVIEW
 			"\n#define MOTION_VECTORS\n", // SHADER_COLOR_PASS_FLAG_MOTION_VECTORS
+			"\n#define MODE_AVBOIT_ACCUM\n", // SHADER_COLOR_PASS_FLAG_AVBOIT_ACCUM
 		};
 
 		for (int i = 0; i < SHADER_COLOR_PASS_FLAG_COUNT; i++) {

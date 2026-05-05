@@ -388,6 +388,17 @@ RID RenderSceneBuffersRD::create_texture_view(const StringName &p_context, const
 	return view_texture.texture;
 }
 
+void RenderSceneBuffersRD::free_texture(const StringName &p_context, const StringName &p_texture_name) {
+	NTKey key(p_context, p_texture_name);
+
+	if (!named_textures.has(key)) {
+		return;
+	}
+
+	free_named_texture(named_textures[key]);
+	named_textures.erase(key);
+}
+
 RID RenderSceneBuffersRD::get_texture(const StringName &p_context, const StringName &p_texture_name) const {
 	NTKey key(p_context, p_texture_name);
 

@@ -3091,6 +3091,37 @@ void fragment_shader(in SceneData scene_data) {
 	frag_color.rgb *= premul_alpha;
 #endif //PREMUL_ALPHA_USED
 
+#ifdef MODE_AVBOIT_ACCUM
+	ivec3 avboit_size = imageSize(avboit_extinction_buffer);
+	ivec2 avboit_pos = ivec2(clamp(floor(gl_FragCoord.xy), vec2(0.0), vec2(avboit_size.xy - ivec2(1))));
+	vec2 avboit_full_min = (gl_FragCoord.xy - vec2(0.5)) * scene_data.viewport_size / vec2(avboit_size.xy);
+	vec2 avboit_full_max = (gl_FragCoord.xy + vec2(0.5)) * scene_data.viewport_size / vec2(avboit_size.xy) - vec2(1.0);
+	ivec2 avboit_full_pos_min = ivec2(clamp(floor(avboit_full_min), vec2(0.0), scene_data.viewport_size - vec2(1.0)));
+	ivec2 avboit_full_pos_max = ivec2(clamp(ceil(avboit_full_max), vec2(0.0), scene_data.viewport_size - vec2(1.0)));
+	ivec2 avboit_full_pos_center = ivec2(clamp(floor((avboit_full_min + avboit_full_max) * 0.5), vec2(0.0), scene_data.viewport_size - vec2(1.0)));
+#ifdef USE_MULTIVIEW
+	float avboit_opaque_depth = texelFetch(sampler2DArray(depth_buffer, SAMPLER_NEAREST_CLAMP), ivec3(avboit_full_pos_center, int(ViewIndex)), 0).r;
+	avboit_opaque_depth = max(avboit_opaque_depth, texelFetch(sampler2DArray(depth_buffer, SAMPLER_NEAREST_CLAMP), ivec3(avboit_full_pos_min, int(ViewIndex)), 0).r);
+	avboit_opaque_depth = max(avboit_opaque_depth, texelFetch(sampler2DArray(depth_buffer, SAMPLER_NEAREST_CLAMP), ivec3(ivec2(avboit_full_pos_max.x, avboit_full_pos_min.y), int(ViewIndex)), 0).r);
+	avboit_opaque_depth = max(avboit_opaque_depth, texelFetch(sampler2DArray(depth_buffer, SAMPLER_NEAREST_CLAMP), ivec3(ivec2(avboit_full_pos_min.x, avboit_full_pos_max.y), int(ViewIndex)), 0).r);
+	avboit_opaque_depth = max(avboit_opaque_depth, texelFetch(sampler2DArray(depth_buffer, SAMPLER_NEAREST_CLAMP), ivec3(avboit_full_pos_max, int(ViewIndex)), 0).r);
+#else
+	float avboit_opaque_depth = texelFetch(sampler2D(depth_buffer, SAMPLER_NEAREST_CLAMP), avboit_full_pos_center, 0).r;
+	avboit_opaque_depth = max(avboit_opaque_depth, texelFetch(sampler2D(depth_buffer, SAMPLER_NEAREST_CLAMP), avboit_full_pos_min, 0).r);
+	avboit_opaque_depth = max(avboit_opaque_depth, texelFetch(sampler2D(depth_buffer, SAMPLER_NEAREST_CLAMP), ivec2(avboit_full_pos_max.x, avboit_full_pos_min.y), 0).r);
+	avboit_opaque_depth = max(avboit_opaque_depth, texelFetch(sampler2D(depth_buffer, SAMPLER_NEAREST_CLAMP), ivec2(avboit_full_pos_min.x, avboit_full_pos_max.y), 0).r);
+	avboit_opaque_depth = max(avboit_opaque_depth, texelFetch(sampler2D(depth_buffer, SAMPLER_NEAREST_CLAMP), avboit_full_pos_max, 0).r);
+#endif
+	if (gl_FragCoord.z < avboit_opaque_depth) {
+		discard;
+	}
+	float avboit_linear_depth = clamp((-vertex.z - scene_data.z_near) / max(scene_data.z_far - scene_data.z_near, 0.0001), 0.0, 0.9999);
+	uint avboit_slice = uint(avboit_linear_depth * float(avboit_size.z));
+	uint avboit_extinction = uint(clamp(-log(max(1.0 - frag_color.a, 0.001)) * 255.0, 0.0, 65535.0));
+	imageAtomicAdd(avboit_extinction_buffer, ivec3(avboit_pos, int(avboit_slice)), avboit_extinction);
+	frag_color.rgb *= frag_color.a;
+#endif // MODE_AVBOIT_ACCUM
+
 #endif //MODE_SEPARATE_SPECULAR
 
 #endif //MODE_RENDER_DEPTH

@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/templates/paged_allocator.h"
+#include "servers/rendering/renderer_rd/effects/avboit.h"
 #include "servers/rendering/multi_uma_buffer.h"
 #include "servers/rendering/renderer_rd/cluster_builder_rd.h"
 #include "servers/rendering/renderer_rd/effects/fsr2.h"
@@ -54,6 +55,9 @@
 #define RB_TEX_NORMAL_ROUGHNESS_MSAA SNAME("normal_roughness_msaa")
 #define RB_TEX_VOXEL_GI SNAME("voxel_gi")
 #define RB_TEX_VOXEL_GI_MSAA SNAME("voxel_gi_msaa")
+#define RB_TEX_AVBOIT_SPLAT SNAME("avboit_splat")
+#define RB_TEX_AVBOIT_EXTINCTION SNAME("avboit_extinction")
+#define RB_TEX_AVBOIT_INTEGRAL SNAME("avboit_integral")
 
 namespace RendererSceneRenderImplementation {
 
@@ -142,6 +146,11 @@ public:
 		RID get_voxelgi(uint32_t p_layer) { return render_buffers->get_texture_slice(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_VOXEL_GI, p_layer, 0); }
 		RID get_voxelgi_msaa(uint32_t p_layer) { return render_buffers->get_texture_slice(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_VOXEL_GI_MSAA, p_layer, 0); }
 
+		void ensure_avboit(const Size2i &p_size, uint32_t p_slice_count);
+		bool has_avboit() const { return render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_AVBOIT_SPLAT); }
+		RendererRD::AVBOIT::Buffers get_avboit_buffers(const Size2i &p_size, const Size2i &p_full_size, uint32_t p_slice_count);
+		RID get_avboit_splat_fb();
+
 		void ensure_fsr2(RendererRD::FSR2Effect *p_effect);
 		RendererRD::FSR2Context *get_fsr2_context() const { return fsr2_context; }
 
@@ -197,6 +206,8 @@ private:
 		RID lut2_texture;
 	} ltc;
 
+	RID avboit_default_extinction;
+
 	enum PassMode {
 		PASS_MODE_COLOR,
 		PASS_MODE_SHADOW,
@@ -214,6 +225,7 @@ private:
 		COLOR_PASS_FLAG_SEPARATE_SPECULAR = 1 << 1,
 		COLOR_PASS_FLAG_MULTIVIEW = 1 << 2,
 		COLOR_PASS_FLAG_MOTION_VECTORS = 1 << 3,
+		COLOR_PASS_FLAG_AVBOIT_ACCUM = 1 << 4,
 	};
 
 	struct GeometryInstanceSurfaceDataCache;
@@ -745,6 +757,7 @@ private:
 	RendererRD::TAA *taa = nullptr;
 	RendererRD::FSR2Effect *fsr2_effect = nullptr;
 	RendererRD::SSEffects *ss_effects = nullptr;
+	RendererRD::AVBOIT *avboit = nullptr;
 
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	RendererRD::MFXTemporalEffect *mfx_temporal_effect = nullptr;

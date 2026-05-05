@@ -216,6 +216,7 @@ public:
 	RID create_texture(const StringName &p_context, const StringName &p_texture_name, const RD::DataFormat p_data_format, const uint32_t p_usage_bits, const RD::TextureSamples p_texture_samples = RD::TEXTURE_SAMPLES_1, const Size2i p_size = Size2i(0, 0), const uint32_t p_layers = 0, const uint32_t p_mipmaps = 1, bool p_unique = true, bool p_discardable = false);
 	RID create_texture_from_format(const StringName &p_context, const StringName &p_texture_name, const RD::TextureFormat &p_texture_format, RD::TextureView p_view = RD::TextureView(), bool p_unique = true);
 	RID create_texture_view(const StringName &p_context, const StringName &p_texture_name, const StringName &p_view_name, RD::TextureView p_view = RD::TextureView());
+	void free_texture(const StringName &p_context, const StringName &p_texture_name);
 	RID get_texture(const StringName &p_context, const StringName &p_texture_name) const;
 	const RD::TextureFormat get_texture_format(const StringName &p_context, const StringName &p_texture_name) const;
 	RID get_texture_slice(const StringName &p_context, const StringName &p_texture_name, const uint32_t p_layer, const uint32_t p_mipmap, const uint32_t p_layers = 1, const uint32_t p_mipmaps = 1);
