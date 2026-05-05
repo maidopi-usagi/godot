@@ -160,6 +160,23 @@ private:
 	float dynamic_gi_energy = 1.0;
 	float dynamic_gi_normal_bias = 1.1;
 	float dynamic_gi_probe_bias = 1.1;
+	bool dynamic_gi_screen_probes_enabled = false;
+	int dynamic_gi_screen_probe_size = 1;
+	float dynamic_gi_screen_probe_normal_bias = 1.1;
+	float dynamic_gi_screen_probe_restir_history_blend_hit = 0.95;
+	float dynamic_gi_screen_probe_restir_history_blend_miss = 0.92;
+	float dynamic_gi_screen_probe_restir_history_distance_tolerance = 0.25;
+	float dynamic_gi_screen_probe_restir_history_direction_threshold = 0.65;
+	int dynamic_gi_screen_probe_restir_spatial_reuse_radius = 1;
+	float dynamic_gi_screen_probe_restir_spatial_normal_threshold = 0.45;
+	float dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min = 0.05;
+	float dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale = 0.10;
+	float dynamic_gi_screen_probe_restir_previous_reservoir_weight = 0.0;
+	float dynamic_gi_screen_probe_restir_miss_confidence = 0.05;
+	float dynamic_gi_screen_probe_history_sample_count_max = 128.0;
+	float dynamic_gi_screen_probe_miss_ambient_fallback_weight = 0.75;
+	float dynamic_gi_screen_probe_base_ambient_prior_weight = 0.15;
+	int dynamic_gi_screen_probe_debug_mode = 0;
 	void _update_dynamic_gi();
 
 	// Glow
@@ -348,6 +365,40 @@ public:
 	float get_dynamic_gi_normal_bias() const;
 	void set_dynamic_gi_probe_bias(float p_bias);
 	float get_dynamic_gi_probe_bias() const;
+	void set_dynamic_gi_screen_probes_enabled(bool p_enabled);
+	bool is_dynamic_gi_screen_probes_enabled() const;
+	void set_dynamic_gi_screen_probe_size(int p_size);
+	int get_dynamic_gi_screen_probe_size() const;
+	void set_dynamic_gi_screen_probe_normal_bias(float p_bias);
+	float get_dynamic_gi_screen_probe_normal_bias() const;
+	void set_dynamic_gi_screen_probe_restir_history_blend_hit(float p_blend);
+	float get_dynamic_gi_screen_probe_restir_history_blend_hit() const;
+	void set_dynamic_gi_screen_probe_restir_history_blend_miss(float p_blend);
+	float get_dynamic_gi_screen_probe_restir_history_blend_miss() const;
+	void set_dynamic_gi_screen_probe_restir_history_distance_tolerance(float p_tolerance);
+	float get_dynamic_gi_screen_probe_restir_history_distance_tolerance() const;
+	void set_dynamic_gi_screen_probe_restir_history_direction_threshold(float p_threshold);
+	float get_dynamic_gi_screen_probe_restir_history_direction_threshold() const;
+	void set_dynamic_gi_screen_probe_restir_spatial_reuse_radius(int p_radius);
+	int get_dynamic_gi_screen_probe_restir_spatial_reuse_radius() const;
+	void set_dynamic_gi_screen_probe_restir_spatial_normal_threshold(float p_threshold);
+	float get_dynamic_gi_screen_probe_restir_spatial_normal_threshold() const;
+	void set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min(float p_tolerance);
+	float get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min() const;
+	void set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale(float p_tolerance);
+	float get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale() const;
+	void set_dynamic_gi_screen_probe_restir_previous_reservoir_weight(float p_weight);
+	float get_dynamic_gi_screen_probe_restir_previous_reservoir_weight() const;
+	void set_dynamic_gi_screen_probe_restir_miss_confidence(float p_confidence);
+	float get_dynamic_gi_screen_probe_restir_miss_confidence() const;
+	void set_dynamic_gi_screen_probe_history_sample_count_max(float p_count);
+	float get_dynamic_gi_screen_probe_history_sample_count_max() const;
+	void set_dynamic_gi_screen_probe_miss_ambient_fallback_weight(float p_weight);
+	float get_dynamic_gi_screen_probe_miss_ambient_fallback_weight() const;
+	void set_dynamic_gi_screen_probe_base_ambient_prior_weight(float p_weight);
+	float get_dynamic_gi_screen_probe_base_ambient_prior_weight() const;
+	void set_dynamic_gi_screen_probe_debug_mode(int p_mode);
+	int get_dynamic_gi_screen_probe_debug_mode() const;
 
 	// Glow
 	void set_glow_enabled(bool p_enabled);

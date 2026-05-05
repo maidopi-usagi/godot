@@ -4961,31 +4961,34 @@
 		<constant name="VIEWPORT_DEBUG_DRAW_HDDAGI_PROBES" value="17" enum="ViewportDebugDraw">
 			Draw the probes of the first DynamicGI cascade (HDDAGI).
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_GI_BUFFER" value="18" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBES" value="18" enum="ViewportDebugDraw">
+			Draws the screen-space probe radiance used for DynamicGI screen probe tracing.
+		</constant>
+		<constant name="VIEWPORT_DEBUG_DRAW_GI_BUFFER" value="19" enum="ViewportDebugDraw">
 			Draws the global illumination buffer ([VoxelGI] or DynamicGI).
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_DISABLE_LOD" value="19" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_DISABLE_LOD" value="20" enum="ViewportDebugDraw">
 			Disable mesh LOD. All meshes are drawn with full detail, which can be used to compare performance.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_OMNI_LIGHTS" value="20" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_OMNI_LIGHTS" value="21" enum="ViewportDebugDraw">
 			Draws the [OmniLight3D] cluster. Clustering determines where lights are positioned in screen-space, which allows the engine to only process these portions of the screen for lighting.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_SPOT_LIGHTS" value="21" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_SPOT_LIGHTS" value="22" enum="ViewportDebugDraw">
 			Draws the [SpotLight3D] cluster. Clustering determines where lights are positioned in screen-space, which allows the engine to only process these portions of the screen for lighting.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_DECALS" value="22" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_DECALS" value="23" enum="ViewportDebugDraw">
 			Draws the [Decal] cluster. Clustering determines where decals are positioned in screen-space, which allows the engine to only process these portions of the screen for decals.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_REFLECTION_PROBES" value="23" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_REFLECTION_PROBES" value="24" enum="ViewportDebugDraw">
 			Draws the [ReflectionProbe] cluster. Clustering determines where reflection probes are positioned in screen-space, which allows the engine to only process these portions of the screen for reflection probes.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_OCCLUDERS" value="24" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_OCCLUDERS" value="25" enum="ViewportDebugDraw">
 			Draws the occlusion culling buffer. This low-resolution occlusion culling buffer is rasterized on the CPU and is used to check whether instances are occluded by other objects.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_MOTION_VECTORS" value="25" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_MOTION_VECTORS" value="26" enum="ViewportDebugDraw">
 			Draws the motion vectors buffer. This is used by temporal antialiasing to correct for motion that occurs during gameplay.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_INTERNAL_BUFFER" value="26" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_INTERNAL_BUFFER" value="27" enum="ViewportDebugDraw">
 			Internal buffer is drawn instead of regular scene so you can see the per-pixel output that will be used by post-processing effects.
 		</constant>
 		<constant name="VIEWPORT_VRS_DISABLED" value="0" enum="ViewportVRSMode">

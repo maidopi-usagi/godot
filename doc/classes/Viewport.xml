@@ -572,31 +572,35 @@
 			Draws the probes used for DynamicGI.
 			Does nothing if the current environment's [member Environment.dynamic_gi_enabled] is [code]false[/code] or DynamicGI is not supported on the platform.
 		</constant>
-		<constant name="DEBUG_DRAW_GI_BUFFER" value="18" enum="DebugDraw">
+		<constant name="DEBUG_DRAW_HDDAGI_SCREEN_PROBES" value="18" enum="DebugDraw">
+			Draws the screen-space probe radiance used for DynamicGI screen probe tracing.
+			Does nothing if the current environment's [member Environment.dynamic_gi_enabled] is [code]false[/code] or DynamicGI is not supported on the platform.
+		</constant>
+		<constant name="DEBUG_DRAW_GI_BUFFER" value="19" enum="DebugDraw">
 			Draws the buffer used for global illumination (GI).
 		</constant>
-		<constant name="DEBUG_DRAW_DISABLE_LOD" value="19" enum="DebugDraw">
+		<constant name="DEBUG_DRAW_DISABLE_LOD" value="20" enum="DebugDraw">
 			Draws all of the objects at their highest polycount, without low level of detail (LOD).
 		</constant>
-		<constant name="DEBUG_DRAW_CLUSTER_OMNI_LIGHTS" value="20" enum="DebugDraw">
+		<constant name="DEBUG_DRAW_CLUSTER_OMNI_LIGHTS" value="21" enum="DebugDraw">
 			Draws the cluster used by [OmniLight3D] nodes to optimize light rendering.
 		</constant>
-		<constant name="DEBUG_DRAW_CLUSTER_SPOT_LIGHTS" value="21" enum="DebugDraw">
+		<constant name="DEBUG_DRAW_CLUSTER_SPOT_LIGHTS" value="22" enum="DebugDraw">
 			Draws the cluster used by [SpotLight3D] nodes to optimize light rendering.
 		</constant>
-		<constant name="DEBUG_DRAW_CLUSTER_DECALS" value="22" enum="DebugDraw">
+		<constant name="DEBUG_DRAW_CLUSTER_DECALS" value="23" enum="DebugDraw">
 			Draws the cluster used by [Decal] nodes to optimize decal rendering.
 		</constant>
-		<constant name="DEBUG_DRAW_CLUSTER_REFLECTION_PROBES" value="23" enum="DebugDraw">
+		<constant name="DEBUG_DRAW_CLUSTER_REFLECTION_PROBES" value="24" enum="DebugDraw">
 			Draws the cluster used by [ReflectionProbe] nodes to optimize decal rendering.
 		</constant>
-		<constant name="DEBUG_DRAW_OCCLUDERS" value="24" enum="DebugDraw">
+		<constant name="DEBUG_DRAW_OCCLUDERS" value="25" enum="DebugDraw">
 			Draws the buffer used for occlusion culling.
 		</constant>
-		<constant name="DEBUG_DRAW_MOTION_VECTORS" value="25" enum="DebugDraw">
+		<constant name="DEBUG_DRAW_MOTION_VECTORS" value="26" enum="DebugDraw">
 			Draws vector lines over the viewport to indicate the movement of pixels between frames.
 		</constant>
-		<constant name="DEBUG_DRAW_INTERNAL_BUFFER" value="26" enum="DebugDraw">
+		<constant name="DEBUG_DRAW_INTERNAL_BUFFER" value="27" enum="DebugDraw">
 			Draws the internal resolution buffer of the scene before post-processing is applied.
 		</constant>
 		<constant name="DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_NEAREST" value="0" enum="DefaultCanvasItemTextureFilter">

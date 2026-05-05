@@ -33,13 +33,13 @@
 #include "core/math/geometry_3d.h"
 
 #include "core/config/project_settings.h"
-#include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
+#include "servers/rendering/renderer_rd/effects/ss_effects.h"
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
-#include "servers/rendering/rendering_server_default.h"
+#include "servers/rendering/rendering_server_globals.h"
 
 // Debug recreating everything every frame.
 //#define DIRTY_ALL_FRAMES
@@ -73,10 +73,10 @@ void GI::voxel_gi_allocate_data(RID p_voxel_gi, const Transform3D &p_to_cell_xfo
 	ERR_FAIL_NULL(voxel_gi);
 
 	if (voxel_gi->octree_buffer.is_valid()) {
-		RD::get_singleton()->free(voxel_gi->octree_buffer);
-		RD::get_singleton()->free(voxel_gi->data_buffer);
+		RD::get_singleton()->free_rid(voxel_gi->octree_buffer);
+		RD::get_singleton()->free_rid(voxel_gi->data_buffer);
 		if (voxel_gi->sdf_texture.is_valid()) {
-			RD::get_singleton()->free(voxel_gi->sdf_texture);
+			RD::get_singleton()->free_rid(voxel_gi->sdf_texture);
 		}
 
 		voxel_gi->sdf_texture = RID();
@@ -287,7 +287,7 @@ bool GI::voxel_gi_is_using_two_bounces(RID p_voxel_gi) const {
 
 bool GI::voxel_gi_is_interior(RID p_voxel_gi) const {
 	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
-	ERR_FAIL_NULL_V(voxel_gi, 0);
+	ERR_FAIL_NULL_V(voxel_gi, false);
 	return voxel_gi->interior;
 }
 
@@ -1032,10 +1032,10 @@ GI::HDDAGI::~HDDAGI() {
 	};
 
 	for (const HDDAGI::Cascade &c : cascades) {
-		RD::get_singleton()->free(c.light_process_buffer);
-		RD::get_singleton()->free(c.light_process_dispatch_buffer);
-		RD::get_singleton()->free(c.light_process_dispatch_buffer_copy);
-		RD::get_singleton()->free(c.light_position_bufer);
+		RD::get_singleton()->free_rid(c.light_process_buffer);
+		RD::get_singleton()->free_rid(c.light_process_dispatch_buffer);
+		RD::get_singleton()->free_rid(c.light_process_dispatch_buffer_copy);
+		RD::get_singleton()->free_rid(c.light_position_bufer);
 	}
 
 	free_texture(render_albedo);
@@ -1050,10 +1050,10 @@ GI::HDDAGI::~HDDAGI() {
 	free_texture(voxel_light_neighbour_data);
 	free_texture(region_version_data);
 
-	RD::get_singleton()->free(light_process_buffer_render);
-	RD::get_singleton()->free(light_process_dispatch_buffer_render);
+	RD::get_singleton()->free_rid(light_process_buffer_render);
+	RD::get_singleton()->free_rid(light_process_dispatch_buffer_render);
 
-	RD::get_singleton()->free(cascades_ubo);
+	RD::get_singleton()->free_rid(cascades_ubo);
 
 	free_texture(lightprobe_specular_data);
 	free_texture(lightprobe_diffuse_data);
@@ -1069,7 +1069,7 @@ GI::HDDAGI::~HDDAGI() {
 	free_texture(lightprobe_geometry_proximity_map);
 	free_texture(lightprobe_camera_visibility_map);
 	for (int i = 0; i < lightprobe_camera_buffers.size(); i++) {
-		RD::get_singleton()->free(lightprobe_camera_buffers[i]);
+		RD::get_singleton()->free_rid(lightprobe_camera_buffers[i]);
 	}
 	lightprobe_camera_buffers.clear();
 	free_texture(lightprobe_process_frame);
@@ -1078,7 +1078,7 @@ GI::HDDAGI::~HDDAGI() {
 	free_texture(occlusion_data[1]);
 
 	if (debug_probes_scene_data_ubo.is_valid()) {
-		RD::get_singleton()->free(debug_probes_scene_data_ubo);
+		RD::get_singleton()->free_rid(debug_probes_scene_data_ubo);
 		debug_probes_scene_data_ubo = RID();
 	}
 }
@@ -2827,8 +2827,8 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 
 void GI::VoxelGIInstance::free_resources() {
 	if (texture.is_valid()) {
-		RD::get_singleton()->free(texture);
-		RD::get_singleton()->free(write_buffer);
+		RD::get_singleton()->free_rid(texture);
+		RD::get_singleton()->free_rid(write_buffer);
 
 		texture = RID();
 		write_buffer = RID();
@@ -2836,21 +2836,21 @@ void GI::VoxelGIInstance::free_resources() {
 	}
 
 	for (int i = 0; i < dynamic_maps.size(); i++) {
-		RD::get_singleton()->free(dynamic_maps[i].texture);
-		RD::get_singleton()->free(dynamic_maps[i].depth);
+		RD::get_singleton()->free_rid(dynamic_maps[i].texture);
+		RD::get_singleton()->free_rid(dynamic_maps[i].depth);
 
 		// these only exist on the first level...
 		if (dynamic_maps[i].fb_depth.is_valid()) {
-			RD::get_singleton()->free(dynamic_maps[i].fb_depth);
+			RD::get_singleton()->free_rid(dynamic_maps[i].fb_depth);
 		}
 		if (dynamic_maps[i].albedo.is_valid()) {
-			RD::get_singleton()->free(dynamic_maps[i].albedo);
+			RD::get_singleton()->free_rid(dynamic_maps[i].albedo);
 		}
 		if (dynamic_maps[i].normal.is_valid()) {
-			RD::get_singleton()->free(dynamic_maps[i].normal);
+			RD::get_singleton()->free_rid(dynamic_maps[i].normal);
 		}
 		if (dynamic_maps[i].orm.is_valid()) {
-			RD::get_singleton()->free(dynamic_maps[i].orm);
+			RD::get_singleton()->free_rid(dynamic_maps[i].orm);
 		}
 	}
 	dynamic_maps.clear();
@@ -2886,7 +2886,7 @@ void GI::VoxelGIInstance::debug(RD::DrawListID p_draw_list, RID p_framebuffer, c
 	}
 
 	if (gi->voxel_gi_debug_uniform_set.is_valid()) {
-		RD::get_singleton()->free(gi->voxel_gi_debug_uniform_set);
+		RD::get_singleton()->free_rid(gi->voxel_gi_debug_uniform_set);
 	}
 	Vector<RD::Uniform> uniforms;
 	{
@@ -3063,6 +3063,15 @@ void GI::init(SkyRD *p_sky) {
 		}
 	}
 
+	{
+		Vector<String> screen_probe_modes;
+		screen_probe_modes.push_back("\n");
+		hddagi_shader.screen_probe.initialize(screen_probe_modes);
+		hddagi_shader.screen_probe_shader = hddagi_shader.screen_probe.version_create();
+		hddagi_shader.screen_probe_shader_version = hddagi_shader.screen_probe.version_get_shader(hddagi_shader.screen_probe_shader, 0);
+		hddagi_shader.screen_probe_pipeline = RD::get_singleton()->compute_pipeline_create(hddagi_shader.screen_probe_shader_version);
+	}
+
 	//GK
 	{
 		//calculate tables
@@ -3200,13 +3209,13 @@ void GI::init(SkyRD *p_sky) {
 
 void GI::free() {
 	if (default_voxel_gi_buffer.is_valid()) {
-		RD::get_singleton()->free(default_voxel_gi_buffer);
+		RD::get_singleton()->free_rid(default_voxel_gi_buffer);
 	}
 	if (voxel_gi_lights_uniform.is_valid()) {
-		RD::get_singleton()->free(voxel_gi_lights_uniform);
+		RD::get_singleton()->free_rid(voxel_gi_lights_uniform);
 	}
 	if (hddagi_ubo.is_valid()) {
-		RD::get_singleton()->free(hddagi_ubo);
+		RD::get_singleton()->free_rid(hddagi_ubo);
 	}
 
 	if (voxel_gi_debug_shader_version.is_valid()) {
@@ -3232,6 +3241,9 @@ void GI::free() {
 	}
 	if (hddagi_shader.integrate_shader.is_valid()) {
 		hddagi_shader.integrate.version_free(hddagi_shader.integrate_shader);
+	}
+	if (hddagi_shader.screen_probe_shader.is_valid()) {
+		hddagi_shader.screen_probe.version_free(hddagi_shader.screen_probe_shader);
 	}
 	if (hddagi_shader.preprocess_shader.is_valid()) {
 		hddagi_shader.preprocess.version_free(hddagi_shader.preprocess_shader);
@@ -3346,14 +3358,291 @@ RID GI::RenderBuffersGI::get_voxel_gi_buffer() {
 
 void GI::RenderBuffersGI::free_data() {
 	if (scene_data_ubo.is_valid()) {
-		RD::get_singleton()->free(scene_data_ubo);
+		RD::get_singleton()->free_rid(scene_data_ubo);
 		scene_data_ubo = RID();
 	}
 
 	if (voxel_gi_buffer.is_valid()) {
-		RD::get_singleton()->free(voxel_gi_buffer);
+		RD::get_singleton()->free_rid(voxel_gi_buffer);
 		voxel_gi_buffer = RID();
 	}
+}
+
+bool GI::hddagi_uses_screen_probes(RID p_environment) const {
+	return RendererSceneRenderRD::get_singleton()->environment_get_hddagi_screen_probes_enabled(p_environment);
+}
+
+void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, uint32_t p_view_count, Size2i p_gi_size, const Projection *p_projections, const Transform3D &p_cam_transform, int p_probe_size, float p_normal_bias, float p_history_blend_hit, float p_history_blend_miss, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_previous_reservoir_weight, float p_miss_confidence, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode) {
+	ERR_FAIL_COND(p_render_buffers.is_null());
+	ERR_FAIL_COND(p_gi_size.x <= 0 || p_gi_size.y <= 0);
+	ERR_FAIL_NULL(p_projections);
+
+	Ref<RenderBuffersGI> rbgi = p_render_buffers->get_custom_data(RB_SCOPE_GI);
+	ERR_FAIL_COND(rbgi.is_null());
+	Ref<HDDAGI> hddagi = p_render_buffers->get_custom_data(RB_SCOPE_HDDAGI);
+	ERR_FAIL_COND(hddagi.is_null());
+
+	const int probe_size = CLAMP(p_probe_size, 1, 32);
+	Size2i screen_probe_size((p_gi_size.x + probe_size - 1) / probe_size, (p_gi_size.y + probe_size - 1) / probe_size);
+	Size2i screen_probe_atlas_size = screen_probe_size;
+	const float normal_bias = CLAMP(p_normal_bias, -8.0f, 8.0f);
+	const Size2i internal_size = p_render_buffers->get_internal_size();
+	const bool history_valid = hddagi->screen_probe_history_initialized && hddagi->screen_probe_previous_camera_valid && hddagi->screen_probe_history_probe_size == probe_size && hddagi->screen_probe_history_normal_bias == normal_bias && hddagi->screen_probe_history_gi_size == p_gi_size && hddagi->screen_probe_history_screen_size == internal_size && hddagi->screen_probe_history_view_count == p_view_count;
+	hddagi->screen_probe_history_initialized = true;
+	hddagi->screen_probe_history_probe_size = probe_size;
+	hddagi->screen_probe_history_normal_bias = normal_bias;
+	hddagi->screen_probe_history_gi_size = p_gi_size;
+	hddagi->screen_probe_history_screen_size = internal_size;
+	hddagi->screen_probe_history_view_count = p_view_count;
+
+	uint32_t usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;
+	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_RADIANCE, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, screen_probe_atlas_size, p_view_count);
+	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_RESERVOIR, RD::DATA_FORMAT_R32G32B32A32_UINT, usage_bits, RD::TEXTURE_SAMPLES_1, screen_probe_atlas_size, p_view_count * 2);
+	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_INTERPOLATED, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, p_render_buffers->get_internal_size(), p_view_count * 2);
+	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_FILTERED, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, p_render_buffers->get_internal_size(), p_view_count);
+	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_HISTORY, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, screen_probe_atlas_size, p_view_count * 2);
+	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_AMBIENT_SCRATCH, RD::DATA_FORMAT_R32_UINT, usage_bits, RD::TEXTURE_SAMPLES_1, p_gi_size, p_view_count);
+
+	HDDAGIShader::ScreenProbePushConstant push_constant = {};
+	push_constant.gi_size[0] = p_gi_size.x;
+	push_constant.gi_size[1] = p_gi_size.y;
+	push_constant.screen_size[0] = internal_size.x;
+	push_constant.screen_size[1] = internal_size.y;
+	push_constant.probe_size = probe_size;
+	push_constant.frame_index = RSG::rasterizer->get_frame_number();
+	push_constant.pass_mode = 0;
+	push_constant.orthogonal = p_projections[0].is_orthogonal();
+	push_constant.normal_bias = normal_bias;
+	push_constant.history_valid = history_valid ? 1 : 0;
+	push_constant.history_blend_hit = CLAMP(p_history_blend_hit, 0.0f, 1.0f);
+	push_constant.history_blend_miss = CLAMP(p_history_blend_miss, 0.0f, 1.0f);
+	push_constant.history_distance_tolerance = MAX(p_history_distance_tolerance, 0.0f);
+	push_constant.history_direction_threshold = CLAMP(p_history_direction_threshold, 0.0f, 1.0f);
+	push_constant.spatial_reuse_radius = CLAMP(p_spatial_reuse_radius, 0, 4);
+	push_constant.spatial_normal_threshold = CLAMP(p_spatial_normal_threshold, 0.0f, 1.0f);
+	push_constant.spatial_depth_tolerance_min = MAX(p_spatial_depth_tolerance_min, 0.0f);
+	push_constant.spatial_depth_tolerance_scale = MAX(p_spatial_depth_tolerance_scale, 0.0f);
+	push_constant.previous_reservoir_weight = MAX(p_previous_reservoir_weight, 0.0f);
+	push_constant.miss_confidence = CLAMP(p_miss_confidence, 0.0f, 1.0f);
+	push_constant.history_sample_count_max = CLAMP(p_history_sample_count_max, 1.0f, 1024.0f);
+	push_constant.miss_ambient_fallback_weight = CLAMP(p_miss_ambient_fallback_weight, 0.0f, 2.0f);
+	push_constant.base_ambient_prior_weight = CLAMP(p_base_ambient_prior_weight, 0.0f, 1.0f);
+	push_constant.debug_mode = CLAMP(p_debug_mode, 0, 2);
+	push_constant.proj_info[0] = -2.0f / (internal_size.x * p_projections[0].columns[0][0]);
+	push_constant.proj_info[1] = -2.0f / (internal_size.y * p_projections[0].columns[1][1]);
+	push_constant.proj_info[2] = (1.0f - p_projections[0].columns[0][2]) / p_projections[0].columns[0][0];
+	push_constant.proj_info[3] = (1.0f + p_projections[0].columns[1][2]) / p_projections[0].columns[1][1];
+
+	RID linear_sampler = RendererRD::MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
+	RID default_black = RendererRD::TextureStorage::get_singleton()->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
+
+	{
+		SceneData scene_data = {};
+		Projection correction;
+		correction.set_depth_correction(false);
+		Transform3D previous_cam_inv_transform = hddagi->screen_probe_previous_camera_valid ? hddagi->screen_probe_previous_cam_transform.affine_inverse() : p_cam_transform.affine_inverse();
+		for (uint32_t v = 0; v < p_view_count; v++) {
+			Projection temp = correction * p_projections[v];
+			Projection previous_temp = hddagi->screen_probe_previous_camera_valid ? hddagi->screen_probe_previous_projection[v] : temp;
+			RendererRD::MaterialStorage::store_camera(temp, scene_data.projection[v]);
+			RendererRD::MaterialStorage::store_camera(temp.inverse(), scene_data.inv_projection[v]);
+			RendererRD::MaterialStorage::store_camera(previous_temp, scene_data.previous_projection[v]);
+		}
+		RendererRD::MaterialStorage::store_transform(p_cam_transform, scene_data.cam_transform);
+		RendererRD::MaterialStorage::store_transform(previous_cam_inv_transform, scene_data.previous_cam_inv_transform);
+		scene_data.screen_size[0] = internal_size.x;
+		scene_data.screen_size[1] = internal_size.y;
+		RD::get_singleton()->buffer_update(rbgi->scene_data_ubo, 0, sizeof(SceneData), &scene_data);
+	}
+
+	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
+	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, hddagi_shader.screen_probe_pipeline);
+	uint32_t current_history_index = push_constant.frame_index & 1;
+	uint32_t previous_history_index = current_history_index ^ 1;
+	auto restart_compute_list = [&compute_list, this]() {
+		RD::get_singleton()->compute_list_end();
+		compute_list = RD::get_singleton()->compute_list_begin();
+		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, hddagi_shader.screen_probe_pipeline);
+	};
+
+	for (uint32_t v = 0; v < p_view_count; v++) {
+		push_constant.view_index = v;
+		push_constant.orthogonal = p_projections[v].is_orthogonal();
+		push_constant.proj_info[0] = -2.0f / (internal_size.x * p_projections[v].columns[0][0]);
+		push_constant.proj_info[1] = -2.0f / (internal_size.y * p_projections[v].columns[1][1]);
+		push_constant.proj_info[2] = (1.0f - p_projections[v].columns[0][2]) / p_projections[v].columns[0][0];
+		push_constant.proj_info[3] = (1.0f + p_projections[v].columns[1][2]) / p_projections[v].columns[1][1];
+		RID current_history = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_HISTORY, v * 2 + current_history_index, 0);
+		RID previous_history = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_HISTORY, v * 2 + previous_history_index, 0);
+		RID current_reservoir = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_RESERVOIR, v * 2 + current_history_index, 0);
+		RID previous_reservoir = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_RESERVOIR, v * 2 + previous_history_index, 0);
+		RID current_interpolated = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_INTERPOLATED, v * 2 + current_history_index, 0);
+		RID previous_interpolated = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_INTERPOLATED, v * 2 + previous_history_index, 0);
+		RID filtered_interpolated = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_FILTERED, v, 0);
+		RID ambient_output_scratch = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_AMBIENT_SCRATCH, v, 0);
+
+		RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache(
+				hddagi_shader.screen_probe_shader_version,
+				0,
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 0, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_AMBIENT, v, 0)),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 1, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_REFLECTION, v, 0)),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 2, p_render_buffers->get_depth_texture(v)),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 3, p_normal_roughness_slices[v]),
+				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, linear_sampler),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_RADIANCE, v, 0)),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, current_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 8, default_black),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->scene_data_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, previous_history),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 11, current_history),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 12, hddagi->voxel_bits_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 13, hddagi->voxel_region_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 14, hddagi->voxel_light_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 15, hddagi->voxel_light_neighbour_data),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 16, hddagi_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 17, previous_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 18, hddagi->voxel_disocclusion_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 19, ambient_output_scratch));
+
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set, 0);
+		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(HDDAGIShader::ScreenProbePushConstant));
+		RD::get_singleton()->compute_list_dispatch_threads(compute_list, screen_probe_atlas_size.x, screen_probe_atlas_size.y, 1);
+
+		restart_compute_list();
+
+		push_constant.pass_mode = 1;
+		RID spatial_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(
+				hddagi_shader.screen_probe_shader_version,
+				0,
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 0, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_AMBIENT, v, 0)),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 1, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_REFLECTION, v, 0)),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 2, p_render_buffers->get_depth_texture(v)),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 3, p_normal_roughness_slices[v]),
+				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, linear_sampler),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, current_history),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, current_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 8, p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_RADIANCE, v, 0)),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->scene_data_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, previous_history),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 11, current_history),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 12, hddagi->voxel_bits_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 13, hddagi->voxel_region_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 14, hddagi->voxel_light_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 15, hddagi->voxel_light_neighbour_data),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 16, hddagi_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 17, previous_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 18, hddagi->voxel_disocclusion_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 19, ambient_output_scratch));
+
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, spatial_uniform_set, 0);
+		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(HDDAGIShader::ScreenProbePushConstant));
+		RD::get_singleton()->compute_list_dispatch_threads(compute_list, screen_probe_atlas_size.x, screen_probe_atlas_size.y, 1);
+
+		restart_compute_list();
+
+		push_constant.pass_mode = 2;
+		RID interpolation_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(
+				hddagi_shader.screen_probe_shader_version,
+				0,
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 0, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_AMBIENT, v, 0)),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 1, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_REFLECTION, v, 0)),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 2, p_render_buffers->get_depth_texture(v)),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 3, p_normal_roughness_slices[v]),
+				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, linear_sampler),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, current_interpolated),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, current_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 8, current_history),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->scene_data_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, previous_history),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 11, current_interpolated),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 12, hddagi->voxel_bits_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 13, hddagi->voxel_region_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 14, hddagi->voxel_light_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 15, hddagi->voxel_light_neighbour_data),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 16, hddagi_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 17, previous_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 18, hddagi->voxel_disocclusion_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 19, ambient_output_scratch));
+
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, interpolation_uniform_set, 0);
+		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(HDDAGIShader::ScreenProbePushConstant));
+		RD::get_singleton()->compute_list_dispatch_threads(compute_list, internal_size.x, internal_size.y, 1);
+
+		restart_compute_list();
+
+		push_constant.pass_mode = 3;
+		RID temporal_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(
+				hddagi_shader.screen_probe_shader_version,
+				0,
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 0, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_AMBIENT, v, 0)),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 1, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_REFLECTION, v, 0)),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 2, p_render_buffers->get_depth_texture(v)),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 3, p_normal_roughness_slices[v]),
+				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, linear_sampler),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, filtered_interpolated),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, current_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 8, current_interpolated),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->scene_data_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, previous_interpolated),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 11, current_history),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 12, hddagi->voxel_bits_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 13, hddagi->voxel_region_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 14, hddagi->voxel_light_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 15, hddagi->voxel_light_neighbour_data),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 16, hddagi_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 17, previous_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 18, hddagi->voxel_disocclusion_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 19, ambient_output_scratch));
+
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, temporal_uniform_set, 0);
+		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(HDDAGIShader::ScreenProbePushConstant));
+		RD::get_singleton()->compute_list_dispatch_threads(compute_list, internal_size.x, internal_size.y, 1);
+
+		restart_compute_list();
+
+		push_constant.pass_mode = 4;
+		RID ambient_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(
+				hddagi_shader.screen_probe_shader_version,
+				0,
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 0, default_black),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 1, default_black),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 2, p_render_buffers->get_depth_texture(v)),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 3, p_normal_roughness_slices[v]),
+				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, linear_sampler),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, current_history),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, current_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 8, filtered_interpolated),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->scene_data_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, previous_history),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 11, current_history),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 12, hddagi->voxel_bits_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 13, hddagi->voxel_region_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 14, hddagi->voxel_light_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 15, hddagi->voxel_light_neighbour_data),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 16, hddagi_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 17, previous_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 18, hddagi->voxel_disocclusion_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 19, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_AMBIENT_U32, v, 0)));
+
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, ambient_uniform_set, 0);
+		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(HDDAGIShader::ScreenProbePushConstant));
+		RD::get_singleton()->compute_list_dispatch_threads(compute_list, p_gi_size.x, p_gi_size.y, 1);
+		push_constant.pass_mode = 0;
+
+		if (v + 1 < p_view_count) {
+			restart_compute_list();
+		}
+	}
+
+	RD::get_singleton()->compute_list_end();
+
+	Projection correction;
+	correction.set_depth_correction(false);
+	for (uint32_t v = 0; v < p_view_count; v++) {
+		hddagi->screen_probe_previous_projection[v] = correction * p_projections[v];
+	}
+	hddagi->screen_probe_previous_cam_transform = p_cam_transform;
+	hddagi->screen_probe_previous_camera_valid = true;
 }
 
 void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer, RID p_environment, uint32_t p_view_count, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_cam_transform, const PagedArray<RID> &p_voxel_gi_instances) {
@@ -3374,13 +3663,14 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		p_render_buffers->clear_context(RB_SCOPE_GI);
 	}
 
-	if (!p_render_buffers->has_texture(RB_SCOPE_GI, RB_TEX_AMBIENT)) {
-		Size2i size = internal_size;
+	Size2i gi_size = internal_size;
+	if (half_resolution) {
+		gi_size.x >>= 1;
+		gi_size.y >>= 1;
+	}
 
-		if (half_resolution) {
-			size.x >>= 1;
-			size.y >>= 1;
-		}
+	if (!p_render_buffers->has_texture(RB_SCOPE_GI, RB_TEX_AMBIENT)) {
+		Size2i size = gi_size;
 
 		RD::TextureFormat tf;
 		tf.format = RD::DATA_FORMAT_R32_UINT;
@@ -3431,6 +3721,7 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		for (uint32_t v = 0; v < p_view_count; v++) {
 			Projection temp = correction * p_projections[v];
 
+			RendererRD::MaterialStorage::store_camera(temp, scene_data.projection[v]);
 			RendererRD::MaterialStorage::store_camera(temp.inverse(), scene_data.inv_projection[v]);
 			scene_data.eye_offset[v][0] = p_eye_offsets[v].x;
 			scene_data.eye_offset[v][1] = p_eye_offsets[v].y;
@@ -3609,6 +3900,7 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		}
 	}
 	RD::get_singleton()->compute_list_end();
+
 	RD::get_singleton()->draw_command_end_label();
 }
 

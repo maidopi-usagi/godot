@@ -1510,7 +1510,7 @@ void RenderForwardClustered::_copy_framebuffer_to_ss_effects(Ref<RenderSceneBuff
 	ss_effects->copy_internal_texture_to_last_frame(p_render_buffers, *copy_effects);
 }
 
-void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer) {
+void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_hddagi_screen_probes, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer) {
 	// Render shadows while GI is rendering, due to how barriers are handled, this should happen at the same time
 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
 	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
@@ -1597,6 +1597,12 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 
 	if (render_gi) {
 		gi.process_gi(rb, p_normal_roughness_slices, p_voxel_gi_buffer, p_render_data->environment, p_render_data->scene_data->view_count, p_render_data->scene_data->view_projection, p_render_data->scene_data->view_eye_offset, p_render_data->scene_data->cam_transform, *p_render_data->voxel_gi_instances);
+	}
+
+	if (p_use_hddagi_screen_probes && rb->has_custom_data(RB_SCOPE_HDDAGI)) {
+		RD::get_singleton()->draw_command_begin_label("HDDAGI Screen Probes");
+		gi.process_hddagi_screen_probes(rb, p_normal_roughness_slices, p_render_data->scene_data->view_count, rb->get_internal_size(), p_render_data->scene_data->view_projection, p_render_data->scene_data->cam_transform, environment_get_hddagi_screen_probe_size(p_render_data->environment), environment_get_hddagi_screen_probe_normal_bias(p_render_data->environment), environment_get_hddagi_screen_probe_restir_history_blend_hit(p_render_data->environment), environment_get_hddagi_screen_probe_restir_history_blend_miss(p_render_data->environment), environment_get_hddagi_screen_probe_restir_history_distance_tolerance(p_render_data->environment), environment_get_hddagi_screen_probe_restir_history_direction_threshold(p_render_data->environment), environment_get_hddagi_screen_probe_restir_spatial_reuse_radius(p_render_data->environment), environment_get_hddagi_screen_probe_restir_spatial_normal_threshold(p_render_data->environment), environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_min(p_render_data->environment), environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_scale(p_render_data->environment), environment_get_hddagi_screen_probe_restir_previous_reservoir_weight(p_render_data->environment), environment_get_hddagi_screen_probe_restir_miss_confidence(p_render_data->environment), environment_get_hddagi_screen_probe_history_sample_count_max(p_render_data->environment), environment_get_hddagi_screen_probe_miss_ambient_fallback_weight(p_render_data->environment), environment_get_hddagi_screen_probe_base_ambient_prior_weight(p_render_data->environment), environment_get_hddagi_screen_probe_debug_mode(p_render_data->environment));
+		RD::get_singleton()->draw_command_end_label();
 	}
 
 	if (render_shadows) {
@@ -1826,6 +1832,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	bool using_separate_specular = false;
 	bool using_ssr = false;
 	bool using_hddagi = false;
+	bool using_hddagi_screen_probes = false;
 	bool using_voxelgi = false;
 	bool reverse_cull = p_render_data->scene_data->cam_transform.basis.determinant() < 0;
 	bool using_ssil = !is_reflection_probe && p_render_data->environment.is_valid() && environment_get_ssil_enabled(p_render_data->environment);
@@ -1948,6 +1955,8 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			};
 		}
 	}
+
+	using_hddagi_screen_probes = !is_reflection_probe && rb.is_valid() && using_hddagi && (gi.hddagi_uses_screen_probes(p_render_data->environment) || get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBES);
 
 	bool using_sss = rb_data.is_valid() && !is_reflection_probe && scene_state.used_sss && ss_effects->sss_get_quality() != RSE::SUB_SURFACE_SCATTERING_QUALITY_DISABLED;
 
@@ -2171,7 +2180,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			normal_roughness_views[v] = rb_data->get_normal_roughness(v);
 		}
 	}
-	_pre_opaque_render(p_render_data, using_ssao, using_ssil, using_ssr, using_hddagi || using_voxelgi, normal_roughness_views, rb_data.is_valid() && rb_data->has_voxelgi() ? rb_data->get_voxelgi() : RID());
+	_pre_opaque_render(p_render_data, using_ssao, using_ssil, using_ssr, using_hddagi_screen_probes, using_hddagi || using_voxelgi, normal_roughness_views, rb_data.is_valid() && rb_data->has_voxelgi() ? rb_data->get_voxelgi() : RID());
 
 	RENDER_TIMESTAMP("Render Opaque Pass");
 
@@ -2587,6 +2596,12 @@ void RenderForwardClustered::_render_buffers_debug_draw(const RenderDataRD *p_re
 		RID ambient_texture = rb->get_texture(RB_SCOPE_GI, RB_TEX_AMBIENT);
 		RID reflection_texture = rb->get_texture(RB_SCOPE_GI, RB_TEX_REFLECTION);
 		copy_effects->copy_to_fb_rect(ambient_texture, texture_storage->render_target_get_rd_framebuffer(render_target), Rect2(Vector2(), rtsize), false, false, false, true, reflection_texture, rb->get_view_count() > 1);
+	}
+
+	if (get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBES && rb->has_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_INTERPOLATED)) {
+		Size2i rtsize = texture_storage->render_target_get_size(render_target);
+		RID radiance_texture = rb->get_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_INTERPOLATED);
+		copy_effects->copy_to_fb_rect(radiance_texture, texture_storage->render_target_get_rd_framebuffer(render_target), Rect2(Vector2(), rtsize), false, false, false, false, RID(), rb->get_view_count() > 1, false, false, false, Rect2(), 1.0, false);
 	}
 }
 

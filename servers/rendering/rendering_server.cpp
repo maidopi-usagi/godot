@@ -2998,6 +2998,7 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_DECAL_ATLAS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_HDDAGI);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_PROBES);
+	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBES);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_GI_BUFFER);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_DISABLE_LOD);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_CLUSTER_OMNI_LIGHTS);
@@ -3078,6 +3079,9 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("environment_set_fog", "env", "enable", "light_color", "light_energy", "sun_scatter", "density", "height", "height_density", "aerial_perspective", "sky_affect", "fog_mode"), &RenderingServer::environment_set_fog, DEFVAL(RSE::ENV_FOG_MODE_EXPONENTIAL));
 	ClassDB::bind_method(D_METHOD("environment_set_fog_depth", "env", "curve", "begin", "end"), &RenderingServer::environment_set_fog_depth);
 	ClassDB::bind_method(D_METHOD("environment_set_hddagi", "env", "enable", "cascades", "cascade_format", "min_cell_size", "filter_probes", "bounce_feedback", "read_sky", "energy", "normal_bias", "reflection_bias", "probe_bias", "occlusion_bias", "filter_reflection", "filter_ambient"), &RenderingServer::environment_set_hddagi);
+	ClassDB::bind_method(D_METHOD("environment_set_hddagi_screen_probes", "env", "enable", "probe_size", "normal_bias"), &RenderingServer::environment_set_hddagi_screen_probes);
+	ClassDB::bind_method(D_METHOD("environment_set_hddagi_screen_probe_restir", "env", "history_blend_hit", "history_blend_miss", "history_distance_tolerance", "history_direction_threshold", "spatial_reuse_radius", "spatial_normal_threshold", "spatial_depth_tolerance_min", "spatial_depth_tolerance_scale", "previous_reservoir_weight", "miss_confidence"), &RenderingServer::environment_set_hddagi_screen_probe_restir);
+	ClassDB::bind_method(D_METHOD("environment_set_hddagi_screen_probe_tuning", "env", "history_sample_count_max", "miss_ambient_fallback_weight", "base_ambient_prior_weight", "debug_mode"), &RenderingServer::environment_set_hddagi_screen_probe_tuning);
 	ClassDB::bind_method(D_METHOD("environment_set_volumetric_fog", "env", "enable", "density", "albedo", "emission", "emission_energy", "anisotropy", "length", "detail_spread", "gi_inject", "temporal_reprojection", "temporal_reprojection_amount", "ambient_inject", "sky_affect"), &RenderingServer::environment_set_volumetric_fog);
 
 	ClassDB::bind_method(D_METHOD("environment_glow_set_use_bicubic_upscale", "enable"), &RenderingServer::environment_glow_set_use_bicubic_upscale);
