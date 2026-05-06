@@ -3372,7 +3372,7 @@ bool GI::hddagi_uses_screen_probes(RID p_environment) const {
 	return RendererSceneRenderRD::get_singleton()->environment_get_hddagi_screen_probes_enabled(p_environment);
 }
 
-void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, uint32_t p_view_count, Size2i p_gi_size, const Projection *p_projections, const Transform3D &p_cam_transform, int p_probe_size, float p_normal_bias, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_miss_confidence, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode) {
+void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, uint32_t p_view_count, Size2i p_gi_size, const Projection *p_projections, const Transform3D &p_cam_transform, int p_probe_size, float p_normal_bias, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_miss_confidence, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode, bool p_surface_cache_enabled) {
 	ERR_FAIL_COND(p_render_buffers.is_null());
 	ERR_FAIL_COND(p_gi_size.x <= 0 || p_gi_size.y <= 0);
 	ERR_FAIL_NULL(p_projections);
@@ -3406,6 +3406,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_FILTERED, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, p_render_buffers->get_internal_size(), p_view_count);
 	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_HISTORY, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, screen_probe_atlas_size, p_view_count * 2);
 	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_AMBIENT_SCRATCH, RD::DATA_FORMAT_R32_UINT, usage_bits, RD::TEXTURE_SAMPLES_1, p_gi_size, p_view_count);
+	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_SURFACE_CACHE, RD::DATA_FORMAT_R32G32_UINT, usage_bits, RD::TEXTURE_SAMPLES_1, screen_probe_atlas_size, p_view_count);
 
 	HDDAGIShader::ScreenProbePushConstant push_constant = {};
 	push_constant.gi_size[0] = p_gi_size.x;
@@ -3430,6 +3431,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	push_constant.miss_ambient_fallback_weight = CLAMP(p_miss_ambient_fallback_weight, 0.0f, 2.0f);
 	push_constant.base_ambient_prior_weight = CLAMP(p_base_ambient_prior_weight, 0.0f, 1.0f);
 	push_constant.debug_mode = CLAMP(p_debug_mode, 0, 2);
+	push_constant.surface_cache_enabled = p_surface_cache_enabled ? 1 : 0;
 	push_constant.proj_info[0] = -2.0f / (internal_size.x * p_projections[0].columns[0][0]);
 	push_constant.proj_info[1] = -2.0f / (internal_size.y * p_projections[0].columns[1][1]);
 	push_constant.proj_info[2] = (1.0f - p_projections[0].columns[0][2]) / p_projections[0].columns[0][0];
@@ -3461,6 +3463,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, hddagi_shader.screen_probe_pipeline);
 	uint32_t current_history_index = push_constant.frame_index & 1;
 	uint32_t previous_history_index = current_history_index ^ 1;
+	String surface_cache_suffix = p_surface_cache_enabled ? " (Surface Cache)" : " (No Surface Cache)";
 	auto restart_compute_list = [&compute_list, this]() {
 		RD::get_singleton()->compute_list_end();
 		compute_list = RD::get_singleton()->compute_list_begin();
@@ -3482,7 +3485,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		RID previous_interpolated = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_INTERPOLATED, v * 2 + previous_history_index, 0);
 		RID filtered_interpolated = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_FILTERED, v, 0);
 		RID ambient_output_scratch = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_AMBIENT_SCRATCH, v, 0);
+		RID surface_cache = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_SURFACE_CACHE, v, 0);
 
+		RENDER_TIMESTAMP("HDDAGI Screen Probe Trace" + surface_cache_suffix);
 		RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache(
 				hddagi_shader.screen_probe_shader_version,
 				0,
@@ -3493,6 +3498,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, linear_sampler),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_RADIANCE, v, 0)),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, current_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 7, surface_cache),
 				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 8, default_black),
 				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->scene_data_ubo),
 				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, previous_history),
@@ -3513,6 +3519,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		restart_compute_list();
 
 		push_constant.pass_mode = 1;
+		RENDER_TIMESTAMP("HDDAGI Screen Probe Spatial Reuse" + surface_cache_suffix);
 		RID spatial_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(
 				hddagi_shader.screen_probe_shader_version,
 				0,
@@ -3523,6 +3530,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, linear_sampler),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, current_history),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, current_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 7, surface_cache),
 				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 8, p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_RADIANCE, v, 0)),
 				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->scene_data_ubo),
 				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, previous_history),
@@ -3543,6 +3551,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		restart_compute_list();
 
 		push_constant.pass_mode = 2;
+		RENDER_TIMESTAMP("HDDAGI Screen Probe Interpolate" + surface_cache_suffix);
 		RID interpolation_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(
 				hddagi_shader.screen_probe_shader_version,
 				0,
@@ -3553,6 +3562,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, linear_sampler),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, current_interpolated),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, current_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 7, surface_cache),
 				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 8, current_history),
 				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->scene_data_ubo),
 				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, previous_history),
@@ -3573,6 +3583,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		restart_compute_list();
 
 		push_constant.pass_mode = 3;
+		RENDER_TIMESTAMP("HDDAGI Screen Probe Temporal Filter" + surface_cache_suffix);
 		RID temporal_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(
 				hddagi_shader.screen_probe_shader_version,
 				0,
@@ -3583,6 +3594,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, linear_sampler),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, filtered_interpolated),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, current_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 7, surface_cache),
 				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 8, current_interpolated),
 				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->scene_data_ubo),
 				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, previous_interpolated),
@@ -3603,6 +3615,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		restart_compute_list();
 
 		push_constant.pass_mode = 4;
+		RENDER_TIMESTAMP("HDDAGI Screen Probe Apply Ambient" + surface_cache_suffix);
 		RID ambient_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(
 				hddagi_shader.screen_probe_shader_version,
 				0,
@@ -3613,6 +3626,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, linear_sampler),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, current_history),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, current_reservoir),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 7, surface_cache),
 				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 8, filtered_interpolated),
 				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->scene_data_ubo),
 				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, previous_history),

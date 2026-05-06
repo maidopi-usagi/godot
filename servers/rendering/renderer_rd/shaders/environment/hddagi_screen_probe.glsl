@@ -13,6 +13,7 @@ layout(set = 0, binding = 3) uniform texture2D normal_roughness_buffer;
 layout(set = 0, binding = 4) uniform sampler linear_sampler;
 layout(rgba16f, set = 0, binding = 5) uniform restrict writeonly image2D probe_radiance;
 layout(rgba32ui, set = 0, binding = 6) uniform restrict uimage2D probe_reservoir;
+layout(rg32ui, set = 0, binding = 7) uniform restrict uimage2D probe_surface_cache;
 layout(set = 0, binding = 8) uniform texture2D atlas_radiance;
 layout(set = 0, binding = 10) uniform texture2D atlas_history;
 layout(rgba16f, set = 0, binding = 11) uniform restrict writeonly image2D probe_history;
@@ -95,6 +96,7 @@ layout(push_constant, std430) uniform Params {
 	float miss_ambient_fallback_weight;
 	float base_ambient_prior_weight;
 	int debug_mode;
+	uint surface_cache_enabled;
 }
 params;
 
@@ -506,6 +508,32 @@ bool find_probe_surface(ivec2 probe_pos, out ivec2 r_screen_pos, out float r_dep
 	return found;
 }
 
+void store_probe_surface(ivec2 probe_pos, ivec2 screen_pos) {
+	imageStore(probe_surface_cache, probe_pos, uvec4(uint(screen_pos.x), uint(screen_pos.y), 0u, 0u));
+}
+
+void store_invalid_probe_surface(ivec2 probe_pos) {
+	imageStore(probe_surface_cache, probe_pos, uvec4(0xffffffffu, 0xffffffffu, 0u, 0u));
+}
+
+bool load_probe_surface(ivec2 probe_pos, out ivec2 r_screen_pos, out float r_depth, out vec3 r_normal) {
+	if (params.surface_cache_enabled == 0u) {
+		return find_probe_surface(probe_pos, r_screen_pos, r_depth, r_normal);
+	}
+
+	if (any(lessThan(probe_pos, ivec2(0))) || any(greaterThanEqual(probe_pos, imageSize(probe_surface_cache)))) {
+		return false;
+	}
+
+	uvec2 screen_pos = imageLoad(probe_surface_cache, probe_pos).rg;
+	if (all(equal(screen_pos, uvec2(0xffffffffu)))) {
+		return false;
+	}
+
+	r_screen_pos = ivec2(screen_pos);
+	return load_surface_screen(r_screen_pos, r_depth, r_normal);
+}
+
 bool load_hddagi_ray_radiance(ivec2 origin_pos, float origin_depth, vec3 origin_normal, vec3 ray_dir, out vec3 r_radiance, out float r_hit_distance) {
 	vec2 origin_uv = (vec2(origin_pos) + 0.5) / vec2(params.screen_size);
 	vec3 ray_pos = compute_view_pos(vec3(origin_uv, origin_depth));
@@ -651,7 +679,7 @@ float spatial_candidate_weight(ivec2 center_probe_pos, ivec2 candidate_probe_pos
 	ivec2 candidate_screen_pos;
 	float candidate_depth;
 	vec3 candidate_normal;
-	if (!find_probe_surface(candidate_probe_pos, candidate_screen_pos, candidate_depth, candidate_normal)) {
+	if (!load_probe_surface(candidate_probe_pos, candidate_screen_pos, candidate_depth, candidate_normal)) {
 		return 0.0;
 	}
 
@@ -678,7 +706,7 @@ void spatial_reuse_screen_probe_radiance() {
 	ivec2 origin_pos;
 	float origin_depth;
 	vec3 origin_normal;
-	if (!find_probe_surface(probe_pos, origin_pos, origin_depth, origin_normal)) {
+	if (!load_probe_surface(probe_pos, origin_pos, origin_depth, origin_normal)) {
 		imageStore(probe_history, atlas_pos, vec4(0.0));
 		return;
 	}
@@ -794,7 +822,7 @@ void interpolate_screen_probe_radiance() {
 			ivec2 probe_screen_pos;
 			float probe_depth;
 			vec3 probe_normal;
-			if (!find_probe_surface(probe_pos, probe_screen_pos, probe_depth, probe_normal)) {
+			if (!load_probe_surface(probe_pos, probe_screen_pos, probe_depth, probe_normal)) {
 				continue;
 			}
 
@@ -944,10 +972,14 @@ void main() {
 	float origin_depth;
 	vec3 origin_normal;
 	if (!find_probe_surface(probe_pos, origin_pos, origin_depth, origin_normal)) {
+		store_invalid_probe_surface(probe_pos);
 		imageStore(probe_radiance, atlas_pos, vec4(0.0));
 		imageStore(probe_history, atlas_pos, vec4(0.0));
 		imageStore(probe_reservoir, atlas_pos, uvec4(0));
 		return;
+	}
+	if (params.surface_cache_enabled != 0u) {
+		store_probe_surface(probe_pos, origin_pos);
 	}
 
 	float frame = float(params.frame_index & 0xffffu);
