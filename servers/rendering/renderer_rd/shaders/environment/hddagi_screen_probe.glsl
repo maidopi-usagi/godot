@@ -386,30 +386,24 @@ void store_reservoir_state_data(ivec2 atlas_pos, vec2 direction_oct, float targe
 			floatBitsToUint(reservoir_weight)));
 }
 
-void store_temporal_reservoir_state(ivec2 atlas_pos, ivec2 previous_atlas_pos, float history_validity, vec3 ray_dir, vec3 radiance, bool hit) {
+void store_temporal_reservoir_state(ivec2 atlas_pos, vec3 ray_dir, vec3 radiance, bool hit, vec3 guided_ray_dir, vec3 guided_radiance, bool guided_hit, bool guided_valid) {
 	vec2 candidate_direction_oct = octahedral_encode(normalize(mat3(scene_data.cam_transform) * ray_dir));
 	float candidate_target_luminance = hit ? max(luminance(radiance), 0.0) : 0.0;
-	float candidate_weight_sum = candidate_target_luminance;
-	float sample_count = 1.0;
+	float weight_sum = candidate_target_luminance;
+	float sample_count = guided_valid ? 2.0 : 1.0;
 	vec2 selected_direction_oct = candidate_direction_oct;
 	float selected_target_luminance = candidate_target_luminance;
 	float selected_hit = hit ? 1.0 : 0.0;
-	float weight_sum = candidate_weight_sum;
 
-	if (params.history_valid != 0 && history_validity > 0.0) {
-		ReservoirState previous = load_previous_reservoir_state(previous_atlas_pos);
-		if (previous.valid) {
-			float previous_sample_count = max(previous.sample_count, 1.0);
-			float previous_weight_sum = previous.reservoir_weight * max(previous.target_luminance, 0.0) * previous_sample_count * history_validity;
-			weight_sum += previous_weight_sum;
-			sample_count = previous_sample_count + 1.0;
-
-			float selection_random = hash_float(uvec3(atlas_pos, params.frame_index ^ 0x9e3779b9u));
-			if (weight_sum > 0.0 && selection_random * weight_sum < previous_weight_sum) {
-				selected_direction_oct = previous.direction_oct;
-				selected_target_luminance = previous.target_luminance;
-				selected_hit = previous.hit;
-			}
+	if (guided_valid) {
+		float guided_target_luminance = guided_hit ? max(luminance(guided_radiance), 0.0) : 0.0;
+		guided_target_luminance = min(guided_target_luminance, max(candidate_target_luminance * 4.0, 0.25));
+		weight_sum += guided_target_luminance;
+		float selection_random = hash_float(uvec3(atlas_pos, params.frame_index ^ 0x9e3779b9u));
+		if (weight_sum > 0.0 && selection_random * weight_sum < guided_target_luminance) {
+			selected_direction_oct = octahedral_encode(normalize(mat3(scene_data.cam_transform) * guided_ray_dir));
+			selected_target_luminance = guided_target_luminance;
+			selected_hit = guided_hit ? 1.0 : 0.0;
 		}
 	}
 
@@ -786,6 +780,21 @@ bool load_hddagi_ray_radiance(ivec2 origin_pos, float origin_depth, vec3 origin_
 
 	r_radiance = light * hddagi.energy;
 	return true;
+}
+
+bool trace_screen_probe_candidate(ivec2 origin_pos, float origin_depth, vec3 origin_normal, vec3 ray_dir, vec3 base_ambient, out vec3 r_radiance, out float r_hit_distance) {
+	bool hit = load_hddagi_ray_radiance(origin_pos, origin_depth, origin_normal, ray_dir, r_radiance, r_hit_distance);
+	if (!hit) {
+		// Fall back only to the base ambient GI. Do not include reflection_buffer here: that would
+		// feed screen-space/reflection history back into the probe estimator and can drift.
+		r_radiance = base_ambient * params.miss_ambient_fallback_weight;
+		r_hit_distance = 0.0;
+	} else {
+		// Blend a small base-GI prior into hits as well so hit/miss areas share the same low-frequency
+		// baseline instead of cutting sharply between traced radiance and fallback radiance.
+		r_radiance = mix(r_radiance, base_ambient, params.base_ambient_prior_weight);
+	}
+	return hit;
 }
 
 vec4 load_probe_ray(ivec2 probe_pos, ivec2 cell_pos) {
@@ -1279,26 +1288,32 @@ void main() {
 	vec2 sample_uv = (vec2(cell_pos) + ray_jitter) / float(OCTAHEDRAL_SIZE);
 	vec3 ray_dir = tangent_to_world(cosine_sample_hemisphere(sample_uv), origin_normal);
 	vec3 guided_ray_dir;
-	float guided_probability = clamp(reservoir_history_validity * 0.75, 0.0, 0.75);
-	if (hash_float(uvec3(atlas_pos.yx, params.frame_index ^ 0x51ed270bu)) < guided_probability && load_guided_reservoir_ray(previous_atlas_pos, reservoir_history_validity, origin_normal, guided_ray_dir)) {
-		ray_dir = guided_ray_dir;
-	}
+	bool guided_candidate_valid = load_guided_reservoir_ray(previous_atlas_pos, reservoir_history_validity, origin_normal, guided_ray_dir);
 
 	float hit_distance;
 	vec3 radiance;
 	vec3 base_ambient = load_source_ambient(origin_pos);
-	bool hit = load_hddagi_ray_radiance(origin_pos, origin_depth, origin_normal, ray_dir, radiance, hit_distance);
-	float sample_count = 1.0;
-	if (!hit) {
-		// Fall back only to the base ambient GI. Do not include reflection_buffer here: that would
-		// feed screen-space/reflection history back into the probe estimator and can drift.
-		radiance = base_ambient * params.miss_ambient_fallback_weight;
-		hit_distance = 0.0;
-	} else {
-		// Blend a small base-GI prior into hits as well so hit/miss areas share the same low-frequency
-		// baseline instead of cutting sharply between traced radiance and fallback radiance.
-		radiance = mix(radiance, base_ambient, params.base_ambient_prior_weight);
+	bool hit = trace_screen_probe_candidate(origin_pos, origin_depth, origin_normal, ray_dir, base_ambient, radiance, hit_distance);
+
+	float guided_hit_distance;
+	vec3 guided_radiance;
+	bool guided_hit = false;
+	if (guided_candidate_valid) {
+		guided_hit = trace_screen_probe_candidate(origin_pos, origin_depth, origin_normal, guided_ray_dir, base_ambient, guided_radiance, guided_hit_distance);
 	}
+
+	float candidate_target_luminance = hit ? max(luminance(radiance), 0.0) : 0.0;
+	float guided_target_luminance = guided_candidate_valid && guided_hit ? max(luminance(guided_radiance), 0.0) : 0.0;
+	guided_target_luminance = min(guided_target_luminance, max(candidate_target_luminance * 4.0, 0.25));
+	float candidate_weight_sum = candidate_target_luminance + guided_target_luminance;
+	if (guided_candidate_valid && candidate_weight_sum > 0.0 && hash_float(uvec3(atlas_pos, params.frame_index ^ 0x51ed270bu)) * candidate_weight_sum < guided_target_luminance) {
+		ray_dir = guided_ray_dir;
+		radiance = guided_radiance;
+		hit_distance = guided_hit_distance;
+		hit = guided_hit;
+	}
+
+	float sample_count = 1.0;
 
 	vec4 current_radiance = vec4(radiance, sample_count);
 	vec4 previous_radiance = history_reprojected ? texelFetch(sampler2D(atlas_history, linear_sampler), previous_atlas_pos, 0) : vec4(0.0);
@@ -1312,5 +1327,5 @@ void main() {
 	imageStore(probe_radiance, atlas_pos, current_radiance);
 	imageStore(probe_history, atlas_pos, current_radiance);
 	imageStore(probe_reservoir, atlas_pos, uvec4(rgbe_encode(radiance), packHalf2x16(vec2(linearize_depth(origin_depth), hit ? 1.0 : params.miss_confidence)), packHalf2x16(octahedral_encode(origin_world_normal)), params.frame_index));
-	store_temporal_reservoir_state(atlas_pos, previous_atlas_pos, reservoir_history_validity, ray_dir, radiance, hit);
+	store_temporal_reservoir_state(atlas_pos, ray_dir, radiance, hit, guided_ray_dir, guided_radiance, guided_hit, guided_candidate_valid);
 }
