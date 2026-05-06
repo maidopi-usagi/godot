@@ -74,6 +74,7 @@
 #define RB_TEX_HDDAGI_SCREEN_PROBE_HISTORY SNAME("history")
 #define RB_TEX_HDDAGI_SCREEN_PROBE_AMBIENT_SCRATCH SNAME("ambient_scratch")
 #define RB_TEX_HDDAGI_SCREEN_PROBE_SURFACE_CACHE SNAME("surface_cache")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_WORLD_RESERVOIR_CACHE SNAME("world_reservoir_cache")
 
 // Forward declare RenderDataRD and RendererSceneRenderRD so we can pass it into some of our methods, these classes are pretty tightly bound
 class RenderDataRD;
@@ -954,7 +955,7 @@ public:
 	void setup_voxel_gi_instances(RenderDataRD *p_render_data, Ref<RenderSceneBuffersRD> p_render_buffers, const Transform3D &p_transform, const PagedArray<RID> &p_voxel_gi_instances, uint32_t &r_voxel_gi_instances_used);
 	void process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer, RID p_environment, uint32_t p_view_count, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_cam_transform, const PagedArray<RID> &p_voxel_gi_instances);
 	bool hddagi_uses_screen_probes(RID p_environment) const;
-	void process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, uint32_t p_view_count, Size2i p_gi_size, const Projection *p_projections, const Transform3D &p_cam_transform, int p_probe_size, float p_normal_bias, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_miss_confidence, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode, bool p_surface_cache_enabled, bool p_restir_temporal_guiding, bool p_restir_spatial_guiding, int p_restir_base_candidate_count, float p_restir_guided_target_luminance_max_ratio, float p_restir_guided_candidate_probability, float p_restir_spatial_guided_candidate_probability, float p_restir_boost_max);
+	void process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, uint32_t p_view_count, Size2i p_gi_size, const Projection *p_projections, const Transform3D &p_cam_transform, int p_probe_size, float p_normal_bias, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_miss_confidence, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode, bool p_surface_cache_enabled, bool p_restir_temporal_guiding, bool p_restir_spatial_guiding, bool p_world_reservoir_cache, int p_restir_base_candidate_count, float p_restir_guided_target_luminance_max_ratio, float p_restir_guided_candidate_probability, float p_restir_spatial_guided_candidate_probability, float p_restir_boost_max);
 
 	RID voxel_gi_instance_create(RID p_base);
 	void voxel_gi_instance_set_transform_to_data(RID p_probe, const Transform3D &p_xform);

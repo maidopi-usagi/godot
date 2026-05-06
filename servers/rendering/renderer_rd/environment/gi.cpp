@@ -3372,7 +3372,7 @@ bool GI::hddagi_uses_screen_probes(RID p_environment) const {
 	return RendererSceneRenderRD::get_singleton()->environment_get_hddagi_screen_probes_enabled(p_environment);
 }
 
-void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, uint32_t p_view_count, Size2i p_gi_size, const Projection *p_projections, const Transform3D &p_cam_transform, int p_probe_size, float p_normal_bias, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_miss_confidence, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode, bool p_surface_cache_enabled, bool p_restir_temporal_guiding, bool p_restir_spatial_guiding, int p_restir_base_candidate_count, float p_restir_guided_target_luminance_max_ratio, float p_restir_guided_candidate_probability, float p_restir_spatial_guided_candidate_probability, float p_restir_boost_max) {
+void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, uint32_t p_view_count, Size2i p_gi_size, const Projection *p_projections, const Transform3D &p_cam_transform, int p_probe_size, float p_normal_bias, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_miss_confidence, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode, bool p_surface_cache_enabled, bool p_restir_temporal_guiding, bool p_restir_spatial_guiding, bool p_world_reservoir_cache, int p_restir_base_candidate_count, float p_restir_guided_target_luminance_max_ratio, float p_restir_guided_candidate_probability, float p_restir_spatial_guided_candidate_probability, float p_restir_boost_max) {
 	ERR_FAIL_COND(p_render_buffers.is_null());
 	ERR_FAIL_COND(p_gi_size.x <= 0 || p_gi_size.y <= 0);
 	ERR_FAIL_NULL(p_projections);
@@ -3408,6 +3408,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_HISTORY, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, screen_probe_atlas_size, p_view_count * 2);
 	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_AMBIENT_SCRATCH, RD::DATA_FORMAT_R32_UINT, usage_bits, RD::TEXTURE_SAMPLES_1, p_gi_size, p_view_count);
 	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_SURFACE_CACHE, RD::DATA_FORMAT_R32G32_UINT, usage_bits, RD::TEXTURE_SAMPLES_1, screen_probe_atlas_size, p_view_count);
+	p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_WORLD_RESERVOIR_CACHE, RD::DATA_FORMAT_R32G32B32A32_UINT, usage_bits, RD::TEXTURE_SAMPLES_1, screen_probe_atlas_size, p_view_count * 2);
 
 	HDDAGIShader::ScreenProbePushConstant push_constant = {};
 	push_constant.gi_size[0] = p_gi_size.x;
@@ -3433,7 +3434,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	push_constant.base_ambient_prior_weight = CLAMP(p_base_ambient_prior_weight, 0.0f, 1.0f);
 	push_constant.debug_mode = CLAMP(p_debug_mode, 0, 3);
 	uint32_t restir_base_candidate_count = CLAMP(p_restir_base_candidate_count, 1, 8);
-	push_constant.screen_probe_flags = (p_surface_cache_enabled ? 1u : 0u) | (p_restir_temporal_guiding ? 2u : 0u) | (p_restir_spatial_guiding ? 4u : 0u) | ((restir_base_candidate_count - 1u) << 3u);
+	push_constant.screen_probe_flags = (p_surface_cache_enabled ? 1u : 0u) | (p_restir_temporal_guiding ? 2u : 0u) | (p_restir_spatial_guiding ? 4u : 0u) | ((restir_base_candidate_count - 1u) << 3u) | (p_world_reservoir_cache ? 64u : 0u);
 	push_constant.restir_guided_target_luminance_max_ratio = CLAMP(p_restir_guided_target_luminance_max_ratio, 1.0f, 32.0f);
 	push_constant.restir_guided_candidate_probability = CLAMP(p_restir_guided_candidate_probability, 0.0f, 1.0f);
 	push_constant.restir_spatial_guided_candidate_probability = CLAMP(p_restir_spatial_guided_candidate_probability, 0.0f, 1.0f);
@@ -3489,6 +3490,8 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		RID previous_reservoir = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_RESERVOIR, v * 2 + previous_history_index, 0);
 		RID current_reservoir_state = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_RESERVOIR_STATE, v * 2 + current_history_index, 0);
 		RID previous_reservoir_state = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_RESERVOIR_STATE, v * 2 + previous_history_index, 0);
+		RID current_world_reservoir_cache = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_WORLD_RESERVOIR_CACHE, v * 2 + current_history_index, 0);
+		RID previous_world_reservoir_cache = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_WORLD_RESERVOIR_CACHE, v * 2 + previous_history_index, 0);
 		RID current_interpolated = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_INTERPOLATED, v * 2 + current_history_index, 0);
 		RID previous_interpolated = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_INTERPOLATED, v * 2 + previous_history_index, 0);
 		RID filtered_interpolated = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_FILTERED, v, 0);
@@ -3520,7 +3523,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 18, hddagi->voxel_disocclusion_tex),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 19, ambient_output_scratch),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 20, current_reservoir_state),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 21, previous_reservoir_state));
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 21, previous_reservoir_state),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 22, current_world_reservoir_cache),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 23, previous_world_reservoir_cache));
 
 		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set, 0);
 		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(HDDAGIShader::ScreenProbePushConstant));
@@ -3554,7 +3559,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 18, hddagi->voxel_disocclusion_tex),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 19, ambient_output_scratch),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 20, current_reservoir_state),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 21, previous_reservoir_state));
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 21, previous_reservoir_state),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 22, current_world_reservoir_cache),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 23, previous_world_reservoir_cache));
 
 		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, spatial_uniform_set, 0);
 		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(HDDAGIShader::ScreenProbePushConstant));
@@ -3588,7 +3595,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 18, hddagi->voxel_disocclusion_tex),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 19, ambient_output_scratch),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 20, current_reservoir_state),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 21, previous_reservoir_state));
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 21, previous_reservoir_state),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 22, current_world_reservoir_cache),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 23, previous_world_reservoir_cache));
 
 		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, interpolation_uniform_set, 0);
 		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(HDDAGIShader::ScreenProbePushConstant));
@@ -3622,7 +3631,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 18, hddagi->voxel_disocclusion_tex),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 19, ambient_output_scratch),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 20, current_reservoir_state),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 21, previous_reservoir_state));
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 21, previous_reservoir_state),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 22, current_world_reservoir_cache),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 23, previous_world_reservoir_cache));
 
 		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, temporal_uniform_set, 0);
 		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(HDDAGIShader::ScreenProbePushConstant));
@@ -3656,7 +3667,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 18, hddagi->voxel_disocclusion_tex),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 19, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_AMBIENT_U32, v, 0)),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 20, current_reservoir_state),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 21, previous_reservoir_state));
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 21, previous_reservoir_state),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 22, current_world_reservoir_cache),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 23, previous_world_reservoir_cache));
 
 		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, ambient_uniform_set, 0);
 		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(HDDAGIShader::ScreenProbePushConstant));

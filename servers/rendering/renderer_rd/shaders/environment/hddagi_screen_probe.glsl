@@ -26,6 +26,8 @@ layout(r8ui, set = 0, binding = 18) uniform restrict readonly uimage3D hddagi_vo
 layout(r32ui, set = 0, binding = 19) uniform restrict writeonly uimage2D screen_probe_ambient_output;
 layout(rgba32ui, set = 0, binding = 20) uniform restrict uimage2D probe_reservoir_state;
 layout(rgba32ui, set = 0, binding = 21) uniform restrict readonly uimage2D previous_reservoir_state;
+layout(rgba32ui, set = 0, binding = 22) uniform restrict uimage2D world_reservoir_cache;
+layout(rgba32ui, set = 0, binding = 23) uniform restrict readonly uimage2D previous_world_reservoir_cache;
 
 struct HDDAGIProbeCascadeData {
 	vec3 position;
@@ -109,10 +111,13 @@ params;
 const int OCTAHEDRAL_SIZE = 1;
 const int HDDAGI_REGION_SIZE = 8;
 const float TAU = 6.283185307179586;
+const uint SCREEN_PROBE_FLAG_WORLD_RESERVOIR_CACHE = 64u;
+const uint WORLD_RESERVOIR_CACHE_MAX_AGE = 240u;
 
 vec3 octahedral_to_direction(vec2 e);
 vec4 load_probe_ray(ivec2 probe_pos, ivec2 cell_pos);
 float linearize_depth(float depth);
+vec3 compute_view_pos(vec3 screen_pos);
 float spatial_candidate_weight(ivec2 center_probe_pos, ivec2 candidate_probe_pos, vec3 center_normal, float center_linear_depth);
 
 bool trace_ray_hdda(vec3 ray_pos, vec3 ray_dir, int p_cascade, out ivec3 r_cell, out ivec3 r_side, out int r_cascade) {
@@ -462,6 +467,75 @@ bool load_spatial_guided_reservoir_ray(ivec2 probe_pos, ivec2 previous_atlas_pos
 		}
 	}
 	return false;
+}
+
+vec3 hddagi_space_pos_from_screen(ivec2 screen_pos, float depth) {
+	vec2 uv = (vec2(screen_pos) + 0.5) / vec2(params.screen_size);
+	return mat3(scene_data.cam_transform) * compute_view_pos(vec3(uv, depth));
+}
+
+ivec3 world_reservoir_cache_cell(vec3 hddagi_pos) {
+	return ivec3(floor((hddagi_pos - hddagi.cascades[0].position) * hddagi.cascades[0].to_cell));
+}
+
+uint world_reservoir_cache_hash(ivec3 cell) {
+	uvec3 v = uvec3(cell) * uvec3(73856093u, 19349663u, 83492791u);
+	uint h = v.x ^ v.y ^ v.z;
+	h ^= h >> 16u;
+	h *= 0x7feb352du;
+	h ^= h >> 15u;
+	return h;
+}
+
+ivec2 world_reservoir_cache_coord(uint hash_value, ivec2 cache_size) {
+	uint width = uint(max(cache_size.x, 1));
+	return ivec2(int(hash_value % width), int((hash_value / width) % uint(max(cache_size.y, 1))));
+}
+
+void store_world_reservoir_cache(ivec2 origin_pos, float origin_depth, vec3 origin_world_normal, vec3 radiance, float sample_count) {
+	if ((params.screen_probe_flags & SCREEN_PROBE_FLAG_WORLD_RESERVOIR_CACHE) == 0u) {
+		return;
+	}
+
+	ivec3 cell = world_reservoir_cache_cell(hddagi_space_pos_from_screen(origin_pos, origin_depth));
+	uint hash_value = world_reservoir_cache_hash(cell);
+	ivec2 coord = world_reservoir_cache_coord(hash_value, imageSize(world_reservoir_cache));
+	uint packed_meta = (hash_value & 0xffffu) | (uint(clamp(sample_count, 0.0, 65535.0)) << 16u);
+	imageStore(world_reservoir_cache, coord, uvec4(rgbe_encode(radiance), packHalf2x16(octahedral_encode(origin_world_normal)), packed_meta, params.frame_index));
+}
+
+bool sample_world_reservoir_cache(ivec2 origin_pos, float origin_depth, vec3 origin_world_normal, out vec3 r_radiance, out float r_confidence, out float r_sample_count) {
+	r_radiance = vec3(0.0);
+	r_confidence = 0.0;
+	r_sample_count = 0.0;
+	if ((params.screen_probe_flags & SCREEN_PROBE_FLAG_WORLD_RESERVOIR_CACHE) == 0u || params.history_valid == 0) {
+		return false;
+	}
+
+	ivec3 cell = world_reservoir_cache_cell(hddagi_space_pos_from_screen(origin_pos, origin_depth));
+	uint hash_value = world_reservoir_cache_hash(cell);
+	ivec2 coord = world_reservoir_cache_coord(hash_value, imageSize(previous_world_reservoir_cache));
+	uvec4 packed = imageLoad(previous_world_reservoir_cache, coord);
+	if (packed.a > params.frame_index || packed.r == 0u) {
+		return false;
+	}
+	uint age = params.frame_index - packed.a;
+	if (age > WORLD_RESERVOIR_CACHE_MAX_AGE || (packed.b & 0xffffu) != (hash_value & 0xffffu)) {
+		return false;
+	}
+
+	vec3 cached_normal = octahedral_to_direction(unpackHalf2x16(packed.g));
+	float normal_validity = smoothstep(0.5, 0.9, dot(cached_normal, origin_world_normal));
+	r_sample_count = float(packed.b >> 16u);
+	float count_validity = clamp(r_sample_count / max(params.history_sample_count_max * 0.5, 1.0), 0.0, 1.0);
+	float age_validity = 1.0 - smoothstep(float(WORLD_RESERVOIR_CACHE_MAX_AGE / 2u), float(WORLD_RESERVOIR_CACHE_MAX_AGE), float(age));
+	r_confidence = normal_validity * count_validity * age_validity;
+	if (r_confidence <= 0.0) {
+		return false;
+	}
+
+	r_radiance = rgbe_decode(packed.r);
+	return true;
 }
 
 vec3 clip_to_aabb(vec3 color, vec3 minimum, vec3 maximum) {
@@ -817,6 +891,12 @@ bool trace_screen_probe_candidate(ivec2 origin_pos, float origin_depth, vec3 ori
 		// Fall back only to the base ambient GI. Do not include reflection_buffer here: that would
 		// feed screen-space/reflection history back into the probe estimator and can drift.
 		r_radiance = base_ambient * params.miss_ambient_fallback_weight;
+		vec3 cached_radiance;
+		float cache_confidence;
+		float cache_sample_count;
+		if (sample_world_reservoir_cache(origin_pos, origin_depth, normal_to_world(origin_normal), cached_radiance, cache_confidence, cache_sample_count)) {
+			r_radiance = mix(r_radiance, cached_radiance, cache_confidence * 0.25);
+		}
 		r_hit_distance = 0.0;
 	} else {
 		// Blend a small base-GI prior into hits as well so hit/miss areas share the same low-frequency
@@ -1426,10 +1506,23 @@ void main() {
 		sample_count = previous_sample_count + 1.0;
 		current_radiance.rgb = (previous_radiance.rgb * previous_sample_count + visible_radiance) / sample_count;
 		current_radiance.a = sample_count;
+	} else {
+		vec3 cached_radiance;
+		float cache_confidence;
+		float cache_sample_count;
+		if (sample_world_reservoir_cache(origin_pos, origin_depth, origin_world_normal, cached_radiance, cache_confidence, cache_sample_count)) {
+			float seeded_sample_count = min(max(cache_sample_count * cache_confidence, 1.0), max(params.history_sample_count_max, 1.0) - 1.0);
+			sample_count = seeded_sample_count + 1.0;
+			current_radiance.rgb = (cached_radiance * seeded_sample_count + visible_radiance) / sample_count;
+			current_radiance.a = sample_count;
+		}
 	}
 
 	imageStore(probe_radiance, atlas_pos, current_radiance);
 	imageStore(probe_history, atlas_pos, current_radiance);
 	imageStore(probe_reservoir, atlas_pos, uvec4(rgbe_encode(selected_radiance), packHalf2x16(vec2(linearize_depth(origin_depth), selected_hit ? 1.0 : params.miss_confidence)), packHalf2x16(octahedral_encode(origin_world_normal)), params.frame_index));
 	store_temporal_reservoir_state(atlas_pos, selected_ray_dir, selected_target_luminance, selected_hit, selected_guided_candidate, guided_candidate_valid || spatial_guided_candidate_valid, reservoir_sample_count, selected_reservoir_weight);
+	if (current_radiance.a > 1.0) {
+		store_world_reservoir_cache(origin_pos, origin_depth, origin_world_normal, current_radiance.rgb, current_radiance.a);
+	}
 }
