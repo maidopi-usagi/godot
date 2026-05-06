@@ -421,6 +421,26 @@ void store_invalid_reservoir_state(ivec2 atlas_pos) {
 	imageStore(probe_reservoir_state, atlas_pos, uvec4(0u));
 }
 
+bool load_guided_reservoir_ray(ivec2 previous_atlas_pos, float history_validity, vec3 origin_normal, out vec3 r_ray_dir) {
+	if (params.history_valid == 0 || history_validity <= 0.0) {
+		return false;
+	}
+
+	ReservoirState previous = load_previous_reservoir_state(previous_atlas_pos);
+	if (!previous.valid || previous.hit < 0.5 || previous.target_luminance <= 0.0) {
+		return false;
+	}
+
+	vec3 world_dir = octahedral_to_direction(previous.direction_oct);
+	vec3 view_dir = normalize(transpose(mat3(scene_data.cam_transform)) * world_dir);
+	if (dot(view_dir, origin_normal) <= 0.05) {
+		return false;
+	}
+
+	r_ray_dir = view_dir;
+	return true;
+}
+
 vec3 clip_to_aabb(vec3 color, vec3 minimum, vec3 maximum) {
 	vec3 center = (maximum + minimum) * 0.5;
 	vec3 extents = max((maximum - minimum) * 0.5, vec3(0.0001));
@@ -496,8 +516,10 @@ vec3 compute_view_pos(vec3 screen_pos) {
 	return pos.xyz / pos.w;
 }
 
-bool reproject_history(ivec2 origin_pos, float origin_depth, ivec2 cell_pos, out ivec2 r_previous_atlas_pos, out float r_previous_linear_depth, out float r_motion_validity) {
+bool reproject_history(ivec2 origin_pos, float origin_depth, ivec2 cell_pos, out ivec2 r_previous_atlas_pos, out float r_previous_linear_depth, out float r_motion_validity, out float r_motion_in_probes, out float r_camera_translation) {
 	r_motion_validity = 0.0;
+	r_motion_in_probes = 0.0;
+	r_camera_translation = 0.0;
 	vec2 origin_uv = (vec2(origin_pos) + 0.5) / vec2(params.screen_size);
 	vec3 view_pos = compute_view_pos(vec3(origin_uv, origin_depth));
 	vec4 world_pos = scene_data.cam_transform * vec4(view_pos, 1.0);
@@ -523,8 +545,10 @@ bool reproject_history(ivec2 origin_pos, float origin_depth, ivec2 cell_pos, out
 		return false;
 	}
 
-	float motion_in_probes = length(vec2(previous_screen_pos - origin_pos)) / float(max(params.probe_size, 1));
-	r_motion_validity = 1.0 - smoothstep(1.0, 4.0, motion_in_probes);
+	vec3 previous_camera_pos = inverse(scene_data.previous_cam_inv_transform)[3].xyz;
+	r_camera_translation = length(scene_data.cam_transform[3].xyz - previous_camera_pos);
+	r_motion_in_probes = length(vec2(previous_screen_pos - origin_pos)) / float(max(params.probe_size, 1));
+	r_motion_validity = r_camera_translation > 0.00001 ? 1.0 - smoothstep(1.0, 4.0, r_motion_in_probes) : 1.0;
 	r_previous_linear_depth = previous_project_pos.z;
 	return true;
 }
@@ -919,34 +943,104 @@ ReservoirDebugState gather_probe_reservoir_debug_state(ivec2 probe_pos) {
 	return debug_state;
 }
 
+vec4 reservoir_debug_state_to_color(ReservoirDebugState state, ivec2 screen_pos) {
+	if (!state.valid) {
+		return vec4(0.0, 0.0, 0.0, 1.0);
+	}
+
+	ivec2 output_size = imageSize(probe_radiance);
+	bool right = screen_pos.x >= output_size.x / 2;
+	bool bottom = screen_pos.y >= output_size.y / 2;
+	if (!right && !bottom) {
+		float history = clamp(state.sample_count / max(params.history_sample_count_max, 1.0), 0.0, 1.0);
+		return vec4(history, history, history, 1.0);
+	}
+	if (right && !bottom) {
+		float reservoir_weight = clamp(log2(max(state.reservoir_weight, 0.0) + 1.0) / 8.0, 0.0, 1.0);
+		return vec4(reservoir_weight, reservoir_weight, reservoir_weight, 1.0);
+	}
+	if (!right) {
+		float target_luminance = clamp(log2(state.target_luminance + 1.0) / 8.0, 0.0, 1.0);
+		return vec4(target_luminance, target_luminance, target_luminance, 1.0);
+	}
+
+	return vec4(octahedral_encode(state.direction), state.hit_ratio, 1.0);
+}
+
+ReservoirDebugState gather_screen_reservoir_debug_state(ivec2 probe_base, ivec2 screen_pos, float pixel_linear_depth, vec3 pixel_normal) {
+	ivec2 probe_count = imageSize(probe_reservoir_state) / OCTAHEDRAL_SIZE;
+	ReservoirDebugState debug_state;
+	debug_state.direction = vec3(0.0);
+	debug_state.sample_count = 0.0;
+	debug_state.target_luminance = 0.0;
+	debug_state.reservoir_weight = 0.0;
+	debug_state.hit_ratio = 0.0;
+	debug_state.valid = false;
+
+	vec3 direction = vec3(0.0);
+	float sample_count = 0.0;
+	float target_luminance = 0.0;
+	float reservoir_weight = 0.0;
+	float hit_ratio = 0.0;
+	float weight = 0.0;
+	for (int y = -1; y <= 1; y++) {
+		for (int x = -1; x <= 1; x++) {
+			ivec2 probe_pos = probe_base + ivec2(x, y);
+			if (any(lessThan(probe_pos, ivec2(0))) || any(greaterThanEqual(probe_pos, probe_count))) {
+				continue;
+			}
+
+			ivec2 probe_screen_pos;
+			float probe_depth;
+			vec3 probe_normal;
+			if (!load_probe_surface(probe_pos, probe_screen_pos, probe_depth, probe_normal)) {
+				continue;
+			}
+
+			float normal_weight = pow(max(dot(pixel_normal, probe_normal), 0.0), 4.0);
+			float probe_linear_depth = linearize_depth(probe_depth);
+			float depth_scale = max(0.02, abs(pixel_linear_depth) * 0.03);
+			float depth_weight = 1.0 - smoothstep(0.0, depth_scale, abs(pixel_linear_depth - probe_linear_depth));
+			float distance_weight = 1.0 / (1.0 + length(vec2(screen_pos - probe_screen_pos)) / float(max(params.probe_size, 1)));
+			float probe_weight = normal_weight * depth_weight * distance_weight;
+			if (probe_weight <= 0.0) {
+				continue;
+			}
+
+			ReservoirDebugState state = gather_probe_reservoir_debug_state(probe_pos);
+			if (!state.valid) {
+				continue;
+			}
+
+			direction += state.direction * probe_weight;
+			sample_count += state.sample_count * probe_weight;
+			target_luminance += state.target_luminance * probe_weight;
+			reservoir_weight += state.reservoir_weight * probe_weight;
+			hit_ratio += state.hit_ratio * probe_weight;
+			weight += probe_weight;
+		}
+	}
+
+	if (weight <= 0.0) {
+		return debug_state;
+	}
+
+	debug_state.direction = normalize(direction / weight);
+	debug_state.sample_count = sample_count / weight;
+	debug_state.target_luminance = target_luminance / weight;
+	debug_state.reservoir_weight = reservoir_weight / weight;
+	debug_state.hit_ratio = hit_ratio / weight;
+	debug_state.valid = true;
+	return debug_state;
+}
+
 vec4 get_probe_debug_radiance(ivec2 probe_pos, ivec2 screen_pos) {
 	if (params.debug_mode == 1) {
 		float sample_count = clamp(load_probe_ray(probe_pos, ivec2(0)).a / max(params.history_sample_count_max, 1.0), 0.0, 1.0);
 		return vec4(sample_count, sample_count * sample_count, 1.0 - sample_count, 1.0);
 	}
 	if (params.debug_mode == 3) {
-		ReservoirDebugState state = gather_probe_reservoir_debug_state(probe_pos);
-		if (!state.valid) {
-			return vec4(0.0, 0.0, 0.0, 1.0);
-		}
-
-		ivec2 output_size = imageSize(probe_radiance);
-		bool right = screen_pos.x >= output_size.x / 2;
-		bool bottom = screen_pos.y >= output_size.y / 2;
-		if (!right && !bottom) {
-			float history = clamp(state.sample_count / max(params.history_sample_count_max, 1.0), 0.0, 1.0);
-			return vec4(history, history, history, 1.0);
-		}
-		if (right && !bottom) {
-			float reservoir_weight = clamp(log2(max(state.reservoir_weight, 0.0) + 1.0) / 8.0, 0.0, 1.0);
-			return vec4(reservoir_weight, reservoir_weight, reservoir_weight, 1.0);
-		}
-		if (!right) {
-			float target_luminance = clamp(log2(state.target_luminance + 1.0) / 8.0, 0.0, 1.0);
-			return vec4(target_luminance, target_luminance, target_luminance, 1.0);
-		}
-
-		return vec4(octahedral_encode(state.direction), state.hit_ratio, 1.0);
+		return reservoir_debug_state_to_color(gather_probe_reservoir_debug_state(probe_pos), screen_pos);
 	}
 
 	uvec4 reservoir = imageLoad(probe_reservoir, clamp(probe_pos * OCTAHEDRAL_SIZE, ivec2(0), imageSize(probe_reservoir) - ivec2(1)));
@@ -970,6 +1064,15 @@ void interpolate_screen_probe_radiance() {
 
 	ivec2 gi_pos = screen_to_gi(screen_pos);
 	ivec2 probe_base = gi_pos / params.probe_size;
+	if (params.debug_mode == 3) {
+		float pixel_linear_depth = linearize_depth(pixel_depth);
+		ReservoirDebugState state = gather_screen_reservoir_debug_state(probe_base, screen_pos, pixel_linear_depth, pixel_normal);
+		if (!state.valid) {
+			state = gather_probe_reservoir_debug_state(probe_base);
+		}
+		imageStore(probe_radiance, screen_pos, reservoir_debug_state_to_color(state, screen_pos));
+		return;
+	}
 	if (params.debug_mode != 0) {
 		imageStore(probe_radiance, screen_pos, get_probe_debug_radiance(probe_base, screen_pos));
 		return;
@@ -1156,12 +1259,30 @@ void main() {
 		store_probe_surface(probe_pos, origin_pos);
 	}
 
+	ivec2 previous_atlas_pos = atlas_pos;
+	float previous_linear_depth;
+	float history_motion_validity;
+	float history_motion_in_probes;
+	float history_camera_translation;
+	vec3 origin_world_normal = normal_to_world(origin_normal);
+	bool history_reprojected = reproject_history(origin_pos, origin_depth, cell_pos, previous_atlas_pos, previous_linear_depth, history_motion_validity, history_motion_in_probes, history_camera_translation);
+	float history_validity = history_reprojected ? validate_history(previous_atlas_pos, previous_linear_depth, origin_world_normal) : 0.0;
+	bool camera_translated = history_camera_translation > 0.00001;
+	float reservoir_motion_validity = camera_translated ? max(0.2, 1.0 - smoothstep(0.5, 2.0, history_motion_in_probes)) : 1.0;
+	float reservoir_probe_validity = camera_translated && any(notEqual(previous_atlas_pos, atlas_pos)) ? 0.35 : 1.0;
+	float reservoir_history_validity = history_validity * reservoir_motion_validity * reservoir_probe_validity;
+
 	float frame = float(params.frame_index & 0xffffu);
 	vec2 ray_jitter = fract(vec2(
 			hash_float(uvec3(atlas_pos, 0u)) + frame * 0.7548776662466927,
 			hash_float(uvec3(atlas_pos.yx, 1u)) + frame * 0.5698402909980532));
 	vec2 sample_uv = (vec2(cell_pos) + ray_jitter) / float(OCTAHEDRAL_SIZE);
 	vec3 ray_dir = tangent_to_world(cosine_sample_hemisphere(sample_uv), origin_normal);
+	vec3 guided_ray_dir;
+	float guided_probability = clamp(reservoir_history_validity * 0.75, 0.0, 0.75);
+	if (hash_float(uvec3(atlas_pos.yx, params.frame_index ^ 0x51ed270bu)) < guided_probability && load_guided_reservoir_ray(previous_atlas_pos, reservoir_history_validity, origin_normal, guided_ray_dir)) {
+		ray_dir = guided_ray_dir;
+	}
 
 	float hit_distance;
 	vec3 radiance;
@@ -1180,14 +1301,7 @@ void main() {
 	}
 
 	vec4 current_radiance = vec4(radiance, sample_count);
-	ivec2 previous_atlas_pos = atlas_pos;
-	float previous_linear_depth;
-	float history_motion_validity;
-	vec3 origin_world_normal = normal_to_world(origin_normal);
-	bool history_reprojected = reproject_history(origin_pos, origin_depth, cell_pos, previous_atlas_pos, previous_linear_depth, history_motion_validity);
 	vec4 previous_radiance = history_reprojected ? texelFetch(sampler2D(atlas_history, linear_sampler), previous_atlas_pos, 0) : vec4(0.0);
-	float history_validity = history_reprojected ? validate_history(previous_atlas_pos, previous_linear_depth, origin_world_normal) * history_motion_validity : 0.0;
-	float reservoir_history_validity = any(notEqual(previous_atlas_pos, atlas_pos)) ? 0.0 : history_validity;
 	if (params.history_valid != 0 && previous_radiance.a > 0.0 && history_validity > 0.0) {
 		float previous_sample_count = min(previous_radiance.a, max(params.history_sample_count_max, 1.0) - 1.0);
 		sample_count = previous_sample_count + 1.0;
