@@ -113,6 +113,7 @@ const int HDDAGI_REGION_SIZE = 8;
 const float TAU = 6.283185307179586;
 const uint SCREEN_PROBE_FLAG_WORLD_RESERVOIR_CACHE = 64u;
 const uint WORLD_RESERVOIR_CACHE_MAX_AGE = 240u;
+const uint WORLD_RESERVOIR_CACHE_WAYS = 4u;
 
 vec3 octahedral_to_direction(vec2 e);
 vec4 load_probe_ray(ivec2 probe_pos, ivec2 cell_pos);
@@ -487,9 +488,26 @@ uint world_reservoir_cache_hash(ivec3 cell) {
 	return h;
 }
 
-ivec2 world_reservoir_cache_coord(uint hash_value, ivec2 cache_size) {
-	uint width = uint(max(cache_size.x, 1));
-	return ivec2(int(hash_value % width), int((hash_value / width) % uint(max(cache_size.y, 1))));
+ivec2 world_reservoir_cache_bucket_coord(uint hash_value, ivec2 cache_size) {
+	uint bucket_width = max(uint(cache_size.x) / WORLD_RESERVOIR_CACHE_WAYS, 1u);
+	return ivec2(int(hash_value % bucket_width) * int(WORLD_RESERVOIR_CACHE_WAYS), int((hash_value / bucket_width) % uint(max(cache_size.y, 1))));
+}
+
+ivec2 world_reservoir_cache_slot_coord(uint hash_value, uint slot, ivec2 cache_size) {
+	ivec2 bucket_coord = world_reservoir_cache_bucket_coord(hash_value, cache_size);
+	return ivec2(min(bucket_coord.x + int(slot), cache_size.x - 1), bucket_coord.y);
+}
+
+ivec3 world_reservoir_cache_lookup_cell(ivec3 base_cell, uint candidate_index) {
+	if (candidate_index == 0u) {
+		return base_cell;
+	}
+
+	uint axis = candidate_index - 1u;
+	int side = ((base_cell[int(axis)] & 1) == 0) ? -1 : 1;
+	ivec3 offset = ivec3(0);
+	offset[int(axis)] = side;
+	return base_cell + offset;
 }
 
 void store_world_reservoir_cache(ivec2 origin_pos, float origin_depth, vec3 origin_world_normal, vec3 radiance, float sample_count) {
@@ -499,8 +517,26 @@ void store_world_reservoir_cache(ivec2 origin_pos, float origin_depth, vec3 orig
 
 	ivec3 cell = world_reservoir_cache_cell(hddagi_space_pos_from_screen(origin_pos, origin_depth));
 	uint hash_value = world_reservoir_cache_hash(cell);
-	ivec2 coord = world_reservoir_cache_coord(hash_value, imageSize(world_reservoir_cache));
 	uint packed_meta = (hash_value & 0xffffu) | (uint(clamp(sample_count, 0.0, 65535.0)) << 16u);
+	ivec2 cache_size = imageSize(world_reservoir_cache);
+	ivec2 coord = world_reservoir_cache_slot_coord(hash_value, 0u, cache_size);
+	float weakest_score = 1e20;
+	for (uint i = 0u; i < WORLD_RESERVOIR_CACHE_WAYS; i++) {
+		ivec2 slot_coord = world_reservoir_cache_slot_coord(hash_value, i, cache_size);
+		uvec4 packed = imageLoad(world_reservoir_cache, slot_coord);
+		if (packed.r == 0u || (packed.b & 0xffffu) == (hash_value & 0xffffu)) {
+			coord = slot_coord;
+			break;
+		}
+
+		float stored_sample_count = float(packed.b >> 16u);
+		float age = packed.a <= params.frame_index ? float(params.frame_index - packed.a) : float(WORLD_RESERVOIR_CACHE_MAX_AGE);
+		float score = stored_sample_count - age;
+		if (score < weakest_score) {
+			weakest_score = score;
+			coord = slot_coord;
+		}
+	}
 	imageStore(world_reservoir_cache, coord, uvec4(rgbe_encode(radiance), packHalf2x16(octahedral_encode(origin_world_normal)), packed_meta, params.frame_index));
 }
 
@@ -512,30 +548,37 @@ bool sample_world_reservoir_cache(ivec2 origin_pos, float origin_depth, vec3 ori
 		return false;
 	}
 
-	ivec3 cell = world_reservoir_cache_cell(hddagi_space_pos_from_screen(origin_pos, origin_depth));
-	uint hash_value = world_reservoir_cache_hash(cell);
-	ivec2 coord = world_reservoir_cache_coord(hash_value, imageSize(previous_world_reservoir_cache));
-	uvec4 packed = imageLoad(previous_world_reservoir_cache, coord);
-	if (packed.a > params.frame_index || packed.r == 0u) {
-		return false;
-	}
-	uint age = params.frame_index - packed.a;
-	if (age > WORLD_RESERVOIR_CACHE_MAX_AGE || (packed.b & 0xffffu) != (hash_value & 0xffffu)) {
-		return false;
-	}
+	ivec3 base_cell = world_reservoir_cache_cell(hddagi_space_pos_from_screen(origin_pos, origin_depth));
+	ivec2 cache_size = imageSize(previous_world_reservoir_cache);
+	for (uint i = 0u; i < 4u; i++) {
+		ivec3 cell = world_reservoir_cache_lookup_cell(base_cell, i);
+		uint hash_value = world_reservoir_cache_hash(cell);
+		for (uint slot = 0u; slot < WORLD_RESERVOIR_CACHE_WAYS; slot++) {
+			ivec2 coord = world_reservoir_cache_slot_coord(hash_value, slot, cache_size);
+			uvec4 packed = imageLoad(previous_world_reservoir_cache, coord);
+			if (packed.a > params.frame_index || packed.r == 0u) {
+				continue;
+			}
 
-	vec3 cached_normal = octahedral_to_direction(unpackHalf2x16(packed.g));
-	float normal_validity = smoothstep(0.5, 0.9, dot(cached_normal, origin_world_normal));
-	r_sample_count = float(packed.b >> 16u);
-	float count_validity = clamp(r_sample_count / max(params.history_sample_count_max * 0.5, 1.0), 0.0, 1.0);
-	float age_validity = 1.0 - smoothstep(float(WORLD_RESERVOIR_CACHE_MAX_AGE / 2u), float(WORLD_RESERVOIR_CACHE_MAX_AGE), float(age));
-	r_confidence = normal_validity * count_validity * age_validity;
-	if (r_confidence <= 0.0) {
-		return false;
-	}
+			uint age = params.frame_index - packed.a;
+			if (age > WORLD_RESERVOIR_CACHE_MAX_AGE || (packed.b & 0xffffu) != (hash_value & 0xffffu)) {
+				continue;
+			}
 
-	r_radiance = rgbe_decode(packed.r);
-	return true;
+			vec3 cached_normal = octahedral_to_direction(unpackHalf2x16(packed.g));
+			float normal_validity = smoothstep(0.5, 0.9, dot(cached_normal, origin_world_normal));
+			float sample_count = float(packed.b >> 16u);
+			float count_validity = clamp(sample_count / max(params.history_sample_count_max * 0.5, 1.0), 0.0, 1.0);
+			float age_validity = 1.0 - smoothstep(float(WORLD_RESERVOIR_CACHE_MAX_AGE / 2u), float(WORLD_RESERVOIR_CACHE_MAX_AGE), float(age));
+			float confidence = normal_validity * count_validity * age_validity;
+			if (confidence > r_confidence) {
+				r_radiance = rgbe_decode(packed.r);
+				r_confidence = confidence;
+				r_sample_count = sample_count;
+			}
+		}
+	}
+	return r_confidence > 0.0;
 }
 
 vec3 clip_to_aabb(vec3 color, vec3 minimum, vec3 maximum) {
