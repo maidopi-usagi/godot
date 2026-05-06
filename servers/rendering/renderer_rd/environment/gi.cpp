@@ -3372,7 +3372,7 @@ bool GI::hddagi_uses_screen_probes(RID p_environment) const {
 	return RendererSceneRenderRD::get_singleton()->environment_get_hddagi_screen_probes_enabled(p_environment);
 }
 
-void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, uint32_t p_view_count, Size2i p_gi_size, const Projection *p_projections, const Transform3D &p_cam_transform, int p_probe_size, float p_normal_bias, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_miss_confidence, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode, bool p_surface_cache_enabled, bool p_restir_temporal_guiding, float p_restir_guided_target_luminance_max_ratio, float p_restir_guided_candidate_probability, float p_restir_boost_max) {
+void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, uint32_t p_view_count, Size2i p_gi_size, const Projection *p_projections, const Transform3D &p_cam_transform, int p_probe_size, float p_normal_bias, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_miss_confidence, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode, bool p_surface_cache_enabled, bool p_restir_temporal_guiding, bool p_restir_spatial_guiding, int p_restir_base_candidate_count, float p_restir_guided_target_luminance_max_ratio, float p_restir_guided_candidate_probability, float p_restir_spatial_guided_candidate_probability, float p_restir_boost_max) {
 	ERR_FAIL_COND(p_render_buffers.is_null());
 	ERR_FAIL_COND(p_gi_size.x <= 0 || p_gi_size.y <= 0);
 	ERR_FAIL_NULL(p_projections);
@@ -3432,10 +3432,11 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	push_constant.miss_ambient_fallback_weight = CLAMP(p_miss_ambient_fallback_weight, 0.0f, 2.0f);
 	push_constant.base_ambient_prior_weight = CLAMP(p_base_ambient_prior_weight, 0.0f, 1.0f);
 	push_constant.debug_mode = CLAMP(p_debug_mode, 0, 3);
-	push_constant.surface_cache_enabled = p_surface_cache_enabled ? 1 : 0;
-	push_constant.restir_temporal_guiding = p_restir_temporal_guiding ? 1 : 0;
+	uint32_t restir_base_candidate_count = CLAMP(p_restir_base_candidate_count, 1, 8);
+	push_constant.screen_probe_flags = (p_surface_cache_enabled ? 1u : 0u) | (p_restir_temporal_guiding ? 2u : 0u) | (p_restir_spatial_guiding ? 4u : 0u) | ((restir_base_candidate_count - 1u) << 3u);
 	push_constant.restir_guided_target_luminance_max_ratio = CLAMP(p_restir_guided_target_luminance_max_ratio, 1.0f, 32.0f);
 	push_constant.restir_guided_candidate_probability = CLAMP(p_restir_guided_candidate_probability, 0.0f, 1.0f);
+	push_constant.restir_spatial_guided_candidate_probability = CLAMP(p_restir_spatial_guided_candidate_probability, 0.0f, 1.0f);
 	push_constant.restir_boost_max = CLAMP(p_restir_boost_max, 1.0f, 4.0f);
 	push_constant.proj_info[0] = -2.0f / (internal_size.x * p_projections[0].columns[0][0]);
 	push_constant.proj_info[1] = -2.0f / (internal_size.y * p_projections[0].columns[1][1]);

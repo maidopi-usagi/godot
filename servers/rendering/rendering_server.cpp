@@ -3800,8 +3800,11 @@ void RenderingServer::init() {
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/hddagi/frames_to_update_inactive_probes", PROPERTY_HINT_ENUM, "1 (Faster),2,4,8,16 (Slower)"), 3);
 	GLOBAL_DEF("rendering/global_illumination/hddagi/screen_probe_surface_cache", true);
 	GLOBAL_DEF("rendering/global_illumination/hddagi/screen_probe_restir_temporal_guiding", true);
+	GLOBAL_DEF("rendering/global_illumination/hddagi/screen_probe_restir_spatial_guiding", true);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/hddagi/screen_probe_restir_base_candidate_count", PROPERTY_HINT_RANGE, "1,8,1"), 1);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/hddagi/screen_probe_restir_guided_target_clamp", PROPERTY_HINT_RANGE, "1,32,0.1"), 4.0);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/hddagi/screen_probe_restir_guided_candidate_probability", PROPERTY_HINT_RANGE, "0,1,0.01"), 1.0);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/hddagi/screen_probe_restir_spatial_guided_candidate_probability", PROPERTY_HINT_RANGE, "0,1,0.01"), 1.0);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/hddagi/screen_probe_restir_boost_max", PROPERTY_HINT_RANGE, "1,4,0.05"), 1.75);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/volumetric_fog/volume_size", PROPERTY_HINT_RANGE, "16,512,1"), 64);

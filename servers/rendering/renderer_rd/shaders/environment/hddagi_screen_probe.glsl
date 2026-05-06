@@ -98,10 +98,10 @@ layout(push_constant, std430) uniform Params {
 	float miss_ambient_fallback_weight;
 	float base_ambient_prior_weight;
 	int debug_mode;
-	uint surface_cache_enabled;
-	uint restir_temporal_guiding;
+	uint screen_probe_flags;
 	float restir_guided_target_luminance_max_ratio;
 	float restir_guided_candidate_probability;
+	float restir_spatial_guided_candidate_probability;
 	float restir_boost_max;
 }
 params;
@@ -113,6 +113,7 @@ const float TAU = 6.283185307179586;
 vec3 octahedral_to_direction(vec2 e);
 vec4 load_probe_ray(ivec2 probe_pos, ivec2 cell_pos);
 float linearize_depth(float depth);
+float spatial_candidate_weight(ivec2 center_probe_pos, ivec2 candidate_probe_pos, vec3 center_normal, float center_linear_depth);
 
 bool trace_ray_hdda(vec3 ray_pos, vec3 ray_dir, int p_cascade, out ivec3 r_cell, out ivec3 r_side, out int r_cascade) {
 	const int LEVEL_CASCADE = -1;
@@ -433,6 +434,36 @@ bool load_guided_reservoir_ray(ivec2 previous_atlas_pos, float history_validity,
 	return true;
 }
 
+bool load_spatial_guided_reservoir_ray(ivec2 probe_pos, ivec2 previous_atlas_pos, float history_validity, vec3 origin_normal, float origin_linear_depth, out vec3 r_ray_dir, out float r_weight) {
+	r_weight = 0.0;
+	ivec2 probe_count = imageSize(previous_reservoir_state) / OCTAHEDRAL_SIZE;
+	ivec2 previous_probe_pos = previous_atlas_pos / OCTAHEDRAL_SIZE;
+	ivec2 cell_pos = previous_atlas_pos - previous_probe_pos * OCTAHEDRAL_SIZE;
+	const ivec2 offsets[4] = ivec2[](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+	uint start = uint(hash_float(uvec3(probe_pos, params.frame_index ^ 0x6a09e667u)) * 4.0) & 3u;
+	for (uint i = 0u; i < 4u; i++) {
+		ivec2 offset = offsets[(i + start) & 3u];
+		ivec2 candidate_probe_pos = probe_pos + offset;
+		ivec2 candidate_previous_probe_pos = previous_probe_pos + offset;
+		if (any(lessThan(candidate_probe_pos, ivec2(0))) || any(greaterThanEqual(candidate_probe_pos, probe_count)) || any(lessThan(candidate_previous_probe_pos, ivec2(0))) || any(greaterThanEqual(candidate_previous_probe_pos, probe_count))) {
+			continue;
+		}
+
+		float spatial_weight = spatial_candidate_weight(probe_pos, candidate_probe_pos, origin_normal, origin_linear_depth);
+		if (spatial_weight < 0.75) {
+			continue;
+		}
+
+		float reliability;
+		ivec2 candidate_previous_atlas_pos = candidate_previous_probe_pos * OCTAHEDRAL_SIZE + cell_pos;
+		if (load_guided_reservoir_ray(candidate_previous_atlas_pos, history_validity * spatial_weight, origin_normal, r_ray_dir, reliability) && reliability > 0.0 && dot(r_ray_dir, origin_normal) > 0.15) {
+			r_weight = clamp(history_validity * spatial_weight * reliability * 0.5, 0.0, 0.5);
+			return r_weight > 0.0;
+		}
+	}
+	return false;
+}
+
 vec3 clip_to_aabb(vec3 color, vec3 minimum, vec3 maximum) {
 	vec3 center = (maximum + minimum) * 0.5;
 	vec3 extents = max((maximum - minimum) * 0.5, vec3(0.0001));
@@ -632,7 +663,7 @@ void store_invalid_probe_surface(ivec2 probe_pos) {
 }
 
 bool load_probe_surface(ivec2 probe_pos, out ivec2 r_screen_pos, out float r_depth, out vec3 r_normal) {
-	if (params.surface_cache_enabled == 0u) {
+	if ((params.screen_probe_flags & 1u) == 0u) {
 		return find_probe_surface(probe_pos, r_screen_pos, r_depth, r_normal);
 	}
 
@@ -1278,7 +1309,7 @@ void main() {
 		imageStore(probe_reservoir, atlas_pos, uvec4(0));
 		return;
 	}
-	if (params.surface_cache_enabled != 0u) {
+	if ((params.screen_probe_flags & 1u) != 0u) {
 		store_probe_surface(probe_pos, origin_pos);
 	}
 
@@ -1294,23 +1325,49 @@ void main() {
 	float reservoir_motion_validity = camera_translated ? max(0.2, 1.0 - smoothstep(0.5, 2.0, history_motion_in_probes)) : 1.0;
 	float reservoir_probe_validity = camera_translated && any(notEqual(previous_atlas_pos, atlas_pos)) ? 0.35 : 1.0;
 	float reservoir_history_validity = history_validity * reservoir_motion_validity * reservoir_probe_validity;
+	float origin_linear_depth = linearize_depth(origin_depth);
 
+	uint base_trace_count = ((params.screen_probe_flags >> 3u) & 7u) + 1u;
 	float frame = float(params.frame_index & 0xffffu);
-	vec2 ray_jitter = fract(vec2(
-			hash_float(uvec3(atlas_pos, 0u)) + frame * 0.7548776662466927,
-			hash_float(uvec3(atlas_pos.yx, 1u)) + frame * 0.5698402909980532));
-	vec2 sample_uv = (vec2(cell_pos) + ray_jitter) / float(OCTAHEDRAL_SIZE);
-	vec3 candidate_ray_dir = tangent_to_world(cosine_sample_hemisphere(sample_uv), origin_normal);
+	vec3 base_ambient = load_source_ambient(origin_pos);
+	vec3 candidate_ray_dir = vec3(0.0);
+	vec3 candidate_radiance = vec3(0.0);
+	bool candidate_hit = false;
+	float candidate_target_luminance = 0.0;
+	float base_weight_sum = 0.0;
+	for (uint i = 0u; i < base_trace_count; i++) {
+		vec2 ray_jitter = fract(vec2(
+				hash_float(uvec3(atlas_pos, i)) + frame * (0.7548776662466927 + float(i) * 0.1315423911),
+				hash_float(uvec3(atlas_pos.yx, i + 1u)) + frame * (0.5698402909980532 + float(i) * 0.1732050808)));
+		vec2 sample_uv = (vec2(cell_pos) + ray_jitter) / float(OCTAHEDRAL_SIZE);
+		vec3 candidate_ray_dir_i = tangent_to_world(cosine_sample_hemisphere(sample_uv), origin_normal);
+		float candidate_hit_distance_i;
+		vec3 candidate_radiance_i;
+		bool candidate_hit_i = trace_screen_probe_candidate(origin_pos, origin_depth, origin_normal, candidate_ray_dir_i, base_ambient, candidate_radiance_i, candidate_hit_distance_i);
+		float candidate_target_luminance_i = candidate_hit_i ? max(luminance(candidate_radiance_i), 0.0) : 0.0;
+		if (i == 0u) {
+			candidate_ray_dir = candidate_ray_dir_i;
+			candidate_radiance = candidate_radiance_i;
+			candidate_hit = candidate_hit_i;
+			candidate_target_luminance = candidate_target_luminance_i;
+		}
+
+		base_weight_sum += candidate_target_luminance_i;
+		if (candidate_target_luminance_i > 0.0 && hash_float(uvec3(atlas_pos.yx, params.frame_index ^ (0x51ed270bu + i * 0x165667b1u))) * base_weight_sum < candidate_target_luminance_i) {
+			candidate_ray_dir = candidate_ray_dir_i;
+			candidate_radiance = candidate_radiance_i;
+			candidate_hit = candidate_hit_i;
+			candidate_target_luminance = candidate_target_luminance_i;
+		}
+	}
 	vec3 guided_ray_dir;
-	float guided_reliability;
-	bool guided_candidate_valid = params.restir_temporal_guiding != 0u && hash_float(uvec3(atlas_pos.yx, params.frame_index ^ 0x9747b28cu)) < params.restir_guided_candidate_probability && load_guided_reservoir_ray(previous_atlas_pos, reservoir_history_validity, origin_normal, guided_ray_dir, guided_reliability);
+	float guided_reliability = 0.0;
+	bool guided_candidate_valid = (params.screen_probe_flags & 2u) != 0u && hash_float(uvec3(atlas_pos.yx, params.frame_index ^ 0x9747b28cu)) < params.restir_guided_candidate_probability && load_guided_reservoir_ray(previous_atlas_pos, reservoir_history_validity, origin_normal, guided_ray_dir, guided_reliability);
 	guided_candidate_valid = guided_candidate_valid && guided_reliability > 0.0;
 	float guided_candidate_weight = guided_candidate_valid ? clamp(reservoir_history_validity * guided_reliability, 0.0, 1.0) : 0.0;
-
-	float candidate_hit_distance;
-	vec3 candidate_radiance;
-	vec3 base_ambient = load_source_ambient(origin_pos);
-	bool candidate_hit = trace_screen_probe_candidate(origin_pos, origin_depth, origin_normal, candidate_ray_dir, base_ambient, candidate_radiance, candidate_hit_distance);
+	vec3 spatial_guided_ray_dir;
+	float spatial_guided_candidate_weight = 0.0;
+	bool spatial_guided_candidate_valid = (params.screen_probe_flags & 4u) != 0u && hash_float(uvec3(atlas_pos, params.frame_index ^ 0xbb67ae85u)) < params.restir_spatial_guided_candidate_probability && load_spatial_guided_reservoir_ray(probe_pos, previous_atlas_pos, reservoir_history_validity, origin_normal, origin_linear_depth, spatial_guided_ray_dir, spatial_guided_candidate_weight);
 
 	float guided_hit_distance;
 	vec3 guided_radiance;
@@ -1318,29 +1375,45 @@ void main() {
 	if (guided_candidate_valid) {
 		guided_hit = trace_screen_probe_candidate(origin_pos, origin_depth, origin_normal, guided_ray_dir, base_ambient, guided_radiance, guided_hit_distance);
 	}
+	float spatial_guided_hit_distance;
+	vec3 spatial_guided_radiance;
+	bool spatial_guided_hit = false;
+	if (spatial_guided_candidate_valid) {
+		spatial_guided_hit = trace_screen_probe_candidate(origin_pos, origin_depth, origin_normal, spatial_guided_ray_dir, base_ambient, spatial_guided_radiance, spatial_guided_hit_distance);
+	}
 
-	float candidate_target_luminance = candidate_hit ? max(luminance(candidate_radiance), 0.0) : 0.0;
 	float guided_target_luminance = guided_candidate_valid && guided_hit ? max(luminance(guided_radiance), 0.0) : 0.0;
 	guided_target_luminance = min(guided_target_luminance, max(candidate_target_luminance * params.restir_guided_target_luminance_max_ratio, 0.25));
 	guided_target_luminance *= guided_candidate_weight;
-	float candidate_weight_sum = candidate_target_luminance + guided_target_luminance;
+	float spatial_guided_target_luminance = spatial_guided_candidate_valid && spatial_guided_hit ? max(luminance(spatial_guided_radiance), 0.0) : 0.0;
+	spatial_guided_target_luminance = min(spatial_guided_target_luminance, max(candidate_target_luminance * params.restir_guided_target_luminance_max_ratio, 0.25));
+	spatial_guided_target_luminance *= spatial_guided_candidate_weight;
+	float candidate_weight_sum = base_weight_sum + guided_target_luminance + spatial_guided_target_luminance;
 	vec3 selected_ray_dir = candidate_ray_dir;
 	vec3 selected_radiance = candidate_radiance;
 	bool selected_hit = candidate_hit;
 	bool selected_guided_candidate = false;
 	float selected_target_luminance = candidate_target_luminance;
-	if (guided_candidate_valid && candidate_weight_sum > 0.0 && hash_float(uvec3(atlas_pos, params.frame_index ^ 0x51ed270bu)) * candidate_weight_sum < guided_target_luminance) {
+	float selection_random = hash_float(uvec3(atlas_pos, params.frame_index ^ 0x51ed270bu)) * candidate_weight_sum;
+	if (guided_candidate_valid && candidate_weight_sum > 0.0 && selection_random < guided_target_luminance) {
 		selected_ray_dir = guided_ray_dir;
 		selected_radiance = guided_radiance;
 		selected_hit = guided_hit;
 		selected_guided_candidate = true;
 		selected_target_luminance = guided_target_luminance;
+	} else if (spatial_guided_candidate_valid && candidate_weight_sum > 0.0 && selection_random < guided_target_luminance + spatial_guided_target_luminance) {
+		selected_ray_dir = spatial_guided_ray_dir;
+		selected_radiance = spatial_guided_radiance;
+		selected_hit = spatial_guided_hit;
+		selected_guided_candidate = true;
+		selected_target_luminance = spatial_guided_target_luminance;
 	}
 	vec3 visible_radiance = selected_radiance;
-	float reservoir_sample_count = 1.0 + (guided_candidate_valid ? guided_candidate_weight : 0.0);
+	float reservoir_sample_count = float(base_trace_count) + (guided_candidate_valid ? guided_candidate_weight : 0.0) + (spatial_guided_candidate_valid ? spatial_guided_candidate_weight : 0.0);
 	float selected_reservoir_weight = reservoir_sample_weight(candidate_weight_sum, selected_target_luminance, reservoir_sample_count);
 	if (selected_hit && selected_target_luminance > 0.0) {
-		float reservoir_weight_max = mix(1.0, params.restir_boost_max, guided_candidate_weight * guided_candidate_weight);
+		float guided_weight = max(guided_candidate_weight, spatial_guided_candidate_weight);
+		float reservoir_weight_max = mix(1.0, params.restir_boost_max, guided_weight * guided_weight);
 		visible_radiance *= clamp(selected_reservoir_weight, 0.25, reservoir_weight_max);
 	}
 
@@ -1358,5 +1431,5 @@ void main() {
 	imageStore(probe_radiance, atlas_pos, current_radiance);
 	imageStore(probe_history, atlas_pos, current_radiance);
 	imageStore(probe_reservoir, atlas_pos, uvec4(rgbe_encode(selected_radiance), packHalf2x16(vec2(linearize_depth(origin_depth), selected_hit ? 1.0 : params.miss_confidence)), packHalf2x16(octahedral_encode(origin_world_normal)), params.frame_index));
-	store_temporal_reservoir_state(atlas_pos, selected_ray_dir, selected_target_luminance, selected_hit, selected_guided_candidate, guided_candidate_valid, reservoir_sample_count, selected_reservoir_weight);
+	store_temporal_reservoir_state(atlas_pos, selected_ray_dir, selected_target_luminance, selected_hit, selected_guided_candidate, guided_candidate_valid || spatial_guided_candidate_valid, reservoir_sample_count, selected_reservoir_weight);
 }
