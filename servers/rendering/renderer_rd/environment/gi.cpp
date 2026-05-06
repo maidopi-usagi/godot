@@ -3444,7 +3444,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	{
 		SceneData scene_data = {};
 		Projection correction;
-		correction.set_depth_correction(false);
+		correction.set_depth_correction(true);
 		Transform3D previous_cam_inv_transform = hddagi->screen_probe_previous_camera_valid ? hddagi->screen_probe_previous_cam_transform.affine_inverse() : p_cam_transform.affine_inverse();
 		for (uint32_t v = 0; v < p_view_count; v++) {
 			Projection temp = correction * p_projections[v];
@@ -3666,7 +3666,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	RD::get_singleton()->compute_list_end();
 
 	Projection correction;
-	correction.set_depth_correction(false);
+	correction.set_depth_correction(true);
 	for (uint32_t v = 0; v < p_view_count; v++) {
 		hddagi->screen_probe_previous_projection[v] = correction * p_projections[v];
 	}
