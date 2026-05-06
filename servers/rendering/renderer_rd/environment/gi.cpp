@@ -3372,7 +3372,7 @@ bool GI::hddagi_uses_screen_probes(RID p_environment) const {
 	return RendererSceneRenderRD::get_singleton()->environment_get_hddagi_screen_probes_enabled(p_environment);
 }
 
-void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, uint32_t p_view_count, Size2i p_gi_size, const Projection *p_projections, const Transform3D &p_cam_transform, int p_probe_size, float p_normal_bias, float p_history_blend_hit, float p_history_blend_miss, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_previous_reservoir_weight, float p_miss_confidence, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode) {
+void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, uint32_t p_view_count, Size2i p_gi_size, const Projection *p_projections, const Transform3D &p_cam_transform, int p_probe_size, float p_normal_bias, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_miss_confidence, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode) {
 	ERR_FAIL_COND(p_render_buffers.is_null());
 	ERR_FAIL_COND(p_gi_size.x <= 0 || p_gi_size.y <= 0);
 	ERR_FAIL_NULL(p_projections);
@@ -3419,14 +3419,12 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	push_constant.normal_bias = normal_bias;
 	push_constant.history_valid = history_valid ? 1 : 0;
 	push_constant.history_blend_hit = CLAMP(p_history_blend_hit, 0.0f, 1.0f);
-	push_constant.history_blend_miss = CLAMP(p_history_blend_miss, 0.0f, 1.0f);
 	push_constant.history_distance_tolerance = MAX(p_history_distance_tolerance, 0.0f);
 	push_constant.history_direction_threshold = CLAMP(p_history_direction_threshold, 0.0f, 1.0f);
 	push_constant.spatial_reuse_radius = CLAMP(p_spatial_reuse_radius, 0, 4);
 	push_constant.spatial_normal_threshold = CLAMP(p_spatial_normal_threshold, 0.0f, 1.0f);
 	push_constant.spatial_depth_tolerance_min = MAX(p_spatial_depth_tolerance_min, 0.0f);
 	push_constant.spatial_depth_tolerance_scale = MAX(p_spatial_depth_tolerance_scale, 0.0f);
-	push_constant.previous_reservoir_weight = MAX(p_previous_reservoir_weight, 0.0f);
 	push_constant.miss_confidence = CLAMP(p_miss_confidence, 0.0f, 1.0f);
 	push_constant.history_sample_count_max = CLAMP(p_history_sample_count_max, 1.0f, 1024.0f);
 	push_constant.miss_ambient_fallback_weight = CLAMP(p_miss_ambient_fallback_weight, 0.0f, 2.0f);

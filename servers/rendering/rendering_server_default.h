@@ -883,7 +883,7 @@ public:
 
 	FUNC15(environment_set_hddagi, RID, bool, int, RSE::EnvironmentHDDAGICascadeFormat, float, bool, float, bool, float, float, float, float, float, bool, bool)
 	FUNC4(environment_set_hddagi_screen_probes, RID, bool, int, float)
-	FUNC11(environment_set_hddagi_screen_probe_restir, RID, float, float, float, float, int, float, float, float, float, float)
+	FUNC9(environment_set_hddagi_screen_probe_restir, RID, float, float, float, int, float, float, float, float)
 	FUNC5(environment_set_hddagi_screen_probe_tuning, RID, float, float, float, int)
 	FUNC1(environment_set_hddagi_frames_to_converge, RSE::EnvironmentHDDAGIFramesToConverge)
 	FUNC1(environment_set_hddagi_frames_to_update_light, RSE::EnvironmentHDDAGIFramesToUpdateLight)

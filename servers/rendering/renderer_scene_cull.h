@@ -1350,7 +1350,7 @@ public:
 
 	PASS15(environment_set_hddagi, RID, bool, int, RSE::EnvironmentHDDAGICascadeFormat, float, bool, float, bool, float, float, float, float, float, bool, bool)
 	PASS4(environment_set_hddagi_screen_probes, RID, bool, int, float)
-	PASS11(environment_set_hddagi_screen_probe_restir, RID, float, float, float, float, int, float, float, float, float, float)
+	PASS9(environment_set_hddagi_screen_probe_restir, RID, float, float, float, int, float, float, float, float)
 	PASS5(environment_set_hddagi_screen_probe_tuning, RID, float, float, float, int)
 
 	PASS1RC(bool, environment_get_hddagi_enabled, RID)
@@ -1366,14 +1366,12 @@ public:
 	PASS1RC(int, environment_get_hddagi_screen_probe_size, RID)
 	PASS1RC(float, environment_get_hddagi_screen_probe_normal_bias, RID)
 	PASS1RC(float, environment_get_hddagi_screen_probe_restir_history_blend_hit, RID)
-	PASS1RC(float, environment_get_hddagi_screen_probe_restir_history_blend_miss, RID)
 	PASS1RC(float, environment_get_hddagi_screen_probe_restir_history_distance_tolerance, RID)
 	PASS1RC(float, environment_get_hddagi_screen_probe_restir_history_direction_threshold, RID)
 	PASS1RC(int, environment_get_hddagi_screen_probe_restir_spatial_reuse_radius, RID)
 	PASS1RC(float, environment_get_hddagi_screen_probe_restir_spatial_normal_threshold, RID)
 	PASS1RC(float, environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_min, RID)
 	PASS1RC(float, environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_scale, RID)
-	PASS1RC(float, environment_get_hddagi_screen_probe_restir_previous_reservoir_weight, RID)
 	PASS1RC(float, environment_get_hddagi_screen_probe_restir_miss_confidence, RID)
 	PASS1RC(float, environment_get_hddagi_screen_probe_history_sample_count_max, RID)
 	PASS1RC(float, environment_get_hddagi_screen_probe_miss_ambient_fallback_weight, RID)

@@ -142,9 +142,6 @@
 		<member name="dynamic_gi_screen_probe_restir_history_blend_hit" type="float" setter="set_dynamic_gi_screen_probe_restir_history_blend_hit" getter="get_dynamic_gi_screen_probe_restir_history_blend_hit" default="0.95">
 			Temporal blend used by Dynamic GI screen probe ReSTIR reuse for valid hit samples. Higher values preserve more history and reduce noise, but can increase ghosting.
 		</member>
-		<member name="dynamic_gi_screen_probe_restir_history_blend_miss" type="float" setter="set_dynamic_gi_screen_probe_restir_history_blend_miss" getter="get_dynamic_gi_screen_probe_restir_history_blend_miss" default="0.92">
-			Temporal blend used by Dynamic GI screen probe ReSTIR reuse for miss/fallback samples. Higher values preserve more history in unhit areas.
-		</member>
 		<member name="dynamic_gi_screen_probe_restir_history_direction_threshold" type="float" setter="set_dynamic_gi_screen_probe_restir_history_direction_threshold" getter="get_dynamic_gi_screen_probe_restir_history_direction_threshold" default="0.65">
 			Minimum ray-direction similarity used to accept previous-frame Dynamic GI screen probe ReSTIR history. Higher values reject more history and reduce ghosting, but denoise less.
 		</member>
@@ -153,9 +150,6 @@
 		</member>
 		<member name="dynamic_gi_screen_probe_restir_miss_confidence" type="float" setter="set_dynamic_gi_screen_probe_restir_miss_confidence" getter="get_dynamic_gi_screen_probe_restir_miss_confidence" default="0.05">
 			Reservoir confidence assigned to Dynamic GI screen probe miss/fallback samples. Higher values make fallback samples accumulate more strongly.
-		</member>
-		<member name="dynamic_gi_screen_probe_restir_previous_reservoir_weight" type="float" setter="set_dynamic_gi_screen_probe_restir_previous_reservoir_weight" getter="get_dynamic_gi_screen_probe_restir_previous_reservoir_weight" default="0.0">
-			Weight applied to the previous-frame Dynamic GI screen probe reservoir during ReSTIR spatial reuse. Higher values increase denoising strength and history stability.
 		</member>
 		<member name="dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min" type="float" setter="set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min" getter="get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min" default="0.05">
 			Minimum depth tolerance for Dynamic GI screen probe ReSTIR spatial reuse. Higher values allow more cross-depth reuse and can blur across edges.

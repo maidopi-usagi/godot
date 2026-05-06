@@ -1337,15 +1337,13 @@
 			<return type="void" />
 			<param index="0" name="env" type="RID" />
 			<param index="1" name="history_blend_hit" type="float" />
-			<param index="2" name="history_blend_miss" type="float" />
-			<param index="3" name="history_distance_tolerance" type="float" />
-			<param index="4" name="history_direction_threshold" type="float" />
-			<param index="5" name="spatial_reuse_radius" type="int" />
-			<param index="6" name="spatial_normal_threshold" type="float" />
-			<param index="7" name="spatial_depth_tolerance_min" type="float" />
-			<param index="8" name="spatial_depth_tolerance_scale" type="float" />
-			<param index="9" name="previous_reservoir_weight" type="float" />
-			<param index="10" name="miss_confidence" type="float" />
+			<param index="2" name="history_distance_tolerance" type="float" />
+			<param index="3" name="history_direction_threshold" type="float" />
+			<param index="4" name="spatial_reuse_radius" type="int" />
+			<param index="5" name="spatial_normal_threshold" type="float" />
+			<param index="6" name="spatial_depth_tolerance_min" type="float" />
+			<param index="7" name="spatial_depth_tolerance_scale" type="float" />
+			<param index="8" name="miss_confidence" type="float" />
 			<description>
 				Configures DynamicGI screen probe temporal and spatial reuse settings. See the [code]dynamic_gi_screen_probe_restir_*[/code] properties in [Environment] for more information.
 			</description>

@@ -298,7 +298,7 @@ public:
 	// HDDAGI
 	virtual void environment_set_hddagi(RID p_env, bool p_enable, int p_cascades, RSE::EnvironmentHDDAGICascadeFormat p_cascade_format, float p_min_cell_size, bool p_filter_probes, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_reflection_bias, float p_probe_bias, float p_occlusion_bias, bool p_filter_reflection, bool p_filter_ambient) = 0;
 	virtual void environment_set_hddagi_screen_probes(RID p_env, bool p_enable, int p_probe_size, float p_normal_bias) = 0;
-	virtual void environment_set_hddagi_screen_probe_restir(RID p_env, float p_history_blend_hit, float p_history_blend_miss, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_previous_reservoir_weight, float p_miss_confidence) = 0;
+	virtual void environment_set_hddagi_screen_probe_restir(RID p_env, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_miss_confidence) = 0;
 	virtual void environment_set_hddagi_screen_probe_tuning(RID p_env, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode) = 0;
 
 	virtual bool environment_get_hddagi_enabled(RID p_env) const = 0;
@@ -314,14 +314,12 @@ public:
 	virtual int environment_get_hddagi_screen_probe_size(RID p_env) const = 0;
 	virtual float environment_get_hddagi_screen_probe_normal_bias(RID p_env) const = 0;
 	virtual float environment_get_hddagi_screen_probe_restir_history_blend_hit(RID p_env) const = 0;
-	virtual float environment_get_hddagi_screen_probe_restir_history_blend_miss(RID p_env) const = 0;
 	virtual float environment_get_hddagi_screen_probe_restir_history_distance_tolerance(RID p_env) const = 0;
 	virtual float environment_get_hddagi_screen_probe_restir_history_direction_threshold(RID p_env) const = 0;
 	virtual int environment_get_hddagi_screen_probe_restir_spatial_reuse_radius(RID p_env) const = 0;
 	virtual float environment_get_hddagi_screen_probe_restir_spatial_normal_threshold(RID p_env) const = 0;
 	virtual float environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_min(RID p_env) const = 0;
 	virtual float environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_scale(RID p_env) const = 0;
-	virtual float environment_get_hddagi_screen_probe_restir_previous_reservoir_weight(RID p_env) const = 0;
 	virtual float environment_get_hddagi_screen_probe_restir_miss_confidence(RID p_env) const = 0;
 	virtual float environment_get_hddagi_screen_probe_history_sample_count_max(RID p_env) const = 0;
 	virtual float environment_get_hddagi_screen_probe_miss_ambient_fallback_weight(RID p_env) const = 0;

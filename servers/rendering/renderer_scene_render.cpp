@@ -669,8 +669,8 @@ void RendererSceneRender::environment_set_hddagi_screen_probes(RID p_env, bool p
 	environment_storage.environment_set_hddagi_screen_probes(p_env, p_enable, p_probe_size, p_normal_bias);
 }
 
-void RendererSceneRender::environment_set_hddagi_screen_probe_restir(RID p_env, float p_history_blend_hit, float p_history_blend_miss, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_previous_reservoir_weight, float p_miss_confidence) {
-	environment_storage.environment_set_hddagi_screen_probe_restir(p_env, p_history_blend_hit, p_history_blend_miss, p_history_distance_tolerance, p_history_direction_threshold, p_spatial_reuse_radius, p_spatial_normal_threshold, p_spatial_depth_tolerance_min, p_spatial_depth_tolerance_scale, p_previous_reservoir_weight, p_miss_confidence);
+void RendererSceneRender::environment_set_hddagi_screen_probe_restir(RID p_env, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_miss_confidence) {
+	environment_storage.environment_set_hddagi_screen_probe_restir(p_env, p_history_blend_hit, p_history_distance_tolerance, p_history_direction_threshold, p_spatial_reuse_radius, p_spatial_normal_threshold, p_spatial_depth_tolerance_min, p_spatial_depth_tolerance_scale, p_miss_confidence);
 }
 
 void RendererSceneRender::environment_set_hddagi_screen_probe_tuning(RID p_env, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode) {
@@ -753,10 +753,6 @@ float RendererSceneRender::environment_get_hddagi_screen_probe_restir_history_bl
 	return environment_storage.environment_get_hddagi_screen_probe_restir_history_blend_hit(p_env);
 }
 
-float RendererSceneRender::environment_get_hddagi_screen_probe_restir_history_blend_miss(RID p_env) const {
-	return environment_storage.environment_get_hddagi_screen_probe_restir_history_blend_miss(p_env);
-}
-
 float RendererSceneRender::environment_get_hddagi_screen_probe_restir_history_distance_tolerance(RID p_env) const {
 	return environment_storage.environment_get_hddagi_screen_probe_restir_history_distance_tolerance(p_env);
 }
@@ -779,10 +775,6 @@ float RendererSceneRender::environment_get_hddagi_screen_probe_restir_spatial_de
 
 float RendererSceneRender::environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_scale(RID p_env) const {
 	return environment_storage.environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_scale(p_env);
-}
-
-float RendererSceneRender::environment_get_hddagi_screen_probe_restir_previous_reservoir_weight(RID p_env) const {
-	return environment_storage.environment_get_hddagi_screen_probe_restir_previous_reservoir_weight(p_env);
 }
 
 float RendererSceneRender::environment_get_hddagi_screen_probe_restir_miss_confidence(RID p_env) const {

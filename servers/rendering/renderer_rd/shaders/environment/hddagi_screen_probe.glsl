@@ -84,14 +84,12 @@ layout(push_constant, std430) uniform Params {
 	float normal_bias;
 	uint history_valid;
 	float history_blend_hit;
-	float history_blend_miss;
 	float history_distance_tolerance;
 	float history_direction_threshold;
 	int spatial_reuse_radius;
 	float spatial_normal_threshold;
 	float spatial_depth_tolerance_min;
 	float spatial_depth_tolerance_scale;
-	float previous_reservoir_weight;
 	float miss_confidence;
 	float history_sample_count_max;
 	float miss_ambient_fallback_weight;
@@ -428,6 +426,28 @@ bool reproject_history(ivec2 origin_pos, float origin_depth, ivec2 cell_pos, out
 
 	r_previous_linear_depth = previous_project_pos.z;
 	return true;
+}
+
+bool reproject_screen_history(ivec2 screen_pos, float depth, out ivec2 r_previous_screen_pos) {
+	vec2 uv = (vec2(screen_pos) + 0.5) / vec2(params.screen_size);
+	vec3 view_pos = compute_view_pos(vec3(uv, depth));
+	vec4 world_pos = scene_data.cam_transform * vec4(view_pos.x, -view_pos.y, view_pos.z, 1.0);
+	vec4 previous_view = scene_data.previous_cam_inv_transform * world_pos;
+	vec4 previous_project_pos = vec4(previous_view.x, -previous_view.y, previous_view.z, 1.0);
+	vec4 previous_clip = scene_data.previous_projection[params.view_index] * previous_project_pos;
+	if (previous_clip.w <= 0.0) {
+		return false;
+	}
+
+	vec3 previous_ndc = previous_clip.xyz / previous_clip.w;
+	vec2 previous_uv = previous_ndc.xy * 0.5 + 0.5;
+	if (any(lessThan(previous_uv, vec2(0.0))) || any(greaterThanEqual(previous_uv, vec2(1.0)))) {
+		return false;
+	}
+
+	ivec2 previous_history_size = textureSize(sampler2D(atlas_history, linear_sampler), 0);
+	r_previous_screen_pos = ivec2(previous_uv * vec2(previous_history_size));
+	return !any(lessThan(r_previous_screen_pos, ivec2(0))) && !any(greaterThanEqual(r_previous_screen_pos, previous_history_size));
 }
 
 vec3 octahedral_to_direction(vec2 e) {
@@ -825,15 +845,21 @@ void temporal_filter_screen_probe_radiance() {
 		return;
 	}
 
-	vec4 previous_radiance = texelFetch(sampler2D(atlas_history, linear_sampler), screen_pos, 0);
-	if (previous_radiance.a <= 0.0) {
+	float pixel_depth;
+	vec3 pixel_normal;
+	if (!load_surface_screen(screen_pos, pixel_depth, pixel_normal)) {
 		imageStore(probe_radiance, screen_pos, current_radiance);
 		return;
 	}
 
-	float pixel_depth;
-	vec3 pixel_normal;
-	if (!load_surface_screen(screen_pos, pixel_depth, pixel_normal)) {
+	ivec2 previous_screen_pos;
+	if (!reproject_screen_history(screen_pos, pixel_depth, previous_screen_pos)) {
+		imageStore(probe_radiance, screen_pos, current_radiance);
+		return;
+	}
+
+	vec4 previous_radiance = texelFetch(sampler2D(atlas_history, linear_sampler), previous_screen_pos, 0);
+	if (previous_radiance.a <= 0.0) {
 		imageStore(probe_radiance, screen_pos, current_radiance);
 		return;
 	}
