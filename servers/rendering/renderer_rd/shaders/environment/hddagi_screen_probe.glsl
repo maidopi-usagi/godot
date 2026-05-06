@@ -101,7 +101,8 @@ layout(push_constant, std430) uniform Params {
 	uint surface_cache_enabled;
 	uint restir_temporal_guiding;
 	float restir_guided_target_luminance_max_ratio;
-	uvec2 pad;
+	float restir_guided_candidate_probability;
+	uint pad;
 }
 params;
 
@@ -1301,14 +1302,14 @@ void main() {
 			hash_float(uvec3(atlas_pos, 0u)) + frame * 0.7548776662466927,
 			hash_float(uvec3(atlas_pos.yx, 1u)) + frame * 0.5698402909980532));
 	vec2 sample_uv = (vec2(cell_pos) + ray_jitter) / float(OCTAHEDRAL_SIZE);
-	vec3 ray_dir = tangent_to_world(cosine_sample_hemisphere(sample_uv), origin_normal);
+	vec3 candidate_ray_dir = tangent_to_world(cosine_sample_hemisphere(sample_uv), origin_normal);
 	vec3 guided_ray_dir;
-	bool guided_candidate_valid = params.restir_temporal_guiding != 0u && load_guided_reservoir_ray(previous_atlas_pos, reservoir_history_validity, origin_normal, guided_ray_dir);
+	bool guided_candidate_valid = params.restir_temporal_guiding != 0u && hash_float(uvec3(atlas_pos.yx, params.frame_index ^ 0x9747b28cu)) < params.restir_guided_candidate_probability && load_guided_reservoir_ray(previous_atlas_pos, reservoir_history_validity, origin_normal, guided_ray_dir);
 
-	float hit_distance;
-	vec3 radiance;
+	float candidate_hit_distance;
+	vec3 candidate_radiance;
 	vec3 base_ambient = load_source_ambient(origin_pos);
-	bool hit = trace_screen_probe_candidate(origin_pos, origin_depth, origin_normal, ray_dir, base_ambient, radiance, hit_distance);
+	bool candidate_hit = trace_screen_probe_candidate(origin_pos, origin_depth, origin_normal, candidate_ray_dir, base_ambient, candidate_radiance, candidate_hit_distance);
 
 	float guided_hit_distance;
 	vec3 guided_radiance;
@@ -1317,30 +1318,37 @@ void main() {
 		guided_hit = trace_screen_probe_candidate(origin_pos, origin_depth, origin_normal, guided_ray_dir, base_ambient, guided_radiance, guided_hit_distance);
 	}
 
-	float candidate_target_luminance = hit ? max(luminance(radiance), 0.0) : 0.0;
+	float candidate_target_luminance = candidate_hit ? max(luminance(candidate_radiance), 0.0) : 0.0;
 	float guided_target_luminance = guided_candidate_valid && guided_hit ? max(luminance(guided_radiance), 0.0) : 0.0;
 	guided_target_luminance = min(guided_target_luminance, max(candidate_target_luminance * params.restir_guided_target_luminance_max_ratio, 0.25));
 	float candidate_weight_sum = candidate_target_luminance + guided_target_luminance;
+	bool selected_guided_candidate = false;
+	vec3 selected_radiance = candidate_radiance;
+	bool selected_hit = candidate_hit;
 	if (guided_candidate_valid && candidate_weight_sum > 0.0 && hash_float(uvec3(atlas_pos, params.frame_index ^ 0x51ed270bu)) * candidate_weight_sum < guided_target_luminance) {
-		ray_dir = guided_ray_dir;
-		radiance = guided_radiance;
-		hit_distance = guided_hit_distance;
-		hit = guided_hit;
+		selected_radiance = guided_radiance;
+		selected_hit = guided_hit;
+		selected_guided_candidate = true;
+	}
+	vec3 visible_radiance = selected_radiance;
+	if (selected_guided_candidate && guided_target_luminance > 0.0) {
+		float mixed_proposal_weight = clamp(candidate_weight_sum / max(guided_target_luminance * 2.0, 0.0001), 0.25, 1.0);
+		visible_radiance *= mixed_proposal_weight;
 	}
 
 	float sample_count = 1.0;
 
-	vec4 current_radiance = vec4(radiance, sample_count);
+	vec4 current_radiance = vec4(visible_radiance, sample_count);
 	vec4 previous_radiance = history_reprojected ? texelFetch(sampler2D(atlas_history, linear_sampler), previous_atlas_pos, 0) : vec4(0.0);
 	if (params.history_valid != 0 && previous_radiance.a > 0.0 && history_validity > 0.0) {
 		float previous_sample_count = min(previous_radiance.a, max(params.history_sample_count_max, 1.0) - 1.0);
 		sample_count = previous_sample_count + 1.0;
-		current_radiance.rgb = (previous_radiance.rgb * previous_sample_count + radiance) / sample_count;
+		current_radiance.rgb = (previous_radiance.rgb * previous_sample_count + visible_radiance) / sample_count;
 		current_radiance.a = sample_count;
 	}
 
 	imageStore(probe_radiance, atlas_pos, current_radiance);
 	imageStore(probe_history, atlas_pos, current_radiance);
-	imageStore(probe_reservoir, atlas_pos, uvec4(rgbe_encode(radiance), packHalf2x16(vec2(linearize_depth(origin_depth), hit ? 1.0 : params.miss_confidence)), packHalf2x16(octahedral_encode(origin_world_normal)), params.frame_index));
-	store_temporal_reservoir_state(atlas_pos, ray_dir, radiance, hit, guided_ray_dir, guided_radiance, guided_hit, guided_candidate_valid);
+	imageStore(probe_reservoir, atlas_pos, uvec4(rgbe_encode(selected_radiance), packHalf2x16(vec2(linearize_depth(origin_depth), selected_hit ? 1.0 : params.miss_confidence)), packHalf2x16(octahedral_encode(origin_world_normal)), params.frame_index));
+	store_temporal_reservoir_state(atlas_pos, candidate_ray_dir, candidate_radiance, candidate_hit, guided_ray_dir, guided_radiance, guided_hit, guided_candidate_valid);
 }
