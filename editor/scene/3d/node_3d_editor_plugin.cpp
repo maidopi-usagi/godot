@@ -4610,6 +4610,8 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 		case VIEW_DISPLAY_DEBUG_HDDAGI:
 		case VIEW_DISPLAY_DEBUG_HDDAGI_PROBES:
 		case VIEW_DISPLAY_DEBUG_HDDAGI_SCREEN_PROBES:
+		case VIEW_DISPLAY_DEBUG_HDDAGI_SCREEN_PROBE_SAMPLE_COUNT:
+		case VIEW_DISPLAY_DEBUG_HDDAGI_SCREEN_PROBE_HIT_MISS:
 		case VIEW_DISPLAY_DEBUG_GI_BUFFER:
 		case VIEW_DISPLAY_DEBUG_DISABLE_LOD:
 		case VIEW_DISPLAY_DEBUG_CLUSTER_OMNI_LIGHTS:
@@ -4643,6 +4645,8 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 				VIEW_DISPLAY_DEBUG_HDDAGI,
 				VIEW_DISPLAY_DEBUG_HDDAGI_PROBES,
 				VIEW_DISPLAY_DEBUG_HDDAGI_SCREEN_PROBES,
+				VIEW_DISPLAY_DEBUG_HDDAGI_SCREEN_PROBE_SAMPLE_COUNT,
+				VIEW_DISPLAY_DEBUG_HDDAGI_SCREEN_PROBE_HIT_MISS,
 				VIEW_DISPLAY_DEBUG_CLUSTER_OMNI_LIGHTS,
 				VIEW_DISPLAY_DEBUG_CLUSTER_SPOT_LIGHTS,
 				VIEW_DISPLAY_DEBUG_CLUSTER_AREA_LIGHTS,
@@ -4676,6 +4680,8 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 				Viewport::DEBUG_DRAW_HDDAGI,
 				Viewport::DEBUG_DRAW_HDDAGI_PROBES,
 				Viewport::DEBUG_DRAW_HDDAGI_SCREEN_PROBES,
+				Viewport::DEBUG_DRAW_HDDAGI_SCREEN_PROBE_SAMPLE_COUNT,
+				Viewport::DEBUG_DRAW_HDDAGI_SCREEN_PROBE_HIT_MISS,
 				Viewport::DEBUG_DRAW_CLUSTER_OMNI_LIGHTS,
 				Viewport::DEBUG_DRAW_CLUSTER_SPOT_LIGHTS,
 				Viewport::DEBUG_DRAW_CLUSTER_AREA_LIGHTS,
@@ -6794,6 +6800,10 @@ Node3DEditorViewport::Node3DEditorViewport(Node3DEditor *p_spatial_editor, int p
 			TTRC("Left-click a Dynamic GI probe to display its occlusion information (white = not occluded, red = fully occluded).\nRequires Dynamic GI to be enabled in Environment to have a visible effect."));
 	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("Dynamic GI Screen Probes"), VIEW_DISPLAY_DEBUG_HDDAGI_SCREEN_PROBES, SupportedRenderingMethods::FORWARD_PLUS,
 			TTRC("Displays the screen-space probe radiance generated for Dynamic GI. Requires Dynamic GI to be enabled in Environment to have a visible effect."));
+	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("Dynamic GI Screen Probe Sample Count"), VIEW_DISPLAY_DEBUG_HDDAGI_SCREEN_PROBE_SAMPLE_COUNT, SupportedRenderingMethods::FORWARD_PLUS,
+			TTRC("Displays the Dynamic GI screen probe temporal sample count. Requires Dynamic GI to be enabled in Environment to have a visible effect."));
+	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("Dynamic GI Screen Probe Hit/Miss"), VIEW_DISPLAY_DEBUG_HDDAGI_SCREEN_PROBE_HIT_MISS, SupportedRenderingMethods::FORWARD_PLUS,
+			TTRC("Displays whether each Dynamic GI screen probe trace hit the voxel structure or used fallback ambient lighting. Requires Dynamic GI to be enabled in Environment to have a visible effect."));
 	display_submenu->add_separator();
 	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("Scene Luminance"), VIEW_DISPLAY_DEBUG_SCENE_LUMINANCE, SupportedRenderingMethods::FORWARD_PLUS_MOBILE,
 			TTRC("Displays the scene luminance computed from the 3D buffer. This is used for Auto Exposure calculation.\nRequires Auto Exposure to be enabled in CameraAttributes to have a visible effect."));

@@ -240,7 +240,7 @@ public:
 	void environment_set_hddagi(RID p_env, bool p_enable, int p_cascades, RSE::EnvironmentHDDAGICascadeFormat p_cascade_format, float p_min_cell_size, bool p_filter_probes, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_reflection_bias, float p_probe_bias, float p_occlusion_bias, bool p_filter_reflection, bool p_filter_ambient);
 	void environment_set_hddagi_screen_probes(RID p_env, bool p_enable, int p_probe_size, float p_normal_bias);
 	void environment_set_hddagi_screen_probe_restir(RID p_env, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_miss_confidence);
-	void environment_set_hddagi_screen_probe_tuning(RID p_env, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode);
+	void environment_set_hddagi_screen_probe_tuning(RID p_env, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight);
 	bool environment_get_hddagi_enabled(RID p_env) const;
 	int environment_get_hddagi_cascades(RID p_env) const;
 	float environment_get_hddagi_min_cell_size(RID p_env) const;
@@ -270,8 +270,6 @@ public:
 	float environment_get_hddagi_screen_probe_history_sample_count_max(RID p_env) const;
 	float environment_get_hddagi_screen_probe_miss_ambient_fallback_weight(RID p_env) const;
 	float environment_get_hddagi_screen_probe_base_ambient_prior_weight(RID p_env) const;
-	int environment_get_hddagi_screen_probe_debug_mode(RID p_env) const;
-
 	virtual void environment_set_hddagi_frames_to_converge(RSE::EnvironmentHDDAGIFramesToConverge p_ray_count) = 0;
 	virtual void environment_set_hddagi_frames_to_update_light(RSE::EnvironmentHDDAGIFramesToUpdateLight p_frames) = 0;
 	virtual void environment_set_hddagi_inactive_probe_frames(RSE::EnvironmentHDDAGIInactiveProbeFrames p_update) = 0;

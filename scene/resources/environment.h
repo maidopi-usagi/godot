@@ -174,7 +174,6 @@ private:
 	float dynamic_gi_screen_probe_history_sample_count_max = 128.0;
 	float dynamic_gi_screen_probe_miss_ambient_fallback_weight = 0.75;
 	float dynamic_gi_screen_probe_base_ambient_prior_weight = 0.15;
-	int dynamic_gi_screen_probe_debug_mode = 0;
 	void _update_dynamic_gi();
 
 	// Glow
@@ -391,8 +390,6 @@ public:
 	float get_dynamic_gi_screen_probe_miss_ambient_fallback_weight() const;
 	void set_dynamic_gi_screen_probe_base_ambient_prior_weight(float p_weight);
 	float get_dynamic_gi_screen_probe_base_ambient_prior_weight() const;
-	void set_dynamic_gi_screen_probe_debug_mode(int p_mode);
-	int get_dynamic_gi_screen_probe_debug_mode() const;
 
 	// Glow
 	void set_glow_enabled(bool p_enabled);

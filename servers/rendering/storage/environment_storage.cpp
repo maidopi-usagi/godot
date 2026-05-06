@@ -854,13 +854,12 @@ void RendererEnvironmentStorage::environment_set_hddagi_screen_probe_restir(RID 
 	env->hddagi_screen_probe_restir_miss_confidence = p_miss_confidence;
 }
 
-void RendererEnvironmentStorage::environment_set_hddagi_screen_probe_tuning(RID p_env, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode) {
+void RendererEnvironmentStorage::environment_set_hddagi_screen_probe_tuning(RID p_env, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight) {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL(env);
 	env->hddagi_screen_probe_history_sample_count_max = p_history_sample_count_max;
 	env->hddagi_screen_probe_miss_ambient_fallback_weight = p_miss_ambient_fallback_weight;
 	env->hddagi_screen_probe_base_ambient_prior_weight = p_base_ambient_prior_weight;
-	env->hddagi_screen_probe_debug_mode = p_debug_mode;
 }
 
 bool RendererEnvironmentStorage::environment_get_hddagi_enabled(RID p_env) const {
@@ -1035,12 +1034,6 @@ float RendererEnvironmentStorage::environment_get_hddagi_screen_probe_base_ambie
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, 0.15);
 	return env->hddagi_screen_probe_base_ambient_prior_weight;
-}
-
-int RendererEnvironmentStorage::environment_get_hddagi_screen_probe_debug_mode(RID p_env) const {
-	Environment *env = environment_owner.get_or_null(p_env);
-	ERR_FAIL_NULL_V(env, 0);
-	return env->hddagi_screen_probe_debug_mode;
 }
 
 // Adjustments

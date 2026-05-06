@@ -1354,9 +1354,8 @@
 			<param index="1" name="history_sample_count_max" type="float" />
 			<param index="2" name="miss_ambient_fallback_weight" type="float" />
 			<param index="3" name="base_ambient_prior_weight" type="float" />
-			<param index="4" name="debug_mode" type="int" />
 			<description>
-				Configures DynamicGI screen probe accumulation, fallback, and debug settings. See the matching [Environment] properties for more information.
+				Configures DynamicGI screen probe accumulation and fallback settings. See the matching [Environment] properties for more information.
 			</description>
 		</method>
 		<method name="environment_set_hddagi_screen_probes">
@@ -5026,6 +5025,12 @@
 		</constant>
 		<constant name="VIEWPORT_DEBUG_DRAW_INTERNAL_BUFFER" value="27" enum="ViewportDebugDraw">
 			Internal buffer is drawn instead of regular scene so you can see the per-pixel output that will be used by post-processing effects.
+		</constant>
+		<constant name="VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_SAMPLE_COUNT" value="30" enum="ViewportDebugDraw">
+			Draws the DynamicGI screen probe temporal sample count.
+		</constant>
+		<constant name="VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_HIT_MISS" value="31" enum="ViewportDebugDraw">
+			Draws whether each DynamicGI screen probe trace hit the voxel structure or used fallback ambient lighting.
 		</constant>
 		<constant name="VIEWPORT_VRS_DISABLED" value="0" enum="ViewportVRSMode">
 			Variable rate shading is disabled.

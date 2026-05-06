@@ -48,6 +48,23 @@ using namespace RendererSceneRenderImplementation;
 
 #define FADE_ALPHA_PASS_THRESHOLD 0.999
 
+static bool is_hddagi_screen_probe_debug_draw(RSE::ViewportDebugDraw p_debug_draw) {
+	return p_debug_draw == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBES ||
+			p_debug_draw == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_SAMPLE_COUNT ||
+			p_debug_draw == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_HIT_MISS;
+}
+
+static int get_hddagi_screen_probe_viewport_debug_mode(RSE::ViewportDebugDraw p_debug_draw) {
+	switch (p_debug_draw) {
+		case RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_SAMPLE_COUNT:
+			return 1;
+		case RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_HIT_MISS:
+			return 2;
+		default:
+			return 0;
+	}
+}
+
 void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_specular() {
 	ERR_FAIL_NULL(render_buffers);
 
@@ -1606,7 +1623,8 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			gi_size.x >>= 1;
 			gi_size.y >>= 1;
 		}
-		gi.process_hddagi_screen_probes(rb, p_normal_roughness_slices, p_render_data->scene_data->view_count, gi_size, p_render_data->scene_data->view_projection, p_render_data->scene_data->cam_transform, environment_get_hddagi_screen_probe_size(p_render_data->environment), environment_get_hddagi_screen_probe_normal_bias(p_render_data->environment), environment_get_hddagi_screen_probe_restir_history_blend_hit(p_render_data->environment), environment_get_hddagi_screen_probe_restir_history_distance_tolerance(p_render_data->environment), environment_get_hddagi_screen_probe_restir_history_direction_threshold(p_render_data->environment), environment_get_hddagi_screen_probe_restir_spatial_reuse_radius(p_render_data->environment), environment_get_hddagi_screen_probe_restir_spatial_normal_threshold(p_render_data->environment), environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_min(p_render_data->environment), environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_scale(p_render_data->environment), environment_get_hddagi_screen_probe_restir_miss_confidence(p_render_data->environment), environment_get_hddagi_screen_probe_history_sample_count_max(p_render_data->environment), environment_get_hddagi_screen_probe_miss_ambient_fallback_weight(p_render_data->environment), environment_get_hddagi_screen_probe_base_ambient_prior_weight(p_render_data->environment), environment_get_hddagi_screen_probe_debug_mode(p_render_data->environment));
+		int screen_probe_debug_mode = get_hddagi_screen_probe_viewport_debug_mode(get_debug_draw_mode());
+		gi.process_hddagi_screen_probes(rb, p_normal_roughness_slices, p_render_data->scene_data->view_count, gi_size, p_render_data->scene_data->view_projection, p_render_data->scene_data->cam_transform, environment_get_hddagi_screen_probe_size(p_render_data->environment), environment_get_hddagi_screen_probe_normal_bias(p_render_data->environment), environment_get_hddagi_screen_probe_restir_history_blend_hit(p_render_data->environment), environment_get_hddagi_screen_probe_restir_history_distance_tolerance(p_render_data->environment), environment_get_hddagi_screen_probe_restir_history_direction_threshold(p_render_data->environment), environment_get_hddagi_screen_probe_restir_spatial_reuse_radius(p_render_data->environment), environment_get_hddagi_screen_probe_restir_spatial_normal_threshold(p_render_data->environment), environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_min(p_render_data->environment), environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_scale(p_render_data->environment), environment_get_hddagi_screen_probe_restir_miss_confidence(p_render_data->environment), environment_get_hddagi_screen_probe_history_sample_count_max(p_render_data->environment), environment_get_hddagi_screen_probe_miss_ambient_fallback_weight(p_render_data->environment), environment_get_hddagi_screen_probe_base_ambient_prior_weight(p_render_data->environment), screen_probe_debug_mode);
 		RD::get_singleton()->draw_command_end_label();
 	}
 
@@ -1961,7 +1979,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		}
 	}
 
-	using_hddagi_screen_probes = !is_reflection_probe && rb.is_valid() && using_hddagi && (gi.hddagi_uses_screen_probes(p_render_data->environment) || get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBES);
+	using_hddagi_screen_probes = !is_reflection_probe && rb.is_valid() && using_hddagi && (gi.hddagi_uses_screen_probes(p_render_data->environment) || is_hddagi_screen_probe_debug_draw(get_debug_draw_mode()));
 
 	bool using_sss = rb_data.is_valid() && !is_reflection_probe && scene_state.used_sss && ss_effects->sss_get_quality() != RSE::SUB_SURFACE_SCATTERING_QUALITY_DISABLED;
 
@@ -2603,9 +2621,9 @@ void RenderForwardClustered::_render_buffers_debug_draw(const RenderDataRD *p_re
 		copy_effects->copy_to_fb_rect(ambient_texture, texture_storage->render_target_get_rd_framebuffer(render_target), Rect2(Vector2(), rtsize), false, false, false, true, reflection_texture, rb->get_view_count() > 1);
 	}
 
-	if (get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBES && rb->has_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_INTERPOLATED)) {
+	if (is_hddagi_screen_probe_debug_draw(get_debug_draw_mode()) && rb->has_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_FILTERED)) {
 		Size2i rtsize = texture_storage->render_target_get_size(render_target);
-		RID radiance_texture = rb->get_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_INTERPOLATED);
+		RID radiance_texture = rb->get_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_FILTERED);
 		copy_effects->copy_to_fb_rect(radiance_texture, texture_storage->render_target_get_rd_framebuffer(render_target), Rect2(Vector2(), rtsize), false, false, false, false, RID(), rb->get_view_count() > 1, false, false, false, Rect2(), 1.0, false);
 	}
 }

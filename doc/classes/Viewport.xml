@@ -603,6 +603,12 @@
 		<constant name="DEBUG_DRAW_INTERNAL_BUFFER" value="27" enum="DebugDraw">
 			Draws the internal resolution buffer of the scene before post-processing is applied.
 		</constant>
+		<constant name="DEBUG_DRAW_HDDAGI_SCREEN_PROBE_SAMPLE_COUNT" value="30" enum="DebugDraw">
+			Draws the DynamicGI screen probe temporal sample count.
+		</constant>
+		<constant name="DEBUG_DRAW_HDDAGI_SCREEN_PROBE_HIT_MISS" value="31" enum="DebugDraw">
+			Draws whether each DynamicGI screen probe trace hit the voxel structure or used fallback ambient lighting.
+		</constant>
 		<constant name="DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_NEAREST" value="0" enum="DefaultCanvasItemTextureFilter">
 			The texture filter reads from the nearest pixel only. This makes the texture look pixelated from up close, and grainy from a distance (due to mipmaps not being sampled).
 		</constant>

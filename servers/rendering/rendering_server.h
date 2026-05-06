@@ -680,7 +680,7 @@ public:
 
 	virtual void environment_set_hddagi_screen_probes(RID p_env, bool p_enable, int p_probe_size, float p_normal_bias) = 0;
 	virtual void environment_set_hddagi_screen_probe_restir(RID p_env, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_miss_confidence) = 0;
-	virtual void environment_set_hddagi_screen_probe_tuning(RID p_env, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode) = 0;
+	virtual void environment_set_hddagi_screen_probe_tuning(RID p_env, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight) = 0;
 
 	virtual void environment_set_hddagi_frames_to_converge(RSE::EnvironmentHDDAGIFramesToConverge p_ray_count) = 0;
 

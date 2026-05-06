@@ -673,8 +673,8 @@ void RendererSceneRender::environment_set_hddagi_screen_probe_restir(RID p_env, 
 	environment_storage.environment_set_hddagi_screen_probe_restir(p_env, p_history_blend_hit, p_history_distance_tolerance, p_history_direction_threshold, p_spatial_reuse_radius, p_spatial_normal_threshold, p_spatial_depth_tolerance_min, p_spatial_depth_tolerance_scale, p_miss_confidence);
 }
 
-void RendererSceneRender::environment_set_hddagi_screen_probe_tuning(RID p_env, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight, int p_debug_mode) {
-	environment_storage.environment_set_hddagi_screen_probe_tuning(p_env, p_history_sample_count_max, p_miss_ambient_fallback_weight, p_base_ambient_prior_weight, p_debug_mode);
+void RendererSceneRender::environment_set_hddagi_screen_probe_tuning(RID p_env, float p_history_sample_count_max, float p_miss_ambient_fallback_weight, float p_base_ambient_prior_weight) {
+	environment_storage.environment_set_hddagi_screen_probe_tuning(p_env, p_history_sample_count_max, p_miss_ambient_fallback_weight, p_base_ambient_prior_weight);
 }
 
 bool RendererSceneRender::environment_get_hddagi_enabled(RID p_env) const {
@@ -792,11 +792,6 @@ float RendererSceneRender::environment_get_hddagi_screen_probe_miss_ambient_fall
 float RendererSceneRender::environment_get_hddagi_screen_probe_base_ambient_prior_weight(RID p_env) const {
 	return environment_storage.environment_get_hddagi_screen_probe_base_ambient_prior_weight(p_env);
 }
-
-int RendererSceneRender::environment_get_hddagi_screen_probe_debug_mode(RID p_env) const {
-	return environment_storage.environment_get_hddagi_screen_probe_debug_mode(p_env);
-}
-
 
 // Adjustments
 

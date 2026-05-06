@@ -742,6 +742,17 @@ vec4 gather_probe_radiance(ivec2 probe_pos) {
 	return vec4(radiance / max(weight, 0.0001), clamp(weight / 4.0, 0.0, 1.0));
 }
 
+vec4 get_probe_debug_radiance(ivec2 probe_pos) {
+	if (params.debug_mode == 1) {
+		float sample_count = clamp(load_probe_ray(probe_pos, ivec2(0)).a / max(params.history_sample_count_max, 1.0), 0.0, 1.0);
+		return vec4(sample_count, sample_count * sample_count, 1.0 - sample_count, 1.0);
+	}
+
+	uvec4 reservoir = imageLoad(probe_reservoir, clamp(probe_pos * OCTAHEDRAL_SIZE, ivec2(0), imageSize(probe_reservoir) - ivec2(1)));
+	float hit_mask = unpackHalf2x16(reservoir.g).y;
+	return vec4(hit_mask > 0.5 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), 1.0);
+}
+
 void interpolate_screen_probe_radiance() {
 	ivec2 screen_pos = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 output_size = imageSize(probe_radiance);
@@ -758,6 +769,11 @@ void interpolate_screen_probe_radiance() {
 
 	ivec2 gi_pos = screen_to_gi(screen_pos);
 	ivec2 probe_base = gi_pos / params.probe_size;
+	if (params.debug_mode != 0) {
+		imageStore(probe_radiance, screen_pos, get_probe_debug_radiance(probe_base));
+		return;
+	}
+
 	if (params.probe_size == 1) {
 		imageStore(probe_radiance, screen_pos, load_probe_ray(probe_base, ivec2(0)));
 		return;
@@ -835,6 +851,11 @@ void temporal_filter_screen_probe_radiance() {
 	}
 
 	vec4 current_radiance = texelFetch(sampler2D(atlas_radiance, linear_sampler), screen_pos, 0);
+	if (params.debug_mode != 0) {
+		imageStore(probe_radiance, screen_pos, current_radiance);
+		return;
+	}
+
 	if (params.probe_size == 1) {
 		imageStore(probe_radiance, screen_pos, current_radiance);
 		return;
@@ -888,18 +909,7 @@ void apply_screen_probe_ambient() {
 	// final ambient grow/shrink as the temporal accumulator warms up, which prevents convergence
 	// to a stable result.
 	vec3 final_rgb;
-	if (params.debug_mode == 1) {
-		float sample_count = clamp(probe_radiance.a / max(params.history_sample_count_max, 1.0), 0.0, 1.0);
-		final_rgb = vec3(sample_count, sample_count * sample_count, 1.0 - sample_count);
-	} else if (params.debug_mode == 2) {
-		ivec2 gi_pos_for_probe = screen_to_gi(screen_pos);
-		ivec2 probe_pos = gi_pos_for_probe / params.probe_size;
-		uvec4 reservoir = imageLoad(probe_reservoir, clamp(probe_pos * OCTAHEDRAL_SIZE, ivec2(0), imageSize(probe_reservoir) - ivec2(1)));
-		float hit_mask = unpackHalf2x16(reservoir.g).y;
-		final_rgb = hit_mask > 0.5 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-	} else {
-		final_rgb = probe_radiance.a > 0.0 ? probe_radiance.rgb : vec3(0.0);
-	}
+	final_rgb = probe_radiance.a > 0.0 ? probe_radiance.rgb : vec3(0.0);
 	imageStore(screen_probe_ambient_output, gi_pos, uvec4(rgbe_encode(final_rgb)));
 }
 

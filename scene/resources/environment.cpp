@@ -714,15 +714,6 @@ float Environment::get_dynamic_gi_screen_probe_base_ambient_prior_weight() const
 	return dynamic_gi_screen_probe_base_ambient_prior_weight;
 }
 
-void Environment::set_dynamic_gi_screen_probe_debug_mode(int p_mode) {
-	dynamic_gi_screen_probe_debug_mode = p_mode;
-	_update_dynamic_gi();
-}
-
-int Environment::get_dynamic_gi_screen_probe_debug_mode() const {
-	return dynamic_gi_screen_probe_debug_mode;
-}
-
 void Environment::_update_dynamic_gi() {
 	RS::get_singleton()->environment_set_hddagi(
 			environment,
@@ -759,8 +750,7 @@ void Environment::_update_dynamic_gi() {
 			environment,
 			dynamic_gi_screen_probe_history_sample_count_max,
 			dynamic_gi_screen_probe_miss_ambient_fallback_weight,
-			dynamic_gi_screen_probe_base_ambient_prior_weight,
-			dynamic_gi_screen_probe_debug_mode);
+			dynamic_gi_screen_probe_base_ambient_prior_weight);
 }
 
 // Glow
@@ -1601,9 +1591,6 @@ void Environment::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_dynamic_gi_screen_probe_miss_ambient_fallback_weight"), &Environment::get_dynamic_gi_screen_probe_miss_ambient_fallback_weight);
 	ClassDB::bind_method(D_METHOD("set_dynamic_gi_screen_probe_base_ambient_prior_weight", "weight"), &Environment::set_dynamic_gi_screen_probe_base_ambient_prior_weight);
 	ClassDB::bind_method(D_METHOD("get_dynamic_gi_screen_probe_base_ambient_prior_weight"), &Environment::get_dynamic_gi_screen_probe_base_ambient_prior_weight);
-	ClassDB::bind_method(D_METHOD("set_dynamic_gi_screen_probe_debug_mode", "mode"), &Environment::set_dynamic_gi_screen_probe_debug_mode);
-	ClassDB::bind_method(D_METHOD("get_dynamic_gi_screen_probe_debug_mode"), &Environment::get_dynamic_gi_screen_probe_debug_mode);
-
 	ADD_GROUP("DynamicGI", "dynamic_gi_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "dynamic_gi_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_dynamic_gi_enabled", "is_dynamic_gi_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "dynamic_gi_use_occlusion"), "set_dynamic_gi_filter_probes", "is_dynamic_gi_filtering_probes");
@@ -1633,7 +1620,6 @@ void Environment::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_screen_probe_history_sample_count_max", PROPERTY_HINT_RANGE, "1,1024,1"), "set_dynamic_gi_screen_probe_history_sample_count_max", "get_dynamic_gi_screen_probe_history_sample_count_max");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_screen_probe_miss_ambient_fallback_weight", PROPERTY_HINT_RANGE, "0,2,0.01"), "set_dynamic_gi_screen_probe_miss_ambient_fallback_weight", "get_dynamic_gi_screen_probe_miss_ambient_fallback_weight");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_screen_probe_base_ambient_prior_weight", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_dynamic_gi_screen_probe_base_ambient_prior_weight", "get_dynamic_gi_screen_probe_base_ambient_prior_weight");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "dynamic_gi_screen_probe_debug_mode", PROPERTY_HINT_ENUM, "Disabled,Sample Count,Hit Miss"), "set_dynamic_gi_screen_probe_debug_mode", "get_dynamic_gi_screen_probe_debug_mode");
 
 	// Glow
 
