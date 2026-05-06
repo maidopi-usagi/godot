@@ -24,6 +24,8 @@ layout(r32ui, set = 0, binding = 15) uniform restrict readonly uimage3D hddagi_v
 layout(rgba32ui, set = 0, binding = 17) uniform restrict readonly uimage2D previous_reservoir;
 layout(r8ui, set = 0, binding = 18) uniform restrict readonly uimage3D hddagi_voxel_disocclusion;
 layout(r32ui, set = 0, binding = 19) uniform restrict writeonly uimage2D screen_probe_ambient_output;
+layout(rgba32ui, set = 0, binding = 20) uniform restrict uimage2D probe_reservoir_state;
+layout(rgba32ui, set = 0, binding = 21) uniform restrict readonly uimage2D previous_reservoir_state;
 
 struct HDDAGIProbeCascadeData {
 	vec3 position;
@@ -323,6 +325,99 @@ vec3 rgbe_decode(uint rgbe) {
 	uint exponent = (rgbe >> 27) & 0x1fu;
 	vec3 mantissa = vec3(float(rgbe & 0x1ffu), float((rgbe >> 9) & 0x1ffu), float((rgbe >> 18) & 0x1ffu)) / 512.0;
 	return mantissa * exp2(float(exponent) - 15.0);
+}
+
+float luminance(vec3 color) {
+	return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
+struct ReservoirState {
+	vec2 direction_oct;
+	float target_luminance;
+	float sample_count;
+	float hit;
+	float reservoir_weight;
+	bool valid;
+};
+
+struct ReservoirDebugState {
+	vec2 direction;
+	float sample_count;
+	float target_luminance;
+	float reservoir_weight;
+	float hit_ratio;
+	bool valid;
+};
+
+vec2 octahedral_encode(vec3 n);
+
+ReservoirState load_previous_reservoir_state(ivec2 atlas_pos) {
+	uvec4 packed_state = imageLoad(previous_reservoir_state, atlas_pos);
+	vec2 count_hit = unpackHalf2x16(packed_state.b);
+	ReservoirState state;
+	state.direction_oct = unpackHalf2x16(packed_state.r);
+	state.target_luminance = uintBitsToFloat(packed_state.g);
+	state.sample_count = count_hit.x;
+	state.hit = count_hit.y;
+	state.reservoir_weight = uintBitsToFloat(packed_state.a);
+	state.valid = any(notEqual(packed_state, uvec4(0u))) && state.sample_count > 0.0 && state.target_luminance >= 0.0;
+	return state;
+}
+
+ReservoirState load_current_reservoir_state(ivec2 atlas_pos) {
+	uvec4 packed_state = imageLoad(probe_reservoir_state, atlas_pos);
+	vec2 count_hit = unpackHalf2x16(packed_state.b);
+	ReservoirState state;
+	state.direction_oct = unpackHalf2x16(packed_state.r);
+	state.target_luminance = uintBitsToFloat(packed_state.g);
+	state.sample_count = count_hit.x;
+	state.hit = count_hit.y;
+	state.reservoir_weight = uintBitsToFloat(packed_state.a);
+	state.valid = any(notEqual(packed_state, uvec4(0u))) && state.sample_count > 0.0 && state.target_luminance >= 0.0;
+	return state;
+}
+
+void store_reservoir_state_data(ivec2 atlas_pos, vec2 direction_oct, float target_luminance, float sample_count, float hit, float reservoir_weight) {
+	imageStore(probe_reservoir_state, atlas_pos, uvec4(
+			packHalf2x16(direction_oct),
+			floatBitsToUint(target_luminance),
+			packHalf2x16(vec2(sample_count, hit)),
+			floatBitsToUint(reservoir_weight)));
+}
+
+void store_temporal_reservoir_state(ivec2 atlas_pos, ivec2 previous_atlas_pos, float history_validity, vec3 ray_dir, vec3 radiance, bool hit) {
+	vec2 candidate_direction_oct = octahedral_encode(normalize(ray_dir));
+	float candidate_target_luminance = hit ? max(luminance(radiance), 0.0) : 0.0;
+	float candidate_weight_sum = candidate_target_luminance;
+	float sample_count = 1.0;
+	vec2 selected_direction_oct = candidate_direction_oct;
+	float selected_target_luminance = candidate_target_luminance;
+	float selected_hit = hit ? 1.0 : 0.0;
+	float weight_sum = candidate_weight_sum;
+
+	if (params.history_valid != 0 && history_validity > 0.0) {
+		ReservoirState previous = load_previous_reservoir_state(previous_atlas_pos);
+		if (previous.valid) {
+			float previous_sample_count = max(previous.sample_count, 1.0);
+			float previous_weight_sum = previous.reservoir_weight * max(previous.target_luminance, 0.0) * previous_sample_count * history_validity;
+			weight_sum += previous_weight_sum;
+			sample_count = previous_sample_count + 1.0;
+
+			float selection_random = hash_float(uvec3(atlas_pos, params.frame_index ^ 0x9e3779b9u));
+			if (weight_sum > 0.0 && selection_random * weight_sum < previous_weight_sum) {
+				selected_direction_oct = previous.direction_oct;
+				selected_target_luminance = previous.target_luminance;
+				selected_hit = previous.hit;
+			}
+		}
+	}
+
+	float reservoir_weight = selected_target_luminance > 0.0 ? weight_sum / max(selected_target_luminance * sample_count, 0.0001) : 0.0;
+	store_reservoir_state_data(atlas_pos, selected_direction_oct, selected_target_luminance, sample_count, selected_hit, reservoir_weight);
+}
+
+void store_invalid_reservoir_state(ivec2 atlas_pos) {
+	imageStore(probe_reservoir_state, atlas_pos, uvec4(0u));
 }
 
 vec3 clip_to_aabb(vec3 color, vec3 minimum, vec3 maximum) {
@@ -770,10 +865,85 @@ vec4 gather_probe_radiance(ivec2 probe_pos) {
 	return vec4(radiance / max(weight, 0.0001), clamp(weight / 4.0, 0.0, 1.0));
 }
 
-vec4 get_probe_debug_radiance(ivec2 probe_pos) {
+ReservoirDebugState gather_probe_reservoir_debug_state(ivec2 probe_pos) {
+	ivec2 state_size = imageSize(probe_reservoir_state);
+	vec2 direction = vec2(0.0);
+	float sample_count = 0.0;
+	float target_luminance = 0.0;
+	float reservoir_weight = 0.0;
+	float hit_count = 0.0;
+	float valid_count = 0.0;
+
+	for (int y = 0; y < OCTAHEDRAL_SIZE; y++) {
+		for (int x = 0; x < OCTAHEDRAL_SIZE; x++) {
+			ivec2 atlas_pos = probe_pos * OCTAHEDRAL_SIZE + ivec2(x, y);
+			if (any(greaterThanEqual(atlas_pos, state_size))) {
+				continue;
+			}
+
+			ReservoirState state = load_current_reservoir_state(atlas_pos);
+			if (!state.valid) {
+				continue;
+			}
+
+			direction += state.direction_oct * 2.0 - 1.0;
+			sample_count += state.sample_count;
+			target_luminance += state.target_luminance;
+			reservoir_weight += state.reservoir_weight;
+			hit_count += step(0.5, state.hit);
+			valid_count += 1.0;
+		}
+	}
+
+	ReservoirDebugState debug_state;
+	debug_state.direction = vec2(0.0);
+	debug_state.sample_count = 0.0;
+	debug_state.target_luminance = 0.0;
+	debug_state.reservoir_weight = 0.0;
+	debug_state.hit_ratio = 0.0;
+	debug_state.valid = false;
+
+	if (valid_count <= 0.0) {
+		return debug_state;
+	}
+
+	debug_state.direction = direction / valid_count;
+	debug_state.sample_count = sample_count / valid_count;
+	debug_state.target_luminance = target_luminance / valid_count;
+	debug_state.reservoir_weight = reservoir_weight / valid_count;
+	debug_state.hit_ratio = hit_count / valid_count;
+	debug_state.valid = true;
+	return debug_state;
+}
+
+vec4 get_probe_debug_radiance(ivec2 probe_pos, ivec2 screen_pos) {
 	if (params.debug_mode == 1) {
 		float sample_count = clamp(load_probe_ray(probe_pos, ivec2(0)).a / max(params.history_sample_count_max, 1.0), 0.0, 1.0);
 		return vec4(sample_count, sample_count * sample_count, 1.0 - sample_count, 1.0);
+	}
+	if (params.debug_mode == 3) {
+		ReservoirDebugState state = gather_probe_reservoir_debug_state(probe_pos);
+		if (!state.valid) {
+			return vec4(0.0, 0.0, 0.0, 1.0);
+		}
+
+		ivec2 output_size = imageSize(probe_radiance);
+		bool right = screen_pos.x >= output_size.x / 2;
+		bool bottom = screen_pos.y >= output_size.y / 2;
+		if (!right && !bottom) {
+			float history = clamp(state.sample_count / max(params.history_sample_count_max, 1.0), 0.0, 1.0);
+			return vec4(history, history, history, 1.0);
+		}
+		if (right && !bottom) {
+			float reservoir_weight = clamp(log2(max(state.reservoir_weight, 0.0) + 1.0) / 8.0, 0.0, 1.0);
+			return vec4(reservoir_weight, reservoir_weight, reservoir_weight, 1.0);
+		}
+		if (!right) {
+			float target_luminance = clamp(log2(state.target_luminance + 1.0) / 8.0, 0.0, 1.0);
+			return vec4(target_luminance, target_luminance, target_luminance, 1.0);
+		}
+
+		return vec4(state.direction * 0.5 + 0.5, state.hit_ratio, 1.0);
 	}
 
 	uvec4 reservoir = imageLoad(probe_reservoir, clamp(probe_pos * OCTAHEDRAL_SIZE, ivec2(0), imageSize(probe_reservoir) - ivec2(1)));
@@ -798,7 +968,7 @@ void interpolate_screen_probe_radiance() {
 	ivec2 gi_pos = screen_to_gi(screen_pos);
 	ivec2 probe_base = gi_pos / params.probe_size;
 	if (params.debug_mode != 0) {
-		imageStore(probe_radiance, screen_pos, get_probe_debug_radiance(probe_base));
+		imageStore(probe_radiance, screen_pos, get_probe_debug_radiance(probe_base, screen_pos));
 		return;
 	}
 
@@ -973,6 +1143,7 @@ void main() {
 	vec3 origin_normal;
 	if (!find_probe_surface(probe_pos, origin_pos, origin_depth, origin_normal)) {
 		store_invalid_probe_surface(probe_pos);
+		store_invalid_reservoir_state(atlas_pos);
 		imageStore(probe_radiance, atlas_pos, vec4(0.0));
 		imageStore(probe_history, atlas_pos, vec4(0.0));
 		imageStore(probe_reservoir, atlas_pos, uvec4(0));
@@ -1022,4 +1193,5 @@ void main() {
 	imageStore(probe_radiance, atlas_pos, current_radiance);
 	imageStore(probe_history, atlas_pos, current_radiance);
 	imageStore(probe_reservoir, atlas_pos, uvec4(rgbe_encode(radiance), packHalf2x16(vec2(linearize_depth(origin_depth), hit ? 1.0 : params.miss_confidence)), packHalf2x16(octahedral_encode(origin_world_normal)), params.frame_index));
+	store_temporal_reservoir_state(atlas_pos, previous_atlas_pos, history_validity, ray_dir, radiance, hit);
 }

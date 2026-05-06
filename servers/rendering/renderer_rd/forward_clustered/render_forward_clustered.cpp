@@ -51,7 +51,8 @@ using namespace RendererSceneRenderImplementation;
 static bool is_hddagi_screen_probe_debug_draw(RSE::ViewportDebugDraw p_debug_draw) {
 	return p_debug_draw == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBES ||
 			p_debug_draw == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_SAMPLE_COUNT ||
-			p_debug_draw == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_HIT_MISS;
+			p_debug_draw == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_HIT_MISS ||
+			p_debug_draw == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_RESERVOIR_STATE;
 }
 
 static int get_hddagi_screen_probe_viewport_debug_mode(RSE::ViewportDebugDraw p_debug_draw) {
@@ -60,6 +61,8 @@ static int get_hddagi_screen_probe_viewport_debug_mode(RSE::ViewportDebugDraw p_
 			return 1;
 		case RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_HIT_MISS:
 			return 2;
+		case RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_RESERVOIR_STATE:
+			return 3;
 		default:
 			return 0;
 	}
