@@ -102,7 +102,7 @@ layout(push_constant, std430) uniform Params {
 	uint restir_temporal_guiding;
 	float restir_guided_target_luminance_max_ratio;
 	float restir_guided_candidate_probability;
-	uint pad;
+	float restir_boost_max;
 }
 params;
 
@@ -398,38 +398,21 @@ void store_reservoir_state_data(ivec2 atlas_pos, vec2 direction_oct, float targe
 			floatBitsToUint(reservoir_weight)));
 }
 
-void store_temporal_reservoir_state(ivec2 atlas_pos, vec3 ray_dir, vec3 radiance, bool hit, vec3 guided_ray_dir, vec3 guided_radiance, bool guided_hit, bool guided_valid) {
-	vec2 candidate_direction_oct = octahedral_encode(normalize(mat3(scene_data.cam_transform) * ray_dir));
-	float candidate_target_luminance = hit ? max(luminance(radiance), 0.0) : 0.0;
-	float weight_sum = candidate_target_luminance;
-	float sample_count = guided_valid ? 2.0 : 1.0;
-	vec2 selected_direction_oct = candidate_direction_oct;
-	float selected_target_luminance = candidate_target_luminance;
-	float selected_hit = hit ? 1.0 : 0.0;
-	float selected_guided = 0.0;
+float reservoir_sample_weight(float weight_sum, float selected_target_luminance, float sample_count) {
+	return selected_target_luminance > 0.0 ? weight_sum / max(selected_target_luminance * max(sample_count, 1.0), 0.0001) : 0.0;
+}
 
-	if (guided_valid) {
-		float guided_target_luminance = guided_hit ? max(luminance(guided_radiance), 0.0) : 0.0;
-		guided_target_luminance = min(guided_target_luminance, max(candidate_target_luminance * params.restir_guided_target_luminance_max_ratio, 0.25));
-		weight_sum += guided_target_luminance;
-		float selection_random = hash_float(uvec3(atlas_pos, params.frame_index ^ 0x9e3779b9u));
-		if (weight_sum > 0.0 && selection_random * weight_sum < guided_target_luminance) {
-			selected_direction_oct = octahedral_encode(normalize(mat3(scene_data.cam_transform) * guided_ray_dir));
-			selected_target_luminance = guided_target_luminance;
-			selected_hit = guided_hit ? 1.0 : 0.0;
-			selected_guided = 1.0;
-		}
-	}
-
-	float reservoir_weight = selected_target_luminance > 0.0 ? weight_sum / max(selected_target_luminance * sample_count, 0.0001) : 0.0;
-	store_reservoir_state_data(atlas_pos, selected_direction_oct, selected_target_luminance, sample_count, selected_hit, selected_guided, guided_valid ? 1.0 : 0.0, reservoir_weight);
+void store_temporal_reservoir_state(ivec2 atlas_pos, vec3 selected_ray_dir, float selected_target_luminance, bool selected_hit, bool selected_guided, bool guided_valid, float sample_count, float reservoir_weight) {
+	vec2 selected_direction_oct = octahedral_encode(normalize(mat3(scene_data.cam_transform) * selected_ray_dir));
+	store_reservoir_state_data(atlas_pos, selected_direction_oct, selected_target_luminance, sample_count, selected_hit ? 1.0 : 0.0, selected_guided ? 1.0 : 0.0, guided_valid ? 1.0 : 0.0, reservoir_weight);
 }
 
 void store_invalid_reservoir_state(ivec2 atlas_pos) {
 	imageStore(probe_reservoir_state, atlas_pos, uvec4(0u));
 }
 
-bool load_guided_reservoir_ray(ivec2 previous_atlas_pos, float history_validity, vec3 origin_normal, out vec3 r_ray_dir) {
+bool load_guided_reservoir_ray(ivec2 previous_atlas_pos, float history_validity, vec3 origin_normal, out vec3 r_ray_dir, out float r_reliability) {
+	r_reliability = 0.0;
 	if (params.history_valid == 0 || history_validity <= 0.0) {
 		return false;
 	}
@@ -446,6 +429,7 @@ bool load_guided_reservoir_ray(ivec2 previous_atlas_pos, float history_validity,
 	}
 
 	r_ray_dir = view_dir;
+	r_reliability = 1.0 - smoothstep(params.restir_boost_max, params.restir_boost_max * 2.0, previous.reservoir_weight);
 	return true;
 }
 
@@ -983,15 +967,16 @@ vec4 reservoir_debug_state_to_color(ReservoirDebugState state, ivec2 screen_pos)
 	bool right = screen_pos.x >= output_size.x / 2;
 	bool bottom = screen_pos.y >= output_size.y / 2;
 	if (!right && !bottom) {
-		float history = clamp(state.sample_count / max(params.history_sample_count_max, 1.0), 0.0, 1.0);
-		return vec4(history, history, history, 1.0);
+		float effective_candidates = clamp((state.sample_count - 1.0), 0.0, 1.0);
+		return vec4(effective_candidates, effective_candidates, effective_candidates, 1.0);
 	}
 	if (right && !bottom) {
 		return vec4(state.guided_ratio, state.guided_valid_ratio, 0.0, 1.0);
 	}
 	if (!right) {
 		float target_luminance = clamp(log2(state.target_luminance + 1.0) / 8.0, 0.0, 1.0);
-		return vec4(target_luminance, target_luminance, target_luminance, 1.0);
+		float reservoir_weight = clamp((state.reservoir_weight - 1.0) / max(params.restir_boost_max - 1.0, 0.0001), 0.0, 1.0);
+		return vec4(target_luminance, reservoir_weight, 0.0, 1.0);
 	}
 
 	return vec4(octahedral_encode(state.direction), state.hit_ratio, 1.0);
@@ -1317,7 +1302,10 @@ void main() {
 	vec2 sample_uv = (vec2(cell_pos) + ray_jitter) / float(OCTAHEDRAL_SIZE);
 	vec3 candidate_ray_dir = tangent_to_world(cosine_sample_hemisphere(sample_uv), origin_normal);
 	vec3 guided_ray_dir;
-	bool guided_candidate_valid = params.restir_temporal_guiding != 0u && hash_float(uvec3(atlas_pos.yx, params.frame_index ^ 0x9747b28cu)) < params.restir_guided_candidate_probability && load_guided_reservoir_ray(previous_atlas_pos, reservoir_history_validity, origin_normal, guided_ray_dir);
+	float guided_reliability;
+	bool guided_candidate_valid = params.restir_temporal_guiding != 0u && hash_float(uvec3(atlas_pos.yx, params.frame_index ^ 0x9747b28cu)) < params.restir_guided_candidate_probability && load_guided_reservoir_ray(previous_atlas_pos, reservoir_history_validity, origin_normal, guided_ray_dir, guided_reliability);
+	guided_candidate_valid = guided_candidate_valid && guided_reliability > 0.0;
+	float guided_candidate_weight = guided_candidate_valid ? clamp(reservoir_history_validity * guided_reliability, 0.0, 1.0) : 0.0;
 
 	float candidate_hit_distance;
 	vec3 candidate_radiance;
@@ -1334,19 +1322,26 @@ void main() {
 	float candidate_target_luminance = candidate_hit ? max(luminance(candidate_radiance), 0.0) : 0.0;
 	float guided_target_luminance = guided_candidate_valid && guided_hit ? max(luminance(guided_radiance), 0.0) : 0.0;
 	guided_target_luminance = min(guided_target_luminance, max(candidate_target_luminance * params.restir_guided_target_luminance_max_ratio, 0.25));
+	guided_target_luminance *= guided_candidate_weight;
 	float candidate_weight_sum = candidate_target_luminance + guided_target_luminance;
-	bool selected_guided_candidate = false;
+	vec3 selected_ray_dir = candidate_ray_dir;
 	vec3 selected_radiance = candidate_radiance;
 	bool selected_hit = candidate_hit;
+	bool selected_guided_candidate = false;
+	float selected_target_luminance = candidate_target_luminance;
 	if (guided_candidate_valid && candidate_weight_sum > 0.0 && hash_float(uvec3(atlas_pos, params.frame_index ^ 0x51ed270bu)) * candidate_weight_sum < guided_target_luminance) {
+		selected_ray_dir = guided_ray_dir;
 		selected_radiance = guided_radiance;
 		selected_hit = guided_hit;
 		selected_guided_candidate = true;
+		selected_target_luminance = guided_target_luminance;
 	}
 	vec3 visible_radiance = selected_radiance;
-	if (selected_guided_candidate && guided_target_luminance > 0.0) {
-		float mixed_proposal_weight = clamp(candidate_weight_sum / max(guided_target_luminance * 2.0, 0.0001), 0.25, 1.0);
-		visible_radiance *= mixed_proposal_weight;
+	float reservoir_sample_count = 1.0 + (guided_candidate_valid ? guided_candidate_weight : 0.0);
+	float selected_reservoir_weight = reservoir_sample_weight(candidate_weight_sum, selected_target_luminance, reservoir_sample_count);
+	if (selected_hit && selected_target_luminance > 0.0) {
+		float reservoir_weight_max = mix(1.0, params.restir_boost_max, guided_candidate_weight * guided_candidate_weight);
+		visible_radiance *= clamp(selected_reservoir_weight, 0.25, reservoir_weight_max);
 	}
 
 	float sample_count = 1.0;
@@ -1363,5 +1358,5 @@ void main() {
 	imageStore(probe_radiance, atlas_pos, current_radiance);
 	imageStore(probe_history, atlas_pos, current_radiance);
 	imageStore(probe_reservoir, atlas_pos, uvec4(rgbe_encode(selected_radiance), packHalf2x16(vec2(linearize_depth(origin_depth), selected_hit ? 1.0 : params.miss_confidence)), packHalf2x16(octahedral_encode(origin_world_normal)), params.frame_index));
-	store_temporal_reservoir_state(atlas_pos, candidate_ray_dir, candidate_radiance, candidate_hit, guided_ray_dir, guided_radiance, guided_hit, guided_candidate_valid);
+	store_temporal_reservoir_state(atlas_pos, selected_ray_dir, selected_target_luminance, selected_hit, selected_guided_candidate, guided_candidate_valid, reservoir_sample_count, selected_reservoir_weight);
 }
