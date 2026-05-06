@@ -3799,6 +3799,8 @@ void RenderingServer::init() {
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/hddagi/frames_to_update_lights", PROPERTY_HINT_ENUM, "1 (Faster),2,4,8,16 (Slower)"), 2);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/hddagi/frames_to_update_inactive_probes", PROPERTY_HINT_ENUM, "1 (Faster),2,4,8,16 (Slower)"), 3);
 	GLOBAL_DEF("rendering/global_illumination/hddagi/screen_probe_surface_cache", true);
+	GLOBAL_DEF("rendering/global_illumination/hddagi/screen_probe_restir_temporal_guiding", true);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/hddagi/screen_probe_restir_guided_target_clamp", PROPERTY_HINT_RANGE, "1,32,0.1"), 4.0);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/volumetric_fog/volume_size", PROPERTY_HINT_RANGE, "16,512,1"), 64);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/volumetric_fog/volume_depth", PROPERTY_HINT_RANGE, "16,512,1"), 64);

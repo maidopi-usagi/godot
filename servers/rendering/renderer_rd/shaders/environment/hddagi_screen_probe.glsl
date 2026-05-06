@@ -99,6 +99,9 @@ layout(push_constant, std430) uniform Params {
 	float base_ambient_prior_weight;
 	int debug_mode;
 	uint surface_cache_enabled;
+	uint restir_temporal_guiding;
+	float restir_guided_target_luminance_max_ratio;
+	uvec2 pad;
 }
 params;
 
@@ -336,6 +339,7 @@ struct ReservoirState {
 	float target_luminance;
 	float sample_count;
 	float hit;
+	float guided;
 	float reservoir_weight;
 	bool valid;
 };
@@ -346,6 +350,7 @@ struct ReservoirDebugState {
 	float target_luminance;
 	float reservoir_weight;
 	float hit_ratio;
+	float guided_ratio;
 	bool valid;
 };
 
@@ -359,7 +364,8 @@ ReservoirState load_previous_reservoir_state(ivec2 atlas_pos) {
 	state.direction_oct = unpackHalf2x16(packed_state.r);
 	state.target_luminance = uintBitsToFloat(packed_state.g);
 	state.sample_count = count_hit.x;
-	state.hit = count_hit.y;
+	state.hit = mod(count_hit.y, 2.0);
+	state.guided = floor(count_hit.y * 0.5);
 	state.reservoir_weight = uintBitsToFloat(packed_state.a);
 	state.valid = any(notEqual(packed_state, uvec4(0u))) && state.sample_count > 0.0 && state.target_luminance >= 0.0;
 	return state;
@@ -372,17 +378,18 @@ ReservoirState load_current_reservoir_state(ivec2 atlas_pos) {
 	state.direction_oct = unpackHalf2x16(packed_state.r);
 	state.target_luminance = uintBitsToFloat(packed_state.g);
 	state.sample_count = count_hit.x;
-	state.hit = count_hit.y;
+	state.hit = mod(count_hit.y, 2.0);
+	state.guided = floor(count_hit.y * 0.5);
 	state.reservoir_weight = uintBitsToFloat(packed_state.a);
 	state.valid = any(notEqual(packed_state, uvec4(0u))) && state.sample_count > 0.0 && state.target_luminance >= 0.0;
 	return state;
 }
 
-void store_reservoir_state_data(ivec2 atlas_pos, vec2 direction_oct, float target_luminance, float sample_count, float hit, float reservoir_weight) {
+void store_reservoir_state_data(ivec2 atlas_pos, vec2 direction_oct, float target_luminance, float sample_count, float hit, float guided, float reservoir_weight) {
 	imageStore(probe_reservoir_state, atlas_pos, uvec4(
 			packHalf2x16(direction_oct),
 			floatBitsToUint(target_luminance),
-			packHalf2x16(vec2(sample_count, hit)),
+			packHalf2x16(vec2(sample_count, hit + guided * 2.0)),
 			floatBitsToUint(reservoir_weight)));
 }
 
@@ -394,21 +401,23 @@ void store_temporal_reservoir_state(ivec2 atlas_pos, vec3 ray_dir, vec3 radiance
 	vec2 selected_direction_oct = candidate_direction_oct;
 	float selected_target_luminance = candidate_target_luminance;
 	float selected_hit = hit ? 1.0 : 0.0;
+	float selected_guided = 0.0;
 
 	if (guided_valid) {
 		float guided_target_luminance = guided_hit ? max(luminance(guided_radiance), 0.0) : 0.0;
-		guided_target_luminance = min(guided_target_luminance, max(candidate_target_luminance * 4.0, 0.25));
+		guided_target_luminance = min(guided_target_luminance, max(candidate_target_luminance * params.restir_guided_target_luminance_max_ratio, 0.25));
 		weight_sum += guided_target_luminance;
 		float selection_random = hash_float(uvec3(atlas_pos, params.frame_index ^ 0x9e3779b9u));
 		if (weight_sum > 0.0 && selection_random * weight_sum < guided_target_luminance) {
 			selected_direction_oct = octahedral_encode(normalize(mat3(scene_data.cam_transform) * guided_ray_dir));
 			selected_target_luminance = guided_target_luminance;
 			selected_hit = guided_hit ? 1.0 : 0.0;
+			selected_guided = 1.0;
 		}
 	}
 
 	float reservoir_weight = selected_target_luminance > 0.0 ? weight_sum / max(selected_target_luminance * sample_count, 0.0001) : 0.0;
-	store_reservoir_state_data(atlas_pos, selected_direction_oct, selected_target_luminance, sample_count, selected_hit, reservoir_weight);
+	store_reservoir_state_data(atlas_pos, selected_direction_oct, selected_target_luminance, sample_count, selected_hit, selected_guided, reservoir_weight);
 }
 
 void store_invalid_reservoir_state(ivec2 atlas_pos) {
@@ -908,6 +917,7 @@ ReservoirDebugState gather_probe_reservoir_debug_state(ivec2 probe_pos) {
 	float target_luminance = 0.0;
 	float reservoir_weight = 0.0;
 	float hit_count = 0.0;
+	float guided_count = 0.0;
 	float valid_count = 0.0;
 
 	for (int y = 0; y < OCTAHEDRAL_SIZE; y++) {
@@ -927,6 +937,7 @@ ReservoirDebugState gather_probe_reservoir_debug_state(ivec2 probe_pos) {
 			target_luminance += state.target_luminance;
 			reservoir_weight += state.reservoir_weight;
 			hit_count += step(0.5, state.hit);
+			guided_count += step(0.5, state.guided);
 			valid_count += 1.0;
 		}
 	}
@@ -937,6 +948,7 @@ ReservoirDebugState gather_probe_reservoir_debug_state(ivec2 probe_pos) {
 	debug_state.target_luminance = 0.0;
 	debug_state.reservoir_weight = 0.0;
 	debug_state.hit_ratio = 0.0;
+	debug_state.guided_ratio = 0.0;
 	debug_state.valid = false;
 
 	if (valid_count <= 0.0) {
@@ -948,6 +960,7 @@ ReservoirDebugState gather_probe_reservoir_debug_state(ivec2 probe_pos) {
 	debug_state.target_luminance = target_luminance / valid_count;
 	debug_state.reservoir_weight = reservoir_weight / valid_count;
 	debug_state.hit_ratio = hit_count / valid_count;
+	debug_state.guided_ratio = guided_count / valid_count;
 	debug_state.valid = true;
 	return debug_state;
 }
@@ -965,8 +978,7 @@ vec4 reservoir_debug_state_to_color(ReservoirDebugState state, ivec2 screen_pos)
 		return vec4(history, history, history, 1.0);
 	}
 	if (right && !bottom) {
-		float reservoir_weight = clamp(log2(max(state.reservoir_weight, 0.0) + 1.0) / 8.0, 0.0, 1.0);
-		return vec4(reservoir_weight, reservoir_weight, reservoir_weight, 1.0);
+		return vec4(state.guided_ratio, state.guided_ratio, state.guided_ratio, 1.0);
 	}
 	if (!right) {
 		float target_luminance = clamp(log2(state.target_luminance + 1.0) / 8.0, 0.0, 1.0);
@@ -991,6 +1003,7 @@ ReservoirDebugState gather_screen_reservoir_debug_state(ivec2 probe_base, ivec2 
 	float target_luminance = 0.0;
 	float reservoir_weight = 0.0;
 	float hit_ratio = 0.0;
+	float guided_ratio = 0.0;
 	float weight = 0.0;
 	for (int y = -1; y <= 1; y++) {
 		for (int x = -1; x <= 1; x++) {
@@ -1026,6 +1039,7 @@ ReservoirDebugState gather_screen_reservoir_debug_state(ivec2 probe_base, ivec2 
 			target_luminance += state.target_luminance * probe_weight;
 			reservoir_weight += state.reservoir_weight * probe_weight;
 			hit_ratio += state.hit_ratio * probe_weight;
+			guided_ratio += state.guided_ratio * probe_weight;
 			weight += probe_weight;
 		}
 	}
@@ -1039,6 +1053,7 @@ ReservoirDebugState gather_screen_reservoir_debug_state(ivec2 probe_base, ivec2 
 	debug_state.target_luminance = target_luminance / weight;
 	debug_state.reservoir_weight = reservoir_weight / weight;
 	debug_state.hit_ratio = hit_ratio / weight;
+	debug_state.guided_ratio = guided_ratio / weight;
 	debug_state.valid = true;
 	return debug_state;
 }
@@ -1288,7 +1303,7 @@ void main() {
 	vec2 sample_uv = (vec2(cell_pos) + ray_jitter) / float(OCTAHEDRAL_SIZE);
 	vec3 ray_dir = tangent_to_world(cosine_sample_hemisphere(sample_uv), origin_normal);
 	vec3 guided_ray_dir;
-	bool guided_candidate_valid = load_guided_reservoir_ray(previous_atlas_pos, reservoir_history_validity, origin_normal, guided_ray_dir);
+	bool guided_candidate_valid = params.restir_temporal_guiding != 0u && load_guided_reservoir_ray(previous_atlas_pos, reservoir_history_validity, origin_normal, guided_ray_dir);
 
 	float hit_distance;
 	vec3 radiance;
@@ -1304,7 +1319,7 @@ void main() {
 
 	float candidate_target_luminance = hit ? max(luminance(radiance), 0.0) : 0.0;
 	float guided_target_luminance = guided_candidate_valid && guided_hit ? max(luminance(guided_radiance), 0.0) : 0.0;
-	guided_target_luminance = min(guided_target_luminance, max(candidate_target_luminance * 4.0, 0.25));
+	guided_target_luminance = min(guided_target_luminance, max(candidate_target_luminance * params.restir_guided_target_luminance_max_ratio, 0.25));
 	float candidate_weight_sum = candidate_target_luminance + guided_target_luminance;
 	if (guided_candidate_valid && candidate_weight_sum > 0.0 && hash_float(uvec3(atlas_pos, params.frame_index ^ 0x51ed270bu)) * candidate_weight_sum < guided_target_luminance) {
 		ray_dir = guided_ray_dir;
