@@ -108,15 +108,6 @@ vec3 octahedral_to_direction(vec2 e);
 vec4 load_probe_ray(ivec2 probe_pos, ivec2 cell_pos);
 float linearize_depth(float depth);
 
-ivec3 mul64(ivec3 a, ivec3 b, int fp_shift) {
-	ivec3 lsb;
-	ivec3 msb;
-	imulExtended(a, b, msb, lsb);
-	lsb = ivec3(uvec3(lsb) >> fp_shift);
-	lsb |= msb << (32 - fp_shift);
-	return lsb;
-}
-
 bool trace_ray_hdda(vec3 ray_pos, vec3 ray_dir, int p_cascade, out ivec3 r_cell, out ivec3 r_side, out int r_cascade) {
 	const int LEVEL_CASCADE = -1;
 	const int LEVEL_REGION = 0;
@@ -278,8 +269,8 @@ float validate_history(ivec2 atlas_pos, float previous_linear_depth, vec3 origin
 
 	float stored_linear_depth = unpackHalf2x16(previous.g).x;
 	vec3 previous_world_normal = octahedral_to_direction(unpackHalf2x16(previous.b));
-	float normal_validity = smoothstep(params.spatial_normal_threshold, 1.0, dot(previous_world_normal, origin_world_normal));
-	float depth_scale = max(params.spatial_depth_tolerance_min, abs(previous_linear_depth) * params.spatial_depth_tolerance_scale);
+	float normal_validity = smoothstep(params.history_direction_threshold, 1.0, dot(previous_world_normal, origin_world_normal));
+	float depth_scale = max(params.history_distance_tolerance, max(params.spatial_depth_tolerance_min, abs(previous_linear_depth) * params.spatial_depth_tolerance_scale));
 	float depth_validity = 1.0 - smoothstep(0.0, depth_scale, abs(stored_linear_depth - previous_linear_depth));
 	return normal_validity * depth_validity;
 }
@@ -341,31 +332,6 @@ vec3 clip_to_aabb(vec3 color, vec3 minimum, vec3 maximum) {
 	vec3 unit = abs(offset / extents);
 	float max_unit = max(unit.x, max(unit.y, unit.z));
 	return max_unit > 1.0 ? center + offset / max_unit : color;
-}
-
-void gather_probe_cell_statistics(ivec2 probe_pos, ivec2 cell_pos, out vec3 r_mean, out vec3 r_stddev) {
-	vec3 moment1 = vec3(0.0);
-	vec3 moment2 = vec3(0.0);
-	float weight = 0.0;
-	ivec2 atlas_size = textureSize(sampler2D(atlas_radiance, linear_sampler), 0);
-	ivec2 probe_count = atlas_size / OCTAHEDRAL_SIZE;
-	for (int y = -1; y <= 1; y++) {
-		for (int x = -1; x <= 1; x++) {
-			ivec2 sample_probe = probe_pos + ivec2(x, y);
-			if (any(lessThan(sample_probe, ivec2(0))) || any(greaterThanEqual(sample_probe, probe_count))) {
-				continue;
-			}
-
-			vec3 sample_radiance = load_probe_ray(sample_probe, cell_pos).rgb;
-			float sample_weight = exp(-0.75 * float(x * x + y * y));
-			moment1 += sample_radiance * sample_weight;
-			moment2 += sample_radiance * sample_radiance * sample_weight;
-			weight += sample_weight;
-		}
-	}
-
-	r_mean = moment1 / max(weight, 0.0001);
-	r_stddev = sqrt(max(moment2 / max(weight, 0.0001) - r_mean * r_mean, vec3(0.0)));
 }
 
 vec2 octahedral_wrap(vec2 v) {
@@ -472,14 +438,6 @@ vec3 octahedral_to_direction(vec2 e) {
 		v = vec3(folded, v.z);
 	}
 	return normalize(v);
-}
-
-vec3 orient_direction(vec3 local_dir, vec3 normal) {
-	vec3 up = abs(normal.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
-	vec3 tangent = normalize(cross(up, normal));
-	vec3 bitangent = cross(normal, tangent);
-	vec3 ray_dir = normalize(tangent * local_dir.x + bitangent * local_dir.y + normal * abs(local_dir.z));
-	return dot(ray_dir, normal) < 0.0 ? -ray_dir : ray_dir;
 }
 
 bool find_probe_surface(ivec2 probe_pos, out ivec2 r_screen_pos, out float r_depth, out vec3 r_normal) {
@@ -963,25 +921,23 @@ void main() {
 	vec2 sample_uv = (vec2(cell_pos) + ray_jitter) / float(OCTAHEDRAL_SIZE);
 	vec3 ray_dir = tangent_to_world(cosine_sample_hemisphere(sample_uv), origin_normal);
 
-	ivec2 hit_pos;
 	float hit_distance;
-	vec3 hit_normal;
 	vec3 radiance;
-	float confidence = 1.0;
 	vec3 base_ambient = load_source_ambient(origin_pos);
 	bool hit = load_hddagi_ray_radiance(origin_pos, origin_depth, origin_normal, ray_dir, radiance, hit_distance);
+	float sample_count = 1.0;
 	if (!hit) {
 		// Fall back only to the base ambient GI. Do not include reflection_buffer here: that would
 		// feed screen-space/reflection history back into the probe estimator and can drift.
-			radiance = base_ambient * params.miss_ambient_fallback_weight;
-			hit_distance = 0.0;
+		radiance = base_ambient * params.miss_ambient_fallback_weight;
+		hit_distance = 0.0;
 	} else {
 		// Blend a small base-GI prior into hits as well so hit/miss areas share the same low-frequency
 		// baseline instead of cutting sharply between traced radiance and fallback radiance.
 		radiance = mix(radiance, base_ambient, params.base_ambient_prior_weight);
 	}
 
-	vec4 current_radiance = vec4(radiance, confidence);
+	vec4 current_radiance = vec4(radiance, sample_count);
 	ivec2 previous_atlas_pos;
 	float previous_linear_depth;
 	vec3 origin_world_normal = normal_to_world(origin_normal);
@@ -990,12 +946,12 @@ void main() {
 	float history_validity = history_reprojected ? validate_history(previous_atlas_pos, previous_linear_depth, origin_world_normal) : 0.0;
 	if (params.history_valid != 0 && previous_radiance.a > 0.0 && history_validity > 0.0) {
 		float previous_sample_count = min(previous_radiance.a, max(params.history_sample_count_max, 1.0) - 1.0);
-		float sample_count = previous_sample_count + 1.0;
+		sample_count = previous_sample_count + 1.0;
 		current_radiance.rgb = (previous_radiance.rgb * previous_sample_count + radiance) / sample_count;
 		current_radiance.a = sample_count;
 	}
 
 	imageStore(probe_radiance, atlas_pos, current_radiance);
 	imageStore(probe_history, atlas_pos, current_radiance);
-	imageStore(probe_reservoir, atlas_pos, uvec4(rgbe_encode(radiance), packHalf2x16(vec2(linearize_depth(origin_depth), hit ? 1.0 : 0.0)), packHalf2x16(octahedral_encode(origin_world_normal)), params.frame_index));
+	imageStore(probe_reservoir, atlas_pos, uvec4(rgbe_encode(radiance), packHalf2x16(vec2(linearize_depth(origin_depth), hit ? 1.0 : params.miss_confidence)), packHalf2x16(octahedral_encode(origin_world_normal)), params.frame_index));
 }

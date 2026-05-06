@@ -3387,7 +3387,11 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	Size2i screen_probe_atlas_size = screen_probe_size;
 	const float normal_bias = CLAMP(p_normal_bias, -8.0f, 8.0f);
 	const Size2i internal_size = p_render_buffers->get_internal_size();
+	const bool resources_valid = hddagi->screen_probe_history_initialized && hddagi->screen_probe_history_probe_size == probe_size && hddagi->screen_probe_history_gi_size == p_gi_size && hddagi->screen_probe_history_screen_size == internal_size && hddagi->screen_probe_history_view_count == p_view_count;
 	const bool history_valid = hddagi->screen_probe_history_initialized && hddagi->screen_probe_previous_camera_valid && hddagi->screen_probe_history_probe_size == probe_size && hddagi->screen_probe_history_normal_bias == normal_bias && hddagi->screen_probe_history_gi_size == p_gi_size && hddagi->screen_probe_history_screen_size == internal_size && hddagi->screen_probe_history_view_count == p_view_count;
+	if (!resources_valid) {
+		p_render_buffers->clear_context(RB_SCOPE_HDDAGI_SCREEN_PROBES);
+	}
 	hddagi->screen_probe_history_initialized = true;
 	hddagi->screen_probe_history_probe_size = probe_size;
 	hddagi->screen_probe_history_normal_bias = normal_bias;

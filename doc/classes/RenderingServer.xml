@@ -1333,6 +1333,44 @@
 				Configure DynamicGI (HDDAGI). See the [Environment] class for more detail on what each argument is.
 			</description>
 		</method>
+		<method name="environment_set_hddagi_screen_probe_restir">
+			<return type="void" />
+			<param index="0" name="env" type="RID" />
+			<param index="1" name="history_blend_hit" type="float" />
+			<param index="2" name="history_blend_miss" type="float" />
+			<param index="3" name="history_distance_tolerance" type="float" />
+			<param index="4" name="history_direction_threshold" type="float" />
+			<param index="5" name="spatial_reuse_radius" type="int" />
+			<param index="6" name="spatial_normal_threshold" type="float" />
+			<param index="7" name="spatial_depth_tolerance_min" type="float" />
+			<param index="8" name="spatial_depth_tolerance_scale" type="float" />
+			<param index="9" name="previous_reservoir_weight" type="float" />
+			<param index="10" name="miss_confidence" type="float" />
+			<description>
+				Configures DynamicGI screen probe temporal and spatial reuse settings. See the [code]dynamic_gi_screen_probe_restir_*[/code] properties in [Environment] for more information.
+			</description>
+		</method>
+		<method name="environment_set_hddagi_screen_probe_tuning">
+			<return type="void" />
+			<param index="0" name="env" type="RID" />
+			<param index="1" name="history_sample_count_max" type="float" />
+			<param index="2" name="miss_ambient_fallback_weight" type="float" />
+			<param index="3" name="base_ambient_prior_weight" type="float" />
+			<param index="4" name="debug_mode" type="int" />
+			<description>
+				Configures DynamicGI screen probe accumulation, fallback, and debug settings. See the matching [Environment] properties for more information.
+			</description>
+		</method>
+		<method name="environment_set_hddagi_screen_probes">
+			<return type="void" />
+			<param index="0" name="env" type="RID" />
+			<param index="1" name="enable" type="bool" />
+			<param index="2" name="probe_size" type="int" />
+			<param index="3" name="normal_bias" type="float" />
+			<description>
+				Configures DynamicGI screen probes for the specified environment RID. See [member Environment.dynamic_gi_screen_probes_enabled], [member Environment.dynamic_gi_screen_probe_size], and [member Environment.dynamic_gi_screen_probe_normal_bias].
+			</description>
+		</method>
 		<method name="environment_set_hddagi_frames_to_converge">
 			<return type="void" />
 			<param index="0" name="frames" type="int" enum="RenderingServer.EnvironmentHDDAGIFramesToConverge" />

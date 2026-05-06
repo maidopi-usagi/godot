@@ -124,10 +124,22 @@
 		<member name="dynamic_gi_probe_bias" type="float" setter="set_dynamic_gi_probe_bias" getter="get_dynamic_gi_probe_bias" default="1.1">
 			Bias used for probe raytracing.
 		</member>
+		<member name="dynamic_gi_screen_probe_base_ambient_prior_weight" type="float" setter="set_dynamic_gi_screen_probe_base_ambient_prior_weight" getter="get_dynamic_gi_screen_probe_base_ambient_prior_weight" default="0.15">
+			Weight of the base ambient DynamicGI value mixed into traced screen probe hits.
+		</member>
+		<member name="dynamic_gi_screen_probe_debug_mode" type="int" setter="set_dynamic_gi_screen_probe_debug_mode" getter="get_dynamic_gi_screen_probe_debug_mode" default="0">
+			Debug visualization mode for Dynamic GI screen probes.
+		</member>
+		<member name="dynamic_gi_screen_probe_history_sample_count_max" type="float" setter="set_dynamic_gi_screen_probe_history_sample_count_max" getter="get_dynamic_gi_screen_probe_history_sample_count_max" default="128.0">
+			Maximum temporal sample count accumulated by Dynamic GI screen probes.
+		</member>
+		<member name="dynamic_gi_screen_probe_miss_ambient_fallback_weight" type="float" setter="set_dynamic_gi_screen_probe_miss_ambient_fallback_weight" getter="get_dynamic_gi_screen_probe_miss_ambient_fallback_weight" default="0.75">
+			Weight of the base ambient DynamicGI value used when a screen probe trace misses the HDDAGI voxel structure.
+		</member>
 		<member name="dynamic_gi_screen_probe_normal_bias" type="float" setter="set_dynamic_gi_screen_probe_normal_bias" getter="get_dynamic_gi_screen_probe_normal_bias" default="1.1">
 			Normal bias used by Dynamic GI screen probes before tracing the HDDAGI voxel structure. Negative values are allowed for debugging and tuning.
 		</member>
-		<member name="dynamic_gi_screen_probe_restir_history_blend_hit" type="float" setter="set_dynamic_gi_screen_probe_restir_history_blend_hit" getter="get_dynamic_gi_screen_probe_restir_history_blend_hit" default="0.82">
+		<member name="dynamic_gi_screen_probe_restir_history_blend_hit" type="float" setter="set_dynamic_gi_screen_probe_restir_history_blend_hit" getter="get_dynamic_gi_screen_probe_restir_history_blend_hit" default="0.95">
 			Temporal blend used by Dynamic GI screen probe ReSTIR reuse for valid hit samples. Higher values preserve more history and reduce noise, but can increase ghosting.
 		</member>
 		<member name="dynamic_gi_screen_probe_restir_history_blend_miss" type="float" setter="set_dynamic_gi_screen_probe_restir_history_blend_miss" getter="get_dynamic_gi_screen_probe_restir_history_blend_miss" default="0.92">
@@ -139,10 +151,10 @@
 		<member name="dynamic_gi_screen_probe_restir_history_distance_tolerance" type="float" setter="set_dynamic_gi_screen_probe_restir_history_distance_tolerance" getter="get_dynamic_gi_screen_probe_restir_history_distance_tolerance" default="0.25">
 			Minimum hit-distance tolerance used to accept previous-frame Dynamic GI screen probe ReSTIR history.
 		</member>
-		<member name="dynamic_gi_screen_probe_restir_miss_confidence" type="float" setter="set_dynamic_gi_screen_probe_restir_miss_confidence" getter="get_dynamic_gi_screen_probe_restir_miss_confidence" default="0.25">
+		<member name="dynamic_gi_screen_probe_restir_miss_confidence" type="float" setter="set_dynamic_gi_screen_probe_restir_miss_confidence" getter="get_dynamic_gi_screen_probe_restir_miss_confidence" default="0.05">
 			Reservoir confidence assigned to Dynamic GI screen probe miss/fallback samples. Higher values make fallback samples accumulate more strongly.
 		</member>
-		<member name="dynamic_gi_screen_probe_restir_previous_reservoir_weight" type="float" setter="set_dynamic_gi_screen_probe_restir_previous_reservoir_weight" getter="get_dynamic_gi_screen_probe_restir_previous_reservoir_weight" default="4.0">
+		<member name="dynamic_gi_screen_probe_restir_previous_reservoir_weight" type="float" setter="set_dynamic_gi_screen_probe_restir_previous_reservoir_weight" getter="get_dynamic_gi_screen_probe_restir_previous_reservoir_weight" default="0.0">
 			Weight applied to the previous-frame Dynamic GI screen probe reservoir during ReSTIR spatial reuse. Higher values increase denoising strength and history stability.
 		</member>
 		<member name="dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min" type="float" setter="set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min" getter="get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min" default="0.05">
@@ -154,10 +166,10 @@
 		<member name="dynamic_gi_screen_probe_restir_spatial_normal_threshold" type="float" setter="set_dynamic_gi_screen_probe_restir_spatial_normal_threshold" getter="get_dynamic_gi_screen_probe_restir_spatial_normal_threshold" default="0.45">
 			Minimum normal similarity used for Dynamic GI screen probe ReSTIR spatial reuse. Higher values reject more neighbor probes and preserve edges better.
 		</member>
-		<member name="dynamic_gi_screen_probe_restir_spatial_reuse_radius" type="int" setter="set_dynamic_gi_screen_probe_restir_spatial_reuse_radius" getter="get_dynamic_gi_screen_probe_restir_spatial_reuse_radius" default="2">
+		<member name="dynamic_gi_screen_probe_restir_spatial_reuse_radius" type="int" setter="set_dynamic_gi_screen_probe_restir_spatial_reuse_radius" getter="get_dynamic_gi_screen_probe_restir_spatial_reuse_radius" default="1">
 			Neighbor radius, in probes, used by Dynamic GI screen probe ReSTIR spatial reuse. Higher values denoise more but cost more and may blur lighting.
 		</member>
-		<member name="dynamic_gi_screen_probe_size" type="int" setter="set_dynamic_gi_screen_probe_size" getter="get_dynamic_gi_screen_probe_size" default="8">
+		<member name="dynamic_gi_screen_probe_size" type="int" setter="set_dynamic_gi_screen_probe_size" getter="get_dynamic_gi_screen_probe_size" default="1">
 			Screen-space size, in internal GI pixels, of each Dynamic GI screen probe.
 		</member>
 		<member name="dynamic_gi_screen_probes_enabled" type="bool" setter="set_dynamic_gi_screen_probes_enabled" getter="is_dynamic_gi_screen_probes_enabled" default="false">

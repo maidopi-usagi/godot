@@ -323,6 +323,10 @@ public:
 	virtual float environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_scale(RID p_env) const = 0;
 	virtual float environment_get_hddagi_screen_probe_restir_previous_reservoir_weight(RID p_env) const = 0;
 	virtual float environment_get_hddagi_screen_probe_restir_miss_confidence(RID p_env) const = 0;
+	virtual float environment_get_hddagi_screen_probe_history_sample_count_max(RID p_env) const = 0;
+	virtual float environment_get_hddagi_screen_probe_miss_ambient_fallback_weight(RID p_env) const = 0;
+	virtual float environment_get_hddagi_screen_probe_base_ambient_prior_weight(RID p_env) const = 0;
+	virtual int environment_get_hddagi_screen_probe_debug_mode(RID p_env) const = 0;
 
 	virtual void environment_set_hddagi_frames_to_converge(RSE::EnvironmentHDDAGIFramesToConverge p_ray_count) = 0;
 	virtual void environment_set_hddagi_frames_to_update_light(RSE::EnvironmentHDDAGIFramesToUpdateLight p_frames) = 0;

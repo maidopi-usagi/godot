@@ -1375,6 +1375,10 @@ public:
 	PASS1RC(float, environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_scale, RID)
 	PASS1RC(float, environment_get_hddagi_screen_probe_restir_previous_reservoir_weight, RID)
 	PASS1RC(float, environment_get_hddagi_screen_probe_restir_miss_confidence, RID)
+	PASS1RC(float, environment_get_hddagi_screen_probe_history_sample_count_max, RID)
+	PASS1RC(float, environment_get_hddagi_screen_probe_miss_ambient_fallback_weight, RID)
+	PASS1RC(float, environment_get_hddagi_screen_probe_base_ambient_prior_weight, RID)
+	PASS1RC(int, environment_get_hddagi_screen_probe_debug_mode, RID)
 
 	PASS1(environment_set_hddagi_frames_to_converge, RSE::EnvironmentHDDAGIFramesToConverge)
 	PASS1(environment_set_hddagi_frames_to_update_light, RSE::EnvironmentHDDAGIFramesToUpdateLight)
