@@ -1443,7 +1443,7 @@ void main() {
 	float history_camera_translation;
 	vec3 origin_world_normal = normal_to_world(origin_normal);
 	bool history_reprojected = reproject_history(origin_pos, origin_depth, cell_pos, previous_atlas_pos, previous_linear_depth, history_motion_validity, history_motion_in_probes, history_camera_translation);
-	float history_validity = history_reprojected ? validate_history(previous_atlas_pos, previous_linear_depth, origin_world_normal) : 0.0;
+	float history_validity = history_reprojected ? validate_history(previous_atlas_pos, previous_linear_depth, origin_world_normal) * history_motion_validity : 0.0;
 	bool camera_translated = history_camera_translation > 0.00001;
 	float reservoir_motion_validity = camera_translated ? max(0.2, 1.0 - smoothstep(0.5, 2.0, history_motion_in_probes)) : 1.0;
 	float reservoir_probe_validity = camera_translated && any(notEqual(previous_atlas_pos, atlas_pos)) ? 0.35 : 1.0;
