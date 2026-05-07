@@ -1420,12 +1420,6 @@ void SceneShaderRaytracing::_join_lane_for_shutdown() {
 }
 
 void SceneShaderRaytracing::init(const String p_defines) {
-	GLOBAL_DEF(PropertyInfo(Variant::BOOL, "rendering/pathtracer/async_shader_compilation",
-					 PROPERTY_HINT_NONE, "",
-					 PROPERTY_USAGE_DEFAULT,
-					 "If true, HG SPIR-V compiles on a worker (materials may appear later). "
-					 "If false, compile at end-of-frame on the main thread."),
-			true);
 	async_compilation_enabled = (bool)GLOBAL_GET("rendering/pathtracer/async_shader_compilation");
 
 	// Raygen: one mode per bitmask of RAYGEN_SHADER_OPTIONS.

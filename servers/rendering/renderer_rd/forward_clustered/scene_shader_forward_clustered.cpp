@@ -260,6 +260,7 @@ void SceneShaderForwardClustered::ShaderData::set_code_rt(const String &p_code_r
 	int depth_test_disabledi_local = 0;
 	int depth_test_invertedi_local = 0;
 	int alpha_antialiasing_modei = ALPHA_ANTIALIASING_OFF;
+	int cull_modei = RSE::CULL_MODE_BACK;
 
 	bool local_uses_alpha = false;
 	bool local_uses_alpha_clip = false;
@@ -287,6 +288,10 @@ void SceneShaderForwardClustered::ShaderData::set_code_rt(const String &p_code_r
 
 	actions.render_mode_values["depth_test_disabled"] = Pair<int *, int>(&depth_test_disabledi_local, 1);
 	actions.render_mode_values["depth_test_inverted"] = Pair<int *, int>(&depth_test_invertedi_local, 1);
+
+	actions.render_mode_values["cull_disabled"] = Pair<int *, int>(&cull_modei, RSE::CULL_MODE_DISABLED);
+	actions.render_mode_values["cull_front"] = Pair<int *, int>(&cull_modei, RSE::CULL_MODE_FRONT);
+	actions.render_mode_values["cull_back"] = Pair<int *, int>(&cull_modei, RSE::CULL_MODE_BACK);
 
 	actions.render_mode_flags["depth_prepass_alpha"] = &local_uses_depth_prepass_alpha;
 
@@ -327,6 +332,7 @@ void SceneShaderForwardClustered::ShaderData::set_code_rt(const String &p_code_r
 	rt->blend_mode = blend_modei;
 	rt->alpha_antialiasing_mode = alpha_antialiasing_modei;
 	rt->depth_draw = DepthDraw(depth_drawi);
+	rt->cull_mode = RSE::CullMode(cull_modei);
 	if (depth_test_disabledi_local) {
 		rt->depth_test = DEPTH_TEST_DISABLED;
 	} else if (depth_test_invertedi_local) {

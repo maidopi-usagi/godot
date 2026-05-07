@@ -53,33 +53,13 @@ void RenderRaytracing::initialize(RenderForwardClustered *p_owner) {
 }
 
 RenderRaytracing::~RenderRaytracing() {
-	if (uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(uniform_set)) {
-		RD::get_singleton()->free_rid(uniform_set);
+	for (KeyValue<RenderSceneBuffersRD *, RTViewportState *> &kv : viewport_states) {
+		_free_viewport_state_internal(kv.value);
 	}
+	viewport_states.clear();
 
 	cleanup_caches();
 
-	if (tlas.is_valid()) {
-		RD::get_singleton()->free_rid(tlas);
-	}
-	if (geometry_buffer.is_valid()) {
-		RD::get_singleton()->free_rid(geometry_buffer);
-	}
-	if (material_buffer.is_valid()) {
-		RD::get_singleton()->free_rid(material_buffer);
-	}
-	if (motion_index_buffer.is_valid()) {
-		RD::get_singleton()->free_rid(motion_index_buffer);
-	}
-	if (motion_transform_buffer.is_valid()) {
-		RD::get_singleton()->free_rid(motion_transform_buffer);
-	}
-	if (light_buffer.is_valid()) {
-		RD::get_singleton()->free_rid(light_buffer);
-	}
-	if (params_buffer.is_valid()) {
-		RD::get_singleton()->free_rid(params_buffer);
-	}
 	if (mat_ubo_pool_buffer.is_valid()) {
 		RD::get_singleton()->free_rid(mat_ubo_pool_buffer);
 		mat_ubo_pool_buffer = RID();
@@ -93,6 +73,73 @@ RenderRaytracing::~RenderRaytracing() {
 		memdelete(shader);
 		shader = nullptr;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Per-viewport state lifecycle
+// ---------------------------------------------------------------------------
+
+RTViewportState *RenderRaytracing::_get_or_create_viewport_state(const RenderDataRD *p_render_data) {
+	if (!p_render_data || p_render_data->render_buffers.is_null()) {
+		return nullptr;
+	}
+	RenderSceneBuffersRD *key = p_render_data->render_buffers.ptr();
+	HashMap<RenderSceneBuffersRD *, RTViewportState *>::Iterator it = viewport_states.find(key);
+	if (it != viewport_states.end()) {
+		return it->value;
+	}
+	RTViewportState *state = memnew(RTViewportState);
+	viewport_states.insert(key, state);
+	return state;
+}
+
+RTViewportState *RenderRaytracing::_get_viewport_state(const RenderDataRD *p_render_data) const {
+	if (!p_render_data || p_render_data->render_buffers.is_null()) {
+		return nullptr;
+	}
+	RenderSceneBuffersRD *key = p_render_data->render_buffers.ptr();
+	HashMap<RenderSceneBuffersRD *, RTViewportState *>::ConstIterator it = viewport_states.find(key);
+	return (it != viewport_states.end()) ? it->value : nullptr;
+}
+
+void RenderRaytracing::_free_viewport_state_internal(RTViewportState *p_state) {
+	if (!p_state) {
+		return;
+	}
+	if (p_state->uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(p_state->uniform_set)) {
+		RD::get_singleton()->free_rid(p_state->uniform_set);
+	}
+	if (p_state->tlas.is_valid()) {
+		RD::get_singleton()->free_rid(p_state->tlas);
+	}
+	if (p_state->geometry_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(p_state->geometry_buffer);
+	}
+	if (p_state->material_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(p_state->material_buffer);
+	}
+	if (p_state->motion_index_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(p_state->motion_index_buffer);
+	}
+	if (p_state->motion_transform_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(p_state->motion_transform_buffer);
+	}
+	if (p_state->light_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(p_state->light_buffer);
+	}
+	if (p_state->params_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(p_state->params_buffer);
+	}
+	memdelete(p_state);
+}
+
+void RenderRaytracing::free_viewport_state(RenderSceneBuffersRD *p_render_buffers) {
+	HashMap<RenderSceneBuffersRD *, RTViewportState *>::Iterator it = viewport_states.find(p_render_buffers);
+	if (it == viewport_states.end()) {
+		return;
+	}
+	_free_viewport_state_internal(it->value);
+	viewport_states.remove(it);
 }
 
 // ---------------------------------------------------------------------------
@@ -289,8 +336,8 @@ uint32_t RenderRaytracing::allocate_material_slot() {
 // ---------------------------------------------------------------------------
 
 void RenderRaytracing::prepare_frame() {
-	// Don't free BLAS or materials - they're cached now!
-	// Just clear the per-frame lists
+	// Don't free BLAS or materials - they're cached.
+	// Scratch arrays are shared (single-threaded render thread); refilled per viewport.
 	blass.clear();
 	blas_transforms.clear();
 	instance_flags.clear();
@@ -1257,7 +1304,7 @@ RTMaterialData *RenderRaytracing::process_material(RID p_material_rid, uint16_t 
 // Acceleration structure building
 // ---------------------------------------------------------------------------
 
-void RenderRaytracing::build_acceleration_structures(const LocalVector<RID> &p_dirty_blas_list) {
+void RenderRaytracing::build_acceleration_structures(RTViewportState *p_state, const LocalVector<RID> &p_dirty_blas_list) {
 	for (const RID &blas_rid : p_dirty_blas_list) {
 		if (blas_rid.is_valid()) {
 			RD::get_singleton()->blas_build(blas_rid);
@@ -1265,13 +1312,13 @@ void RenderRaytracing::build_acceleration_structures(const LocalVector<RID> &p_d
 	}
 
 	uint32_t needed = MAX(blass.size(), (uint32_t)1);
-	if (!tlas.is_valid() || needed > tlas_max_instances) {
-		if (tlas.is_valid()) {
-			RD::get_singleton()->free_rid(tlas);
+	if (!p_state->tlas.is_valid() || needed > p_state->tlas_max_instances) {
+		if (p_state->tlas.is_valid()) {
+			RD::get_singleton()->free_rid(p_state->tlas);
 		}
-		tlas_max_instances = needed * 2;
-		tlas = RD::get_singleton()->tlas_create(tlas_max_instances, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
-		RD::get_singleton()->set_resource_name(tlas, "RT TLAS");
+		p_state->tlas_max_instances = needed * 2;
+		p_state->tlas = RD::get_singleton()->tlas_create(p_state->tlas_max_instances, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
+		RD::get_singleton()->set_resource_name(p_state->tlas, "RT TLAS");
 	}
 
 	LocalVector<RD::AccelerationStructureInstance> instances;
@@ -1286,10 +1333,10 @@ void RenderRaytracing::build_acceleration_structures(const LocalVector<RID> &p_d
 		inst.hit_sbt_range = RD::HitShaderBindingTableRange((1ULL << 32) | uint64_t(sbt_off));
 	}
 
-	RD::get_singleton()->tlas_build(tlas, instances);
+	RD::get_singleton()->tlas_build(p_state->tlas, instances);
 }
 
-void RenderRaytracing::finalize_buffers() {
+void RenderRaytracing::finalize_buffers(RTViewportState *p_state) {
 	// Grow-only uploads. Callers must not free these in prepare_frame().
 	auto update_or_grow = [](RID &p_buffer, uint32_t &p_capacity, const void *p_data, uint32_t p_size) {
 		if (p_size == 0) {
@@ -1309,13 +1356,13 @@ void RenderRaytracing::finalize_buffers() {
 		}
 	};
 
-	update_or_grow(geometry_buffer, geometry_buffer_capacity,
+	update_or_grow(p_state->geometry_buffer, p_state->geometry_buffer_capacity,
 			geometry_data.ptr(), geometry_data.size() * sizeof(RT_GeometryData));
-	update_or_grow(material_buffer, material_buffer_capacity,
+	update_or_grow(p_state->material_buffer, p_state->material_buffer_capacity,
 			material_data.ptr(), material_data.size() * sizeof(RT_MaterialData));
-	update_or_grow(motion_index_buffer, motion_index_buffer_capacity,
+	update_or_grow(p_state->motion_index_buffer, p_state->motion_index_buffer_capacity,
 			motion_indices.ptr(), motion_indices.size() * sizeof(int32_t));
-	update_or_grow(motion_transform_buffer, motion_transform_buffer_capacity,
+	update_or_grow(p_state->motion_transform_buffer, p_state->motion_transform_buffer_capacity,
 			motion_transforms.ptr(), motion_transforms.size() * sizeof(RT_InstanceMotionData));
 }
 
@@ -1329,9 +1376,14 @@ _FORCE_INLINE_ static uint32_t _rt_indices_to_primitives(RSE::PrimitiveType p_pr
 	return (p_indices - subtractor[p_primitive]) / divisor[p_primitive];
 }
 
-void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data, uint32_t p_rt_flags) {
+RTViewportState *RenderRaytracing::build_tlas(const RenderDataRD *p_render_data, uint32_t p_rt_flags) {
 	if (!p_render_data || !p_render_data->rt_instances) {
-		return;
+		return nullptr;
+	}
+
+	RTViewportState *state = _get_or_create_viewport_state(p_render_data);
+	if (!state) {
+		return nullptr;
 	}
 
 	prepare_frame();
@@ -1515,7 +1567,7 @@ void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data, uint32_t p_
 			// Determine per-instance TLAS flags from material properties.
 			uint32_t inst_flags = 0;
 			if (surf->shader) {
-				switch (surf->shader->cull_mode) {
+				switch (surf->shader->rt_cull_mode()) {
 					case RSE::CULL_MODE_DISABLED:
 						inst_flags |= RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT;
 						inst_flags |= RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FLIP_FACING_BIT;
@@ -1560,11 +1612,10 @@ void RenderRaytracing::build_tlas(const RenderDataRD *p_render_data, uint32_t p_
 
 	SceneShaderRaytracing::get_singleton()->finalize_custom_shaders();
 
-	// Build acceleration structures
-	build_acceleration_structures(dirty_blas_list);
+	build_acceleration_structures(state, dirty_blas_list);
+	finalize_buffers(state);
 
-	// Create GPU buffers
-	finalize_buffers();
+	return state;
 }
 
 // ---------------------------------------------------------------------------
@@ -1739,9 +1790,12 @@ uint32_t RenderRaytracing::gather_lights(const RenderDataRD *p_render_data, RT_L
 // Uniform set update
 // ---------------------------------------------------------------------------
 
-void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uint32_t p_rt_flags) {
-	if (uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(uniform_set)) {
-		RD::get_singleton()->free_rid(uniform_set);
+RID RenderRaytracing::update_uniform_set(RTViewportState *p_state, const RenderDataRD *p_render_data, uint32_t p_rt_flags) {
+	ERR_FAIL_NULL_V(p_state, RID());
+
+	if (p_state->uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(p_state->uniform_set)) {
+		RD::get_singleton()->free_rid(p_state->uniform_set);
+		p_state->uniform_set = RID();
 	}
 
 	// BindlessBlock handles its own uniform set cleanup via clear()
@@ -1754,7 +1808,7 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uin
 	}
 
 	if (rb_data.is_null()) {
-		return;
+		return RID();
 	}
 
 	// SET 0 indices must match raytracing_common_inc.glsl / scene_raytracing_raygen.glsl / samplers includes.
@@ -1773,8 +1827,8 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uin
 		RD::Uniform u;
 		u.binding = 1;
 		u.uniform_type = RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE;
-		ERR_FAIL_COND(tlas == RID());
-		u.append_id(tlas);
+		ERR_FAIL_COND_V(p_state->tlas == RID(), RID());
+		u.append_id(p_state->tlas);
 		uniforms.push_back(u);
 	}
 
@@ -1790,8 +1844,8 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uin
 		RD::Uniform u;
 		u.binding = 3;
 		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
-		if (geometry_buffer.is_valid()) {
-			u.append_id(geometry_buffer);
+		if (p_state->geometry_buffer.is_valid()) {
+			u.append_id(p_state->geometry_buffer);
 		} else {
 			// Use a default buffer if no geometry
 			u.append_id(RendererRD::MeshStorage::get_singleton()->get_default_rd_storage_buffer());
@@ -1804,8 +1858,8 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uin
 		RD::Uniform u;
 		u.binding = 4;
 		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
-		if (motion_index_buffer.is_valid()) {
-			u.append_id(motion_index_buffer);
+		if (p_state->motion_index_buffer.is_valid()) {
+			u.append_id(p_state->motion_index_buffer);
 		} else {
 			u.append_id(RendererRD::MeshStorage::get_singleton()->get_default_rd_storage_buffer());
 		}
@@ -1817,8 +1871,8 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uin
 		RD::Uniform u;
 		u.binding = 32;
 		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
-		if (motion_transform_buffer.is_valid()) {
-			u.append_id(motion_transform_buffer);
+		if (p_state->motion_transform_buffer.is_valid()) {
+			u.append_id(p_state->motion_transform_buffer);
 		} else {
 			u.append_id(RendererRD::MeshStorage::get_singleton()->get_default_rd_storage_buffer());
 		}
@@ -1830,8 +1884,8 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uin
 		RD::Uniform u;
 		u.binding = 5;
 		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
-		if (material_buffer.is_valid()) {
-			u.append_id(material_buffer);
+		if (p_state->material_buffer.is_valid()) {
+			u.append_id(p_state->material_buffer);
 		} else {
 			u.append_id(RendererRD::MeshStorage::get_singleton()->get_default_rd_storage_buffer());
 		}
@@ -1857,7 +1911,7 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uin
 		// rt_params layout (see RaytracingParamIndex enum):
 		// [0] = VIS_MODE, [1] = SAMPLE_COUNT, [2] = MAX_BOUNCES,
 		// [3] = DLSS_RR_ENABLED, [14] = LIGHT_COUNT, [15] = FRAME_INDEX
-		rt_ubo.params[SceneShaderRaytracing::RT_PARAM_FRAME_INDEX] = float(frame_counter++);
+		rt_ubo.params[SceneShaderRaytracing::RT_PARAM_FRAME_INDEX] = float(p_state->frame_counter++);
 
 		// Unjittered VP for motion vectors (matches raster convention).
 		{
@@ -1882,23 +1936,23 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uin
 		// Upload light buffer.
 		{
 			uint32_t buf_size = RT_LIGHTS_MAX * sizeof(RT_LightData);
-			if (!light_buffer.is_valid()) {
-				light_buffer = RD::get_singleton()->storage_buffer_create(buf_size);
-				RD::get_singleton()->set_resource_name(light_buffer, "RT Light Buffer");
+			if (!p_state->light_buffer.is_valid()) {
+				p_state->light_buffer = RD::get_singleton()->storage_buffer_create(buf_size);
+				RD::get_singleton()->set_resource_name(p_state->light_buffer, "RT Light Buffer");
 			}
-			RD::get_singleton()->buffer_update(light_buffer, 0, buf_size, rt_light_data);
+			RD::get_singleton()->buffer_update(p_state->light_buffer, 0, buf_size, rt_light_data);
 		}
 
-		if (!params_buffer.is_valid()) {
-			params_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(rt_ubo));
-			RD::get_singleton()->set_resource_name(params_buffer, "RT Params Buffer");
+		if (!p_state->params_buffer.is_valid()) {
+			p_state->params_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(rt_ubo));
+			RD::get_singleton()->set_resource_name(p_state->params_buffer, "RT Params Buffer");
 		}
-		RD::get_singleton()->buffer_update(params_buffer, 0, sizeof(rt_ubo), &rt_ubo);
+		RD::get_singleton()->buffer_update(p_state->params_buffer, 0, sizeof(rt_ubo), &rt_ubo);
 
 		RD::Uniform u;
 		u.binding = 6;
 		u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
-		u.append_id(params_buffer);
+		u.append_id(p_state->params_buffer);
 		uniforms.push_back(u);
 	}
 
@@ -1982,8 +2036,8 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uin
 		RD::Uniform u;
 		u.binding = 13;
 		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
-		if (light_buffer.is_valid()) {
-			u.append_id(light_buffer);
+		if (p_state->light_buffer.is_valid()) {
+			u.append_id(p_state->light_buffer);
 		} else {
 			u.append_id(RendererRD::MeshStorage::get_singleton()->get_default_rd_storage_buffer());
 		}
@@ -2031,11 +2085,11 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uin
 	RID shader_rd = shader ? shader->get_pipeline_shader_rd(p_rt_flags) : RID();
 
 	if (shader_rd.is_valid()) {
-		uniform_set = RD::get_singleton()->uniform_set_create(
+		p_state->uniform_set = RD::get_singleton()->uniform_set_create(
 				uniforms,
 				shader_rd,
 				RenderForwardClustered::SCENE_UNIFORM_SET);
-		RD::get_singleton()->set_resource_name(uniform_set, "RT Uniform Set");
+		RD::get_singleton()->set_resource_name(p_state->uniform_set, "RT Uniform Set");
 
 		// === SET 1: Bindless textures ===
 		if (bindless_block && bindless_block->is_initialized()) {
@@ -2043,6 +2097,8 @@ void RenderRaytracing::update_uniform_set(const RenderDataRD *p_render_data, uin
 			bindless_uniform_set = bindless_block->get_uniform_set();
 		}
 	}
+
+	return p_state->uniform_set;
 }
 
 // ---------------------------------------------------------------------------

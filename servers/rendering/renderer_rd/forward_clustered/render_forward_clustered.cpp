@@ -200,6 +200,11 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 		render_buffers->clear_context(RB_SCOPE_SSIL);
 		render_buffers->clear_context(RB_SCOPE_SSAO);
 		render_buffers->clear_context(RB_SCOPE_SSR);
+
+		RenderForwardClustered *rfc = RenderForwardClustered::get_singleton();
+		if (rfc && rfc->raytracing) {
+			rfc->raytracing->free_viewport_state(render_buffers);
+		}
 	}
 
 	if (cluster_builder) {
@@ -2123,6 +2128,9 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	// once here and reused at trace-dispatch time below so the uniform set
 	// and the pipeline agree on spec-constant values.
 	uint32_t rt_flags = SceneShaderRaytracing::RT_FLAG_NONE;
+	// Captured from build_tlas/update_uniform_set so the trace-dispatch block
+	// below can bind without RenderRaytracing keeping hidden "current" state.
+	RID rt_uniform_set;
 
 	// Create TLAS for raytracing if enabled
 	if (scene_features.rt && rb_data.is_valid() && raytracing && raytracing->get_shader()) {
@@ -2140,8 +2148,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			rb_data->dlss_rr_free_buffers();
 		}
 
-		raytracing->build_tlas(p_render_data, rt_flags);
-		raytracing->update_uniform_set(p_render_data, rt_flags);
+		RTViewportState *rt_state = raytracing->build_tlas(p_render_data, rt_flags);
+		if (rt_state) {
+			rt_uniform_set = raytracing->update_uniform_set(rt_state, p_render_data, rt_flags);
+		}
 	} else if (rb_data.is_valid() && rb_data->dlss_rr_has_buffers()) {
 		// RT disabled: free DLSS RR buffers so DLSS falls back to SR.
 		rb_data->dlss_rr_free_buffers();
@@ -2508,7 +2518,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		}
 		RD::RaytracingListID raytracing_list = RD::get_singleton()->raytracing_list_begin();
 		RD::get_singleton()->raytracing_list_bind_raytracing_pipeline(raytracing_list, rt_pipeline);
-		RD::get_singleton()->raytracing_list_bind_uniform_set(raytracing_list, raytracing->get_uniform_set(), 0);
+		RD::get_singleton()->raytracing_list_bind_uniform_set(raytracing_list, rt_uniform_set, 0);
 		// Bindless set 1 can legitimately be unset when no bindless textures
 		// are live (e.g. first frame, no materials referencing textures yet);
 		// skip binding it in that case instead of tripping validation.

@@ -137,6 +137,9 @@ cmake-build-debug
 *.cppcheck
 cppcheck-cppcheck-build-dir/
 
+# Cursor
+.cursor/
+
 # Eclipse CDT
 .cproject
 .settings/

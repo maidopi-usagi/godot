@@ -32,6 +32,7 @@
 
 #include "core/math/transform_3d.h"
 #include "core/string/string_name.h"
+#include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
 #include "core/templates/vector.h"
 #include "servers/rendering/renderer_rd/bindless_block.h"
@@ -47,6 +48,7 @@
 #define RB_TEX_DLSS_RR_SPECULAR_HIT_DIST SNAME("specular_hit_dist")
 
 class RenderDataRD;
+class RenderSceneBuffersRD;
 
 namespace RendererSceneRenderImplementation {
 
@@ -216,6 +218,38 @@ struct RTMaterialCacheEntry {
 	uint32_t cached_rid_version = 0;
 };
 
+/// Per-viewport raytracing state.
+///
+/// Each viewport has its own visibility set (frustum/LOD/visibility ranges), so
+/// the TLAS instance composition and per-instance SSBO contents differ across
+/// viewports. Sharing them caused the wrong `gl_InstanceCustomIndexEXT` to
+/// resolve to the wrong `geometries[]` / `materials[]` entries, dereferencing
+/// stale BDAs and faulting the GPU.
+///
+/// Lifetime is tied to a `RenderSceneBuffersRD`: created lazily on first
+/// `build_tlas` for that viewport, freed via `RenderRaytracing::free_viewport_state`
+/// from `RenderBufferDataForwardClustered::free_data()`.
+struct RTViewportState {
+	RID tlas;
+	uint32_t tlas_max_instances = 0;
+
+	RID geometry_buffer;
+	uint32_t geometry_buffer_capacity = 0;
+	RID material_buffer;
+	uint32_t material_buffer_capacity = 0;
+	RID motion_index_buffer;
+	uint32_t motion_index_buffer_capacity = 0;
+	RID motion_transform_buffer;
+	uint32_t motion_transform_buffer_capacity = 0;
+
+	RID light_buffer;
+	RID params_buffer;
+
+	RID uniform_set;
+
+	uint32_t frame_counter = 0;
+};
+
 class RenderRaytracing {
 	friend class RenderForwardClustered;
 
@@ -224,7 +258,6 @@ class RenderRaytracing {
 	SceneShaderRaytracing *shader = nullptr;
 	BindlessBlock *bindless_block = nullptr;
 
-	RID uniform_set;
 	RID bindless_uniform_set;
 
 	// Caching (chunked sparse caches indexed by RID low bits / 256).
@@ -236,30 +269,23 @@ class RenderRaytracing {
 	uint32_t cache_hits = 0;
 	uint32_t cache_misses = 0;
 
-	// Per-frame buffers.
+	// Per-frame scratch arrays. Refilled per viewport's build_tlas; immediately
+	// consumed by build_acceleration_structures + finalize_buffers, so they
+	// don't need to be per-viewport.
 	LocalVector<RT_GeometryData> geometry_data;
 	LocalVector<RT_MaterialData> material_data;
 	LocalVector<int32_t> motion_indices; ///< Per-instance: index into motion_transforms[], or -1.
 	LocalVector<RT_InstanceMotionData> motion_transforms; ///< Compact: only moving instances.
-	RID geometry_buffer;
-	uint32_t geometry_buffer_capacity = 0;
-	RID material_buffer;
-	uint32_t material_buffer_capacity = 0;
-	RID motion_index_buffer;
-	uint32_t motion_index_buffer_capacity = 0;
-	RID motion_transform_buffer;
-	uint32_t motion_transform_buffer_capacity = 0;
-	RID light_buffer;
-	RID params_buffer;
-
-	// Acceleration structures.
 	LocalVector<RID> blass;
 	LocalVector<Transform3D> blas_transforms;
 	LocalVector<uint32_t> instance_flags;
 	LocalVector<uint32_t> sbt_offsets; // 0 = default material hit group
-	RID tlas;
-	uint32_t tlas_max_instances = 0;
-	uint32_t frame_counter = 0;
+
+	HashMap<RenderSceneBuffersRD *, RTViewportState *> viewport_states;
+
+	RTViewportState *_get_or_create_viewport_state(const RenderDataRD *p_render_data);
+	RTViewportState *_get_viewport_state(const RenderDataRD *p_render_data) const;
+	void _free_viewport_state_internal(RTViewportState *p_state);
 
 	// Material UBO sub-allocation pool. One large device-address buffer divided
 	// into fixed-size slots for performance reasons, and easier to debug.
@@ -291,22 +317,24 @@ class RenderRaytracing {
 			LocalVector<RID> &r_dirty_blas_list);
 	RTMaterialData *process_material(RID p_material_rid, uint16_t p_material_invalidation_counter);
 	void update_procedural_blas(RTProceduralState *p_state, LocalVector<RID> &r_dirty_blas_list);
-	void build_acceleration_structures(const LocalVector<RID> &p_dirty_blas_list);
-	void finalize_buffers();
+	void build_acceleration_structures(RTViewportState *p_state, const LocalVector<RID> &p_dirty_blas_list);
+	void finalize_buffers(RTViewportState *p_state);
+	void prepare_frame();
 
 public:
 	void initialize(RenderForwardClustered *p_owner);
 
 	void cleanup_caches();
-	void prepare_frame();
-	void build_tlas(const RenderDataRD *p_render_data, uint32_t p_rt_flags); // p_rt_flags must match uniform_set/dispatch path.
+
+	RTViewportState *build_tlas(const RenderDataRD *p_render_data, uint32_t p_rt_flags);
 	uint32_t gather_lights(const RenderDataRD *p_render_data, RT_LightData *r_light_data, uint32_t p_max_lights);
-	void update_uniform_set(const RenderDataRD *p_render_data, uint32_t p_rt_flags);
+	RID update_uniform_set(RTViewportState *p_state, const RenderDataRD *p_render_data, uint32_t p_rt_flags);
+
 	void copy_output_texture(const RenderDataRD *p_render_data);
+	void free_viewport_state(RenderSceneBuffersRD *p_render_buffers);
 
 	SceneShaderRaytracing *get_shader() const { return shader; }
-	RID get_tlas() const { return tlas; }
-	RID get_uniform_set() const { return uniform_set; }
+
 	RID get_bindless_uniform_set() const { return bindless_uniform_set; }
 	RID get_mat_ubo_pool_buffer() const { return mat_ubo_pool_buffer; }
 

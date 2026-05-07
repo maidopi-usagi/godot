@@ -283,6 +283,7 @@ public:
 			DepthTest depth_test = DEPTH_TEST_ENABLED;
 			int blend_mode = BLEND_MODE_MIX;
 			int alpha_antialiasing_mode = ALPHA_ANTIALIASING_OFF;
+			RSE::CullMode cull_mode = RSE::CULL_MODE_BACK;
 			bool uses_alpha = false;
 			bool uses_blend_alpha = false;
 			bool uses_alpha_clip = false;
@@ -331,6 +332,10 @@ public:
 			bool no_depth_draw = rt->depth_draw == DEPTH_DRAW_DISABLED;
 			bool no_depth_test = rt->depth_test != DEPTH_TEST_ENABLED;
 			return (rt->uses_depth_prepass_alpha || rt->uses_alpha_antialiasing) && !(no_depth_draw || no_depth_test);
+		}
+
+		_FORCE_INLINE_ RSE::CullMode rt_cull_mode() const {
+			return rt ? rt->cull_mode : cull_mode;
 		}
 
 		_FORCE_INLINE_ bool uses_shared_shadow_material() const {
