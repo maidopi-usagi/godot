@@ -578,6 +578,7 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 	_register_requested_device_extension(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_EXT_ASTC_DECODE_MODE_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME, false);
+	_register_requested_device_extension(VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_EXT_TEXTURE_COMPRESSION_ASTC_HDR_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME, false);
@@ -813,13 +814,15 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 	// https://www.khronos.org/blog/vulkan-subgroup-tutorial
 	const RenderingContextDriverVulkan::Functions &functions = context_driver->functions_get();
 	if (functions.GetPhysicalDeviceFeatures2 != nullptr) {
-		// We must check that the corresponding extension is present before assuming a feature as enabled.
+		// Features exposed only through extension structs require that extension to
+		// be present. Promoted features use their core API version instead.
 		// See also: https://github.com/godotengine/godot/issues/65409
 
 		void *next_features = nullptr;
 		VkPhysicalDeviceVulkan12Features device_features_vk_1_2 = {};
 		VkPhysicalDeviceShaderFloat16Int8FeaturesKHR shader_features = {};
 		VkPhysicalDeviceBufferDeviceAddressFeaturesKHR buffer_device_address_features = {};
+		VkPhysicalDeviceShaderAtomicInt64FeaturesKHR shader_atomic_int64_features = {};
 		VkPhysicalDeviceVulkanMemoryModelFeaturesKHR vulkan_memory_model_features = {};
 		VkPhysicalDeviceFragmentShadingRateFeaturesKHR fsr_features = {};
 		VkPhysicalDeviceFragmentDensityMapFeaturesEXT fdm_features = {};
@@ -833,6 +836,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 		VkPhysicalDeviceSynchronization2FeaturesKHR sync_2_features = {};
 		VkPhysicalDeviceRayTracingValidationFeaturesNV raytracing_validation_features = {};
 
+		const bool use_1_1_features = physical_device_properties.apiVersion >= VK_API_VERSION_1_1;
 		const bool use_1_2_features = physical_device_properties.apiVersion >= VK_API_VERSION_1_2;
 		if (use_1_2_features) {
 			device_features_vk_1_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -848,6 +852,11 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 				buffer_device_address_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_KHR;
 				buffer_device_address_features.pNext = next_features;
 				next_features = &buffer_device_address_features;
+			}
+			if (enabled_device_extension_names.has(VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME)) {
+				shader_atomic_int64_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES_KHR;
+				shader_atomic_int64_features.pNext = next_features;
+				next_features = &shader_atomic_int64_features;
 			}
 			if (enabled_device_extension_names.has(VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME)) {
 				vulkan_memory_model_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES_KHR;
@@ -874,7 +883,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 			next_features = &fdmo_features_qcom;
 		}
 
-		if (enabled_device_extension_names.has(VK_KHR_16BIT_STORAGE_EXTENSION_NAME)) {
+		if (use_1_1_features || enabled_device_extension_names.has(VK_KHR_16BIT_STORAGE_EXTENSION_NAME)) {
 			storage_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES_KHR;
 			storage_feature.pNext = next_features;
 			next_features = &storage_feature;
@@ -931,13 +940,13 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 #ifdef MACOS_ENABLED
 			ERR_FAIL_COND_V_MSG(!device_features_vk_1_2.shaderSampledImageArrayNonUniformIndexing, ERR_CANT_CREATE, "Your GPU doesn't support shaderSampledImageArrayNonUniformIndexing which is required to use the Vulkan-based renderers in Godot.");
 #endif
-			if (enabled_device_extension_names.has(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)) {
-				shader_capabilities.shader_float16_is_supported = device_features_vk_1_2.shaderFloat16;
-				shader_capabilities.shader_int8_is_supported = device_features_vk_1_2.shaderInt8;
-			}
-			if (enabled_device_extension_names.has(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)) {
-				buffer_device_address_support = device_features_vk_1_2.bufferDeviceAddress;
-			}
+			// Float16/int8 are core in Vulkan 1.2, just like buffer device addresses.
+			shader_capabilities.shader_float16_is_supported = device_features_vk_1_2.shaderFloat16;
+			shader_capabilities.shader_int8_is_supported = device_features_vk_1_2.shaderInt8;
+			// Buffer device addresses are core in Vulkan 1.2. A conforming 1.2
+			// implementation does not need to enumerate the promoted KHR extension.
+			buffer_device_address_support = device_features_vk_1_2.bufferDeviceAddress;
+			shader_buffer_int64_atomics_support = device_features_vk_1_2.shaderBufferInt64Atomics;
 			if (enabled_device_extension_names.has(VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME)) {
 				vulkan_memory_model_support = device_features_vk_1_2.vulkanMemoryModel;
 				vulkan_memory_model_device_scope_support = device_features_vk_1_2.vulkanMemoryModelDeviceScope;
@@ -949,6 +958,9 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 			}
 			if (enabled_device_extension_names.has(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)) {
 				buffer_device_address_support = buffer_device_address_features.bufferDeviceAddress;
+			}
+			if (enabled_device_extension_names.has(VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME)) {
+				shader_buffer_int64_atomics_support = shader_atomic_int64_features.shaderBufferInt64Atomics;
 			}
 			if (enabled_device_extension_names.has(VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME)) {
 				vulkan_memory_model_support = vulkan_memory_model_features.vulkanMemoryModel;
@@ -982,7 +994,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 			multiview_capabilities.tessellation_shader_is_supported = multiview_features.multiviewTessellationShader;
 		}
 
-		if (enabled_device_extension_names.has(VK_KHR_16BIT_STORAGE_EXTENSION_NAME)) {
+		if (use_1_1_features || enabled_device_extension_names.has(VK_KHR_16BIT_STORAGE_EXTENSION_NAME)) {
 			storage_buffer_capabilities.storage_buffer_16_bit_access_is_supported = storage_feature.storageBuffer16BitAccess;
 			storage_buffer_capabilities.uniform_and_storage_buffer_16_bit_access_is_supported = storage_feature.uniformAndStorageBuffer16BitAccess;
 			storage_buffer_capabilities.storage_push_constant_16_is_supported = storage_feature.storagePushConstant16;
@@ -1266,6 +1278,14 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 		buffer_device_address_features.pNext = create_info_next;
 		buffer_device_address_features.bufferDeviceAddress = buffer_device_address_support;
 		create_info_next = &buffer_device_address_features;
+	}
+
+	VkPhysicalDeviceShaderAtomicInt64FeaturesKHR shader_atomic_int64_features = {};
+	if (shader_buffer_int64_atomics_support) {
+		shader_atomic_int64_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES_KHR;
+		shader_atomic_int64_features.pNext = create_info_next;
+		shader_atomic_int64_features.shaderBufferInt64Atomics = VK_TRUE;
+		create_info_next = &shader_atomic_int64_features;
 	}
 
 	VkPhysicalDeviceVulkanMemoryModelFeaturesKHR vulkan_memory_model_features = {};
@@ -7232,11 +7252,15 @@ uint64_t RenderingDeviceDriverVulkan::api_trait_get(ApiTrait p_trait) {
 bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
 	switch (p_feature) {
 		case SUPPORTS_HALF_FLOAT:
-			return shader_capabilities.shader_float16_is_supported && physical_device_features.shaderInt16 && storage_buffer_capabilities.storage_buffer_16_bit_access_is_supported;
+			return shader_capabilities.shader_float16_is_supported && storage_buffer_capabilities.storage_buffer_16_bit_access_is_supported;
 		case SUPPORTS_FRAGMENT_SHADER_WITH_ONLY_SIDE_EFFECTS:
 			return true;
 		case SUPPORTS_BUFFER_DEVICE_ADDRESS:
 			return buffer_device_address_support;
+		case SUPPORTS_SHADER_INT64:
+			return physical_device_features.shaderInt64;
+		case SUPPORTS_BUFFER_INT64_ATOMICS:
+			return shader_buffer_int64_atomics_support;
 		case SUPPORTS_IMAGE_ATOMIC_32_BIT:
 #if (defined(MACOS_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
 			// MoltenVK has previously had issues with 32-bit atomics on images.

@@ -1,0 +1,150 @@
+{
+	"schema_version": "1.0.0",
+	"suite": "hddagi_screen_probe_phase0",
+	"purpose": "Runtime structural and same-machine diagnostic profile for the NRD/SHARC screen-probe pipeline. The previous custom-denoiser/cache calibration is intentionally invalidated.",
+	"profiles": [
+		{
+			"id": "rtx3080_vulkan_forward_plus_640x360_stride2_phase1_fresh",
+			"baseline_algorithm": "phase1_fresh",
+			"match": {
+				"adapter_name_contains": "NVIDIA GeForce RTX 3080",
+				"rendering_method": "forward_plus",
+				"rendering_driver": "vulkan",
+				"width": 640,
+				"height": 360,
+				"sample_stride": 2
+			},
+			"suite_parameters": {
+				"scenario": "all",
+				"warmup_frames": 32,
+				"sample_frames": 12,
+				"settle_frames": 24,
+				"roi_border_fraction": 0.08
+			},
+			"required": {
+				"status": "completed",
+				"runtime_error_count": 0,
+				"counter_schema_valid": true,
+				"minimum_counter_snapshots": 4,
+				"minimum_gpu_profile_blocks": 5,
+				"minimum_hddagi_gpu_samples": 50,
+				"checks": [
+					"scenarios.baseline.checks.non_black_full_roi",
+					"scenarios.baseline.checks.has_multiple_frames",
+					"scenarios.motion.checks.motion_frames_captured",
+					"scenarios.motion.checks.stable_reference_non_black",
+					"scenarios.feature_off_toggle.checks.recovered_off_frame_non_black",
+					"scenarios.feature_off_toggle.checks.screen_probes_disabled_capture_non_black",
+					"scenarios.feature_off_toggle.checks.all_expected_transitions_executed",
+					"scenarios.feature_off_toggle.checks.screen_probes_disabled_changes_output_beyond_noise",
+					"scenarios.feature_off_toggle.checks.experimental_on_production_returns_non_black",
+					"scenarios.feature_off_toggle.checks.experimental_on_first_production_returns_close_to_pre_debug",
+					"memory.feature_toggle_deltas.screen_probes_disabled_minus_default.available",
+					"memory.feature_toggle_deltas.experimental_on_minus_default.available",
+					"memory.feature_toggle_deltas.recovered_off_minus_default.available"
+				],
+				"counter_fields": [
+					"algorithm",
+					"algorithm_mode",
+					"frame",
+					"view_count",
+					"width",
+					"height",
+					"feature_flags",
+					"fresh_candidates",
+					"temporal_guided_candidates",
+					"spatial_guided_candidates",
+					"hdda_rays",
+					"hdda_steps",
+					"hdda_hits",
+					"hdda_misses",
+					"sharc_query_attempts",
+					"sharc_query_hits",
+					"sharc_query_ineligible",
+					"sharc_query_misses",
+					"sharc_update_rays",
+					"sharc_update_misses",
+					"sharc_update_rejects",
+					"raw_hdr_sample_count",
+					"raw_hdr_fixed_sum_r",
+					"raw_hdr_fixed_sum_g",
+					"raw_hdr_fixed_sum_b",
+					"raw_hdr_nonfinite_or_overflow"
+				]
+			},
+			"thresholds": {
+				"scenarios.baseline.metrics.frame_mean_luma.mean": {
+					"min": 0.4,
+					"max": 0.55
+				},
+				"scenarios.baseline.metrics.spatial_variance_luma.mean": {
+					"min": 0.03,
+					"max": 0.07
+				},
+				"scenarios.baseline.metrics.adjacent_frame_mean_abs_luma.mean": {
+					"max": 0.02
+				},
+				"scenarios.baseline.metrics.adjacent_frame_rmse_luma.mean": {
+					"max": 0.04
+				},
+				"scenarios.motion.post_stop.stable_noise_floor_difference.mean_abs_luma": {
+					"max": 0.02
+				},
+				"scenarios.motion.post_stop.ghost_proxy_normalized": {
+					"max": 0.03
+				},
+				"scenarios.feature_off_toggle.metrics.off_state_repeatability.mean_abs_luma": {
+					"max": 0.01
+				},
+				"scenarios.feature_off_toggle.metrics.toggle_recovery_proxy_normalized": {
+					"max": 0.05
+				},
+				"gpu_profile.hddagi_total_per_block_ms.mean": {
+					"min": 0.1,
+					"max": 5
+				},
+				"gpu_profile.hddagi_total_per_block_ms.max": {
+					"max": 10
+				},
+				"memory.feature_toggle_deltas.screen_probes_disabled_minus_default.video_mem_used": {
+					"max": -8388608
+				},
+				"memory.feature_toggle_deltas.screen_probes_disabled_minus_default.texture_mem_used": {
+					"max": -8388608
+				},
+				"memory.feature_toggle_deltas.screen_probes_disabled_minus_default.buffer_mem_used": {
+					"max": 0
+				},
+				"memory.feature_toggle_deltas.experimental_on_minus_default.video_mem_used": {
+					"min": 1,
+					"max": 134217728
+				},
+				"memory.feature_toggle_deltas.experimental_on_minus_default.texture_mem_used": {
+					"min": 1,
+					"max": 33554432
+				},
+				"memory.feature_toggle_deltas.experimental_on_minus_default.buffer_mem_used": {
+					"min": 1,
+					"max": 134217728
+				},
+				"memory.feature_toggle_deltas.recovered_off_minus_default.video_mem_used": {
+					"max": 0
+				},
+				"memory.feature_toggle_deltas.recovered_off_minus_default.texture_mem_used": {
+					"max": 0
+				},
+				"memory.feature_toggle_deltas.recovered_off_minus_default.buffer_mem_used": {
+					"max": 0
+				}
+			},
+			"limitations": [
+				"Thresholds are intended for the matched GPU/driver class and fixed suite parameters only.",
+				"Captured viewport values are post-tonemap and display-referred.",
+				"Ghost metrics use a later stable frame as a proxy, not a path-traced reference.",
+				"Passing this profile does not prove unbiased ReSTIR estimation, absence of light leaks, or cross-GPU equivalence."
+			]
+		}
+	],
+	"acceptance_ready": false,
+	"unbaselined_reason": "NRD/SHARC replaced the removed custom denoiser and world cache; hardware image, timing, and memory thresholds must be recalibrated."
+}

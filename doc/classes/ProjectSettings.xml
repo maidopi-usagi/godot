@@ -2538,6 +2538,21 @@
 		</member>
 		<member name="rendering/global_illumination/hddagi/frames_to_update_lights" type="int" setter="" getter="" default="2">
 		</member>
+		<member name="rendering/global_illumination/hddagi/screen_probe_debug_counters" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], asynchronously prints structured Dynamic GI screen-probe GPU counters every 60 screen-probe frames. Intended for diagnostics and automated quality tests; global atomic counters can reduce performance while enabled.
+		</member>
+		<member name="rendering/global_illumination/hddagi/screen_probe_reference_mode" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], uses the Phase 1 reference screen-probe estimator: fresh cosine-weighted HDDA candidates are averaged directly, full-resolution temporal filtering is bypassed, and no reservoir or world-cache result is read. This mode is intended for radiometric validation and is noisier than the normal baseline.
+		</member>
+		<member name="rendering/global_illumination/hddagi/screen_probe_restir_base_candidate_count" type="int" setter="" getter="" default="1">
+			Number of fresh HDDA candidates traced for each Dynamic GI screen-probe texel. Values greater than [code]1[/code] are experimental and increase GPU cost approximately in proportion to the candidate count.
+		</member>
+		<member name="rendering/global_illumination/hddagi/screen_probe_restir_spatial_guiding" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], enables experimental spatial reservoir guiding for Dynamic GI screen probes. This path is disabled by default while its sampling estimator and image-quality tests are being rebuilt.
+		</member>
+		<member name="rendering/global_illumination/hddagi/screen_probe_restir_temporal_guiding" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], enables experimental temporal reservoir guiding for Dynamic GI screen probes. This path is disabled by default while its sampling estimator and image-quality tests are being rebuilt.
+		</member>
 		<member name="rendering/global_illumination/voxel_gi/quality" type="int" setter="" getter="" default="0">
 			The VoxelGI quality to use. High quality leads to more precise lighting and better reflections, but is slower to render. This setting does not affect the baked data and doesn't require baking the [VoxelGI] again to apply.
 			[b]Note:[/b] This property is only read when the project starts. To control VoxelGI quality at runtime, call [method RenderingServer.voxel_gi_set_quality] instead.

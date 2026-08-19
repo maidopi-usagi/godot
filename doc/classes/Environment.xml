@@ -124,8 +124,41 @@
 		<member name="dynamic_gi_probe_bias" type="float" setter="set_dynamic_gi_probe_bias" getter="get_dynamic_gi_probe_bias" default="1.1">
 			Bias used for probe raytracing.
 		</member>
+		<member name="dynamic_gi_screen_probe_history_sample_count_max" type="float" setter="set_dynamic_gi_screen_probe_history_sample_count_max" getter="get_dynamic_gi_screen_probe_history_sample_count_max" default="64.0">
+			Maximum sample count stored by the stable Phase 1 full-resolution temporal denoiser. Higher values can reduce static noise, but may preserve stale lighting longer. This does not change the number of fresh ray candidates and is not a ReSTIR reservoir [code]M[/code] value.
+		</member>
+		<member name="dynamic_gi_screen_probe_normal_bias" type="float" setter="set_dynamic_gi_screen_probe_normal_bias" getter="get_dynamic_gi_screen_probe_normal_bias" default="1.1">
+			Normal bias used by the stable Dynamic GI screen probe fresh-trace pipeline before tracing the HDDAGI voxel structure. Negative values are allowed for debugging and tuning.
+		</member>
+		<member name="dynamic_gi_screen_probe_restir_history_blend_hit" type="float" setter="set_dynamic_gi_screen_probe_restir_history_blend_hit" getter="get_dynamic_gi_screen_probe_restir_history_blend_hit" default="0.95">
+			Maximum history weight used by the stable Phase 1 full-resolution temporal denoiser after surface validation. A value of [code]0.0[/code] uses only the current frame, while [code]1.0[/code] limits history only through [member dynamic_gi_screen_probe_history_sample_count_max]. Higher values preserve more history and reduce noise, but can increase ghosting. Despite the historical [code]restir[/code] name, this property does not control a Phase 1 reservoir.
+		</member>
+		<member name="dynamic_gi_screen_probe_restir_history_direction_threshold" type="float" setter="set_dynamic_gi_screen_probe_restir_history_direction_threshold" getter="get_dynamic_gi_screen_probe_restir_history_direction_threshold" default="0.65">
+			Minimum normal dot product used by the stable Phase 1 full-resolution temporal denoiser to accept a reprojected previous surface. Higher values reject more history and reduce cross-surface ghosting, but denoise less. Despite the historical name, this compares surface normals rather than ReSTIR ray directions.
+		</member>
+		<member name="dynamic_gi_screen_probe_restir_history_distance_tolerance" type="float" setter="set_dynamic_gi_screen_probe_restir_history_distance_tolerance" getter="get_dynamic_gi_screen_probe_restir_history_distance_tolerance" default="0.25">
+			Minimum linear view-depth tolerance used by the stable Phase 1 full-resolution temporal denoiser to accept a reprojected previous surface. The implementation also applies a small depth-relative tolerance. Despite the historical name, this does not compare ReSTIR secondary-hit distances.
+		</member>
+		<member name="dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min" type="float" setter="set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min" getter="get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min" default="0.01">
+			Legacy experimental setting. Minimum depth tolerance for spatial reservoir reuse in the legacy monolithic pipeline. The stable Phase 1 pipeline has no spatial reservoir pass; its deterministic raw reconstruction uses fixed geometry-only weights.
+		</member>
+		<member name="dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale" type="float" setter="set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale" getter="get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale" default="0.01">
+			Legacy experimental setting. Depth-relative tolerance scale for spatial reservoir reuse in the legacy monolithic pipeline. It is ignored by the stable Phase 1 pipeline.
+		</member>
+		<member name="dynamic_gi_screen_probe_restir_spatial_normal_threshold" type="float" setter="set_dynamic_gi_screen_probe_restir_spatial_normal_threshold" getter="get_dynamic_gi_screen_probe_restir_spatial_normal_threshold" default="0.45">
+			Legacy experimental setting. Minimum normal similarity for spatial reservoir reuse in the legacy monolithic pipeline. It is ignored by the stable Phase 1 pipeline.
+		</member>
+		<member name="dynamic_gi_screen_probe_restir_spatial_reuse_radius" type="int" setter="set_dynamic_gi_screen_probe_restir_spatial_reuse_radius" getter="get_dynamic_gi_screen_probe_restir_spatial_reuse_radius" default="1">
+			Legacy experimental setting. Neighbor radius, in probes, used for spatial reservoir reuse in the legacy monolithic pipeline. It is ignored by the stable Phase 1 pipeline.
+		</member>
+		<member name="dynamic_gi_screen_probe_size" type="int" setter="set_dynamic_gi_screen_probe_size" getter="get_dynamic_gi_screen_probe_size" default="8">
+			Screen-space size, in internal GI pixels, of each Dynamic GI screen probe. Smaller values increase probe density, ray cost, and memory use.
+		</member>
+		<member name="dynamic_gi_screen_probes_enabled" type="bool" setter="set_dynamic_gi_screen_probes_enabled" getter="is_dynamic_gi_screen_probes_enabled" default="false">
+			If enabled, Dynamic GI screen probes trace the HDDAGI voxel structure and can be inspected with the Dynamic GI Screen Probes debug view. Builds configured with the external NVIDIA SDK integration use NRD for full-resolution denoising and SHARC for persistent world-space radiance reuse; the removed experimental denoiser and world-cache paths are no longer selectable.
+		</member>
 		<member name="dynamic_gi_read_sky_light" type="bool" setter="set_dynamic_gi_read_sky_light" getter="is_dynamic_gi_reading_sky_light" default="true">
-			If enabled, the probes will read from the sky light when rays hit nothing.
+			If enabled, the probes will read from the sky light when rays hit nothing. Stable Phase 1 screen probe misses sample the environment's linear clear/color background or SkyRD radiance texture using the configured sky orientation. If disabled, those misses contribute zero radiance.
 		</member>
 		<member name="dynamic_gi_reflection_bias" type="float" setter="set_dynamic_gi_reflection_bias" getter="get_dynamic_gi_reflection_bias" default="2.0">
 			Bias used for reflections. The current value is safe to avoid occlusion with nearby voxels, but change if you find too much light is being leaked or reflections have too much offset.

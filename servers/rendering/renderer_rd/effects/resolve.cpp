@@ -49,6 +49,8 @@ Resolve::Resolve(bool p_prefer_raster_effects) {
 		Vector<String> resolve_modes;
 		resolve_modes.push_back("\n#define MODE_RESOLVE_GI\n");
 		resolve_modes.push_back("\n#define MODE_RESOLVE_GI\n#define VOXEL_GI_RESOLVE\n");
+		resolve_modes.push_back("\n#define MODE_RESOLVE_GI\n#define MOTION_VECTORS_RESOLVE\n");
+		resolve_modes.push_back("\n#define MODE_RESOLVE_GI\n#define VOXEL_GI_RESOLVE\n#define MOTION_VECTORS_RESOLVE\n");
 		resolve_modes.push_back("\n#define MODE_RESOLVE_DEPTH\n");
 
 		resolve.shader.initialize(resolve_modes);
@@ -69,8 +71,9 @@ Resolve::~Resolve() {
 	}
 }
 
-void Resolve::resolve_gi(RID p_source_depth, RID p_source_normal_roughness, RID p_source_voxel_gi, RID p_dest_depth, RID p_dest_normal_roughness, RID p_dest_voxel_gi, Vector2i p_screen_size, int p_samples) {
+void Resolve::resolve_gi(RID p_source_depth, RID p_source_normal_roughness, RID p_source_voxel_gi, RID p_source_motion_vectors, RID p_dest_depth, RID p_dest_normal_roughness, RID p_dest_voxel_gi, RID p_dest_motion_vectors, Vector2i p_screen_size, int p_samples) {
 	ERR_FAIL_COND_MSG(prefer_raster_effects, "Can't use the compute shader resolve with the mobile renderer.");
+	ERR_FAIL_COND_MSG(p_source_motion_vectors.is_valid() != p_dest_motion_vectors.is_valid(), "Both source and destination motion-vector textures must be supplied together.");
 
 	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
 	ERR_FAIL_NULL(uniform_set_cache);
@@ -90,7 +93,12 @@ void Resolve::resolve_gi(RID p_source_depth, RID p_source_normal_roughness, RID 
 	RD::Uniform u_dest_depth(RD::UNIFORM_TYPE_IMAGE, 0, Vector<RID>({ p_dest_depth }));
 	RD::Uniform u_dest_normal_roughness(RD::UNIFORM_TYPE_IMAGE, 1, Vector<RID>({ p_dest_normal_roughness }));
 
-	ResolveMode mode = p_source_voxel_gi.is_valid() ? RESOLVE_MODE_GI_VOXEL_GI : RESOLVE_MODE_GI;
+	ResolveMode mode;
+	if (p_source_motion_vectors.is_valid()) {
+		mode = p_source_voxel_gi.is_valid() ? RESOLVE_MODE_GI_VOXEL_GI_MOTION_VECTORS : RESOLVE_MODE_GI_MOTION_VECTORS;
+	} else {
+		mode = p_source_voxel_gi.is_valid() ? RESOLVE_MODE_GI_VOXEL_GI : RESOLVE_MODE_GI;
+	}
 	RID shader = resolve.shader.version_get_shader(resolve.shader_version, mode);
 	ERR_FAIL_COND(shader.is_null());
 
@@ -104,6 +112,13 @@ void Resolve::resolve_gi(RID p_source_depth, RID p_source_normal_roughness, RID 
 
 		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 2, u_source_voxel_gi), 2);
 		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 3, u_dest_voxel_gi), 3);
+	}
+	if (p_source_motion_vectors.is_valid()) {
+		RD::Uniform u_source_motion_vectors(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ default_sampler, p_source_motion_vectors }));
+		RD::Uniform u_dest_motion_vectors(RD::UNIFORM_TYPE_IMAGE, 0, p_dest_motion_vectors);
+
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 4, u_source_motion_vectors), 4);
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 5, u_dest_motion_vectors), 5);
 	}
 
 	RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(ResolvePushConstant));

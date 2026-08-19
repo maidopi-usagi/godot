@@ -588,6 +588,105 @@ float Environment::get_dynamic_gi_probe_bias() const {
 	return dynamic_gi_probe_bias;
 }
 
+void Environment::set_dynamic_gi_screen_probes_enabled(bool p_enabled) {
+	dynamic_gi_screen_probes_enabled = p_enabled;
+	_update_dynamic_gi();
+}
+
+bool Environment::is_dynamic_gi_screen_probes_enabled() const {
+	return dynamic_gi_screen_probes_enabled;
+}
+
+void Environment::set_dynamic_gi_screen_probe_size(int p_size) {
+	dynamic_gi_screen_probe_size = CLAMP(p_size, 1, 32);
+	_update_dynamic_gi();
+}
+
+int Environment::get_dynamic_gi_screen_probe_size() const {
+	return dynamic_gi_screen_probe_size;
+}
+
+void Environment::set_dynamic_gi_screen_probe_normal_bias(float p_bias) {
+	dynamic_gi_screen_probe_normal_bias = p_bias;
+	_update_dynamic_gi();
+}
+
+float Environment::get_dynamic_gi_screen_probe_normal_bias() const {
+	return dynamic_gi_screen_probe_normal_bias;
+}
+
+void Environment::set_dynamic_gi_screen_probe_restir_history_blend_hit(float p_blend) {
+	dynamic_gi_screen_probe_restir_history_blend_hit = p_blend;
+	_update_dynamic_gi();
+}
+
+float Environment::get_dynamic_gi_screen_probe_restir_history_blend_hit() const {
+	return dynamic_gi_screen_probe_restir_history_blend_hit;
+}
+
+void Environment::set_dynamic_gi_screen_probe_restir_history_distance_tolerance(float p_tolerance) {
+	dynamic_gi_screen_probe_restir_history_distance_tolerance = p_tolerance;
+	_update_dynamic_gi();
+}
+
+float Environment::get_dynamic_gi_screen_probe_restir_history_distance_tolerance() const {
+	return dynamic_gi_screen_probe_restir_history_distance_tolerance;
+}
+
+void Environment::set_dynamic_gi_screen_probe_restir_history_direction_threshold(float p_threshold) {
+	dynamic_gi_screen_probe_restir_history_direction_threshold = p_threshold;
+	_update_dynamic_gi();
+}
+
+float Environment::get_dynamic_gi_screen_probe_restir_history_direction_threshold() const {
+	return dynamic_gi_screen_probe_restir_history_direction_threshold;
+}
+
+void Environment::set_dynamic_gi_screen_probe_restir_spatial_reuse_radius(int p_radius) {
+	dynamic_gi_screen_probe_restir_spatial_reuse_radius = CLAMP(p_radius, 0, 4);
+	_update_dynamic_gi();
+}
+
+int Environment::get_dynamic_gi_screen_probe_restir_spatial_reuse_radius() const {
+	return dynamic_gi_screen_probe_restir_spatial_reuse_radius;
+}
+
+void Environment::set_dynamic_gi_screen_probe_restir_spatial_normal_threshold(float p_threshold) {
+	dynamic_gi_screen_probe_restir_spatial_normal_threshold = p_threshold;
+	_update_dynamic_gi();
+}
+
+float Environment::get_dynamic_gi_screen_probe_restir_spatial_normal_threshold() const {
+	return dynamic_gi_screen_probe_restir_spatial_normal_threshold;
+}
+
+void Environment::set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min(float p_tolerance) {
+	dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min = p_tolerance;
+	_update_dynamic_gi();
+}
+
+float Environment::get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min() const {
+	return dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min;
+}
+
+void Environment::set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale(float p_tolerance) {
+	dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale = p_tolerance;
+	_update_dynamic_gi();
+}
+
+float Environment::get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale() const {
+	return dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale;
+}
+
+void Environment::set_dynamic_gi_screen_probe_history_sample_count_max(float p_count) {
+	dynamic_gi_screen_probe_history_sample_count_max = p_count;
+	_update_dynamic_gi();
+}
+
+float Environment::get_dynamic_gi_screen_probe_history_sample_count_max() const {
+	return dynamic_gi_screen_probe_history_sample_count_max;
+}
+
 void Environment::_update_dynamic_gi() {
 	RS::get_singleton()->environment_set_hddagi(
 			environment,
@@ -605,6 +704,23 @@ void Environment::_update_dynamic_gi() {
 			dynamic_gi_probe_bias,
 			true,
 			true);
+	RS::get_singleton()->environment_set_hddagi_screen_probes(
+			environment,
+			dynamic_gi_screen_probes_enabled,
+			dynamic_gi_screen_probe_size,
+			dynamic_gi_screen_probe_normal_bias);
+	RS::get_singleton()->environment_set_hddagi_screen_probe_restir(
+			environment,
+			dynamic_gi_screen_probe_restir_history_blend_hit,
+			dynamic_gi_screen_probe_restir_history_distance_tolerance,
+			dynamic_gi_screen_probe_restir_history_direction_threshold,
+			dynamic_gi_screen_probe_restir_spatial_reuse_radius,
+			dynamic_gi_screen_probe_restir_spatial_normal_threshold,
+			dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min,
+			dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale);
+	RS::get_singleton()->environment_set_hddagi_screen_probe_tuning(
+			environment,
+			dynamic_gi_screen_probe_history_sample_count_max);
 }
 
 // Glow
@@ -1417,7 +1533,28 @@ void Environment::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_dynamic_gi_normal_bias"), &Environment::get_dynamic_gi_normal_bias);
 	ClassDB::bind_method(D_METHOD("set_dynamic_gi_probe_bias", "bias"), &Environment::set_dynamic_gi_probe_bias);
 	ClassDB::bind_method(D_METHOD("get_dynamic_gi_probe_bias"), &Environment::get_dynamic_gi_probe_bias);
-
+	ClassDB::bind_method(D_METHOD("set_dynamic_gi_screen_probes_enabled", "enabled"), &Environment::set_dynamic_gi_screen_probes_enabled);
+	ClassDB::bind_method(D_METHOD("is_dynamic_gi_screen_probes_enabled"), &Environment::is_dynamic_gi_screen_probes_enabled);
+	ClassDB::bind_method(D_METHOD("set_dynamic_gi_screen_probe_size", "size"), &Environment::set_dynamic_gi_screen_probe_size);
+	ClassDB::bind_method(D_METHOD("get_dynamic_gi_screen_probe_size"), &Environment::get_dynamic_gi_screen_probe_size);
+	ClassDB::bind_method(D_METHOD("set_dynamic_gi_screen_probe_normal_bias", "bias"), &Environment::set_dynamic_gi_screen_probe_normal_bias);
+	ClassDB::bind_method(D_METHOD("get_dynamic_gi_screen_probe_normal_bias"), &Environment::get_dynamic_gi_screen_probe_normal_bias);
+	ClassDB::bind_method(D_METHOD("set_dynamic_gi_screen_probe_restir_history_blend_hit", "blend"), &Environment::set_dynamic_gi_screen_probe_restir_history_blend_hit);
+	ClassDB::bind_method(D_METHOD("get_dynamic_gi_screen_probe_restir_history_blend_hit"), &Environment::get_dynamic_gi_screen_probe_restir_history_blend_hit);
+	ClassDB::bind_method(D_METHOD("set_dynamic_gi_screen_probe_restir_history_distance_tolerance", "tolerance"), &Environment::set_dynamic_gi_screen_probe_restir_history_distance_tolerance);
+	ClassDB::bind_method(D_METHOD("get_dynamic_gi_screen_probe_restir_history_distance_tolerance"), &Environment::get_dynamic_gi_screen_probe_restir_history_distance_tolerance);
+	ClassDB::bind_method(D_METHOD("set_dynamic_gi_screen_probe_restir_history_direction_threshold", "threshold"), &Environment::set_dynamic_gi_screen_probe_restir_history_direction_threshold);
+	ClassDB::bind_method(D_METHOD("get_dynamic_gi_screen_probe_restir_history_direction_threshold"), &Environment::get_dynamic_gi_screen_probe_restir_history_direction_threshold);
+	ClassDB::bind_method(D_METHOD("set_dynamic_gi_screen_probe_restir_spatial_reuse_radius", "radius"), &Environment::set_dynamic_gi_screen_probe_restir_spatial_reuse_radius);
+	ClassDB::bind_method(D_METHOD("get_dynamic_gi_screen_probe_restir_spatial_reuse_radius"), &Environment::get_dynamic_gi_screen_probe_restir_spatial_reuse_radius);
+	ClassDB::bind_method(D_METHOD("set_dynamic_gi_screen_probe_restir_spatial_normal_threshold", "threshold"), &Environment::set_dynamic_gi_screen_probe_restir_spatial_normal_threshold);
+	ClassDB::bind_method(D_METHOD("get_dynamic_gi_screen_probe_restir_spatial_normal_threshold"), &Environment::get_dynamic_gi_screen_probe_restir_spatial_normal_threshold);
+	ClassDB::bind_method(D_METHOD("set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min", "tolerance"), &Environment::set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min);
+	ClassDB::bind_method(D_METHOD("get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min"), &Environment::get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min);
+	ClassDB::bind_method(D_METHOD("set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale", "tolerance"), &Environment::set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale);
+	ClassDB::bind_method(D_METHOD("get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale"), &Environment::get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale);
+	ClassDB::bind_method(D_METHOD("set_dynamic_gi_screen_probe_history_sample_count_max", "count"), &Environment::set_dynamic_gi_screen_probe_history_sample_count_max);
+	ClassDB::bind_method(D_METHOD("get_dynamic_gi_screen_probe_history_sample_count_max"), &Environment::get_dynamic_gi_screen_probe_history_sample_count_max);
 	ADD_GROUP("DynamicGI", "dynamic_gi_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "dynamic_gi_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_dynamic_gi_enabled", "is_dynamic_gi_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "dynamic_gi_use_occlusion"), "set_dynamic_gi_filter_probes", "is_dynamic_gi_filtering_probes");
@@ -1433,6 +1570,17 @@ void Environment::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_energy"), "set_dynamic_gi_energy", "get_dynamic_gi_energy");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_normal_bias"), "set_dynamic_gi_normal_bias", "get_dynamic_gi_normal_bias");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_probe_bias"), "set_dynamic_gi_probe_bias", "get_dynamic_gi_probe_bias");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "dynamic_gi_screen_probes_enabled"), "set_dynamic_gi_screen_probes_enabled", "is_dynamic_gi_screen_probes_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "dynamic_gi_screen_probe_size", PROPERTY_HINT_RANGE, "1,32,1"), "set_dynamic_gi_screen_probe_size", "get_dynamic_gi_screen_probe_size");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_screen_probe_normal_bias", PROPERTY_HINT_RANGE, "-8,8,0.01"), "set_dynamic_gi_screen_probe_normal_bias", "get_dynamic_gi_screen_probe_normal_bias");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_screen_probe_restir_history_blend_hit", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_dynamic_gi_screen_probe_restir_history_blend_hit", "get_dynamic_gi_screen_probe_restir_history_blend_hit");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_screen_probe_restir_history_distance_tolerance", PROPERTY_HINT_RANGE, "0,4,0.01"), "set_dynamic_gi_screen_probe_restir_history_distance_tolerance", "get_dynamic_gi_screen_probe_restir_history_distance_tolerance");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_screen_probe_restir_history_direction_threshold", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_dynamic_gi_screen_probe_restir_history_direction_threshold", "get_dynamic_gi_screen_probe_restir_history_direction_threshold");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "dynamic_gi_screen_probe_restir_spatial_reuse_radius", PROPERTY_HINT_RANGE, "0,4,1"), "set_dynamic_gi_screen_probe_restir_spatial_reuse_radius", "get_dynamic_gi_screen_probe_restir_spatial_reuse_radius");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_screen_probe_restir_spatial_normal_threshold", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_dynamic_gi_screen_probe_restir_spatial_normal_threshold", "get_dynamic_gi_screen_probe_restir_spatial_normal_threshold");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min", PROPERTY_HINT_RANGE, "0,1,0.001"), "set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min", "get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_min");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale", PROPERTY_HINT_RANGE, "0,1,0.001"), "set_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale", "get_dynamic_gi_screen_probe_restir_spatial_depth_tolerance_scale");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_gi_screen_probe_history_sample_count_max", PROPERTY_HINT_RANGE, "1,1024,1"), "set_dynamic_gi_screen_probe_history_sample_count_max", "get_dynamic_gi_screen_probe_history_sample_count_max");
 
 	// Glow
 

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://phase3_qa_runner.gd" id="1_phase3"]
+
+[node name="HDDAGIScreenProbePhase3QA" type="Node3D"]
+script = ExtResource("1_phase3")

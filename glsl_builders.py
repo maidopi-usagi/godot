@@ -1,8 +1,161 @@
 """Functions used to generate source files during build time"""
 
+from __future__ import annotations
+
 import os.path
+import re
 
 from methods import generated_wrapper, print_error, to_raw_cstring
+
+
+_INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s*[<"]([^">]+)[">]')
+# Build-only directive for optional SDK headers. It is removed when no external include roots are configured.
+_EXTERNAL_INCLUDE_PATTERN = re.compile(r'^\s*#\s*include_external\s*[<"]([^">]+)[">]')
+
+
+def _get_shader_source_root(env) -> str:
+    try:
+        return env.Dir("#").abspath
+    except AttributeError:
+        return os.getcwd()
+
+
+def _get_external_shader_include_paths(env) -> list[str]:
+    source_root = _get_shader_source_root(env)
+    include_paths = []
+    for include_path in env.get("GLSL_INCLUDE_PATHS", []):
+        include_path = os.path.expandvars(os.path.expanduser(str(include_path)))
+        if not os.path.isabs(include_path):
+            include_path = os.path.join(source_root, include_path)
+        include_path = os.path.normpath(os.path.abspath(include_path))
+        if include_path not in include_paths:
+            include_paths.append(include_path)
+
+    return include_paths
+
+
+def _get_shader_include_paths(env) -> list[str]:
+    """Return normalized local and external roots used by the GLSL header builders."""
+    return [_get_shader_source_root(env)] + _get_external_shader_include_paths(env)
+
+
+def _get_include_name(line: str) -> str | None:
+    match = _INCLUDE_PATTERN.match(line)
+    return match.group(1) if match else None
+
+
+def _get_external_include_name(line: str) -> str | None:
+    match = _EXTERNAL_INCLUDE_PATTERN.match(line)
+    return match.group(1) if match else None
+
+
+def _get_include_directive(line: str) -> tuple[str, bool] | None:
+    include_name = _get_external_include_name(line)
+    if include_name is not None:
+        return include_name, True
+
+    include_name = _get_include_name(line)
+    if include_name is not None:
+        return include_name, False
+
+    return None
+
+
+def _resolve_shader_include(
+    filename: str,
+    include_name: str,
+    include_paths: list[str],
+    directive: str = "#include",
+    include_current_directory: bool = True,
+    confine_to_include_paths: bool = False,
+) -> str:
+    if os.path.isabs(include_name):
+        candidates = [include_name]
+    else:
+        candidates = []
+        if include_current_directory:
+            candidates.append(os.path.join(os.path.dirname(filename), include_name))
+        candidates.extend(os.path.join(include_path, include_name) for include_path in include_paths)
+
+    searched_paths = []
+    allowed_roots = [os.path.normcase(os.path.realpath(path)) for path in include_paths]
+    for candidate in candidates:
+        candidate = os.path.normpath(os.path.abspath(candidate))
+        if candidate in searched_paths:
+            continue
+        searched_paths.append(candidate)
+        if confine_to_include_paths:
+            candidate_identity = os.path.normcase(os.path.realpath(candidate))
+            try:
+                if not any(os.path.commonpath([candidate_identity, root]) == root for root in allowed_roots):
+                    continue
+            except ValueError:
+                continue
+        if os.path.isfile(candidate):
+            return candidate
+
+    searched = "\n\t".join(searched_paths)
+    raise FileNotFoundError(
+        f'In shader file "{filename}": {directive} "{include_name}" was not found. Searched:\n\t{searched}'
+    )
+
+
+def _collect_shader_dependencies(
+    filename: str,
+    include_paths: list[str],
+    external_includes_enabled: bool,
+    dependencies: list[str],
+    visited: set[str],
+) -> None:
+    filename = os.path.normpath(os.path.abspath(filename))
+    identity = os.path.normcase(os.path.realpath(filename))
+    if identity in visited:
+        return
+    visited.add(identity)
+
+    with open(filename, "r", encoding="utf-8") as shader_file:
+        for line in shader_file:
+            include_directive = _get_include_directive(line)
+            if include_directive is None:
+                continue
+            include_name, is_external = include_directive
+            if is_external and not external_includes_enabled:
+                continue
+
+            directive = "#include_external" if is_external else "#include"
+            included_file = _resolve_shader_include(
+                filename,
+                include_name,
+                include_paths[1:] if is_external else include_paths,
+                directive,
+                include_current_directory=not is_external,
+                confine_to_include_paths=is_external,
+            )
+            dependencies.append(included_file)
+            _collect_shader_dependencies(
+                included_file, include_paths, external_includes_enabled, dependencies, visited
+            )
+
+
+def glsl_headers_emitter(target, source, env):
+    """Track local and external shader includes as SCons dependencies."""
+    external_include_paths = _get_external_shader_include_paths(env)
+    include_paths = [_get_shader_source_root(env)] + external_include_paths
+    external_includes_enabled = bool(env.get("GLSL_EXTERNAL_INCLUDES_ENABLED", False))
+    dependencies = []
+    visited = set()
+    try:
+        for src in source:
+            _collect_shader_dependencies(str(src), include_paths, external_includes_enabled, dependencies, visited)
+    except FileNotFoundError as error:
+        print_error(str(error))
+        raise
+
+    if dependencies:
+        env.Depends(target, dependencies)
+    env.Depends(target, env.Value(os.pathsep.join(external_include_paths)))
+    env.Depends(target, env.Value(str(int(external_includes_enabled))))
+    return target, source
 
 
 class RDHeaderStruct:
@@ -37,7 +190,14 @@ class RDHeaderStruct:
         self.intersection_offset = 0
 
 
-def include_file_in_rd_header(filename: str, header_data: RDHeaderStruct, depth: int) -> RDHeaderStruct:
+def include_file_in_rd_header(
+    filename: str,
+    header_data: RDHeaderStruct,
+    depth: int,
+    include_paths: list[str],
+    external_includes_enabled: bool,
+) -> RDHeaderStruct:
+    filename = os.path.normpath(os.path.abspath(filename))
     with open(filename, "r", encoding="utf-8") as fs:
         line = fs.readline()
 
@@ -102,54 +262,72 @@ def include_file_in_rd_header(filename: str, header_data: RDHeaderStruct, depth:
                 header_data.intersection_offset = header_data.line_offset
                 continue
 
-            while line.find("#include ") != -1:
-                includeline = line.replace("#include ", "").strip()[1:-1]
+            include_directive = _get_include_directive(line)
+            while include_directive is not None:
+                include_name, is_external = include_directive
+                if is_external and not external_includes_enabled:
+                    line = fs.readline()
+                    include_directive = _get_include_directive(line)
+                    continue
 
-                if includeline.startswith("thirdparty/"):
-                    included_file = os.path.relpath(includeline)
-
-                else:
-                    included_file = os.path.relpath(os.path.dirname(filename) + "/" + includeline)
+                directive = "#include_external" if is_external else "#include"
+                included_file = _resolve_shader_include(
+                    filename,
+                    include_name,
+                    include_paths[1:] if is_external else include_paths,
+                    directive,
+                    include_current_directory=not is_external,
+                    confine_to_include_paths=is_external,
+                )
 
                 if included_file not in header_data.vertex_included_files and header_data.reading == "vertex":
                     header_data.vertex_included_files += [included_file]
-                    if include_file_in_rd_header(included_file, header_data, depth + 1) is None:
-                        print_error(f'In file "{filename}": #include "{includeline}" could not be found!"')
+                    include_file_in_rd_header(
+                        included_file, header_data, depth + 1, include_paths, external_includes_enabled
+                    )
                 elif included_file not in header_data.fragment_included_files and header_data.reading == "fragment":
                     header_data.fragment_included_files += [included_file]
-                    if include_file_in_rd_header(included_file, header_data, depth + 1) is None:
-                        print_error(f'In file "{filename}": #include "{includeline}" could not be found!"')
+                    include_file_in_rd_header(
+                        included_file, header_data, depth + 1, include_paths, external_includes_enabled
+                    )
                 elif included_file not in header_data.compute_included_files and header_data.reading == "compute":
                     header_data.compute_included_files += [included_file]
-                    if include_file_in_rd_header(included_file, header_data, depth + 1) is None:
-                        print_error(f'In file "{filename}": #include "{includeline}" could not be found!"')
+                    include_file_in_rd_header(
+                        included_file, header_data, depth + 1, include_paths, external_includes_enabled
+                    )
                 elif included_file not in header_data.raygen_included_files and header_data.reading == "raygen":
                     header_data.raygen_included_files += [included_file]
-                    if include_file_in_rd_header(included_file, header_data, depth + 1) is None:
-                        print_error(f'In file "{filename}": #include "{includeline}" could not be found!"')
+                    include_file_in_rd_header(
+                        included_file, header_data, depth + 1, include_paths, external_includes_enabled
+                    )
                 elif included_file not in header_data.any_hit_included_files and header_data.reading == "any_hit":
                     header_data.any_hit_included_files += [included_file]
-                    if include_file_in_rd_header(included_file, header_data, depth + 1) is None:
-                        print_error(f'In file "{filename}": #include "{includeline}" could not be found!"')
+                    include_file_in_rd_header(
+                        included_file, header_data, depth + 1, include_paths, external_includes_enabled
+                    )
                 elif (
                     included_file not in header_data.closest_hit_included_files and header_data.reading == "closest_hit"
                 ):
                     header_data.closest_hit_included_files += [included_file]
-                    if include_file_in_rd_header(included_file, header_data, depth + 1) is None:
-                        print_error(f'In file "{filename}": #include "{includeline}" could not be found!"')
+                    include_file_in_rd_header(
+                        included_file, header_data, depth + 1, include_paths, external_includes_enabled
+                    )
                 elif included_file not in header_data.miss_included_files and header_data.reading == "miss":
                     header_data.miss_included_files += [included_file]
-                    if include_file_in_rd_header(included_file, header_data, depth + 1) is None:
-                        print_error(f'In file "{filename}": #include "{includeline}" could not be found!"')
+                    include_file_in_rd_header(
+                        included_file, header_data, depth + 1, include_paths, external_includes_enabled
+                    )
                 elif (
                     included_file not in header_data.intersection_included_files
                     and header_data.reading == "intersection"
                 ):
                     header_data.intersection_included_files += [included_file]
-                    if include_file_in_rd_header(included_file, header_data, depth + 1) is None:
-                        print_error(f'In file "{filename}": #include "{includeline}" could not be found!"')
+                    include_file_in_rd_header(
+                        included_file, header_data, depth + 1, include_paths, external_includes_enabled
+                    )
 
                 line = fs.readline()
+                include_directive = _get_include_directive(line)
 
             line = line.replace("\r", "").replace("\n", "")
 
@@ -189,8 +367,19 @@ def build_rd_header_lines_for_raytracing_stage(lines, stage: str):
 """
 
 
-def build_rd_header(filename: str, shader: str) -> None:
-    include_file_in_rd_header(shader, header_data := RDHeaderStruct(), 0)
+def build_rd_header(
+    filename: str,
+    shader: str,
+    include_paths: list[str] | None = None,
+    external_includes_enabled: bool = False,
+) -> None:
+    include_file_in_rd_header(
+        shader,
+        header_data := RDHeaderStruct(),
+        0,
+        include_paths or [os.getcwd()],
+        external_includes_enabled,
+    )
     class_name = os.path.basename(shader).replace(".glsl", "").title().replace("_", "").replace(".", "") + "ShaderRD"
 
     with generated_wrapper(filename) as file:
@@ -246,8 +435,10 @@ public:
 
 def build_rd_headers(target, source, env):
     env.NoCache(target)
+    include_paths = _get_shader_include_paths(env)
+    external_includes_enabled = bool(env.get("GLSL_EXTERNAL_INCLUDES_ENABLED", False))
     for src in source:
-        build_rd_header(f"{src}.gen.h", str(src))
+        build_rd_header(f"{src}.gen.h", str(src), include_paths, external_includes_enabled)
 
 
 class RAWHeaderStruct:
@@ -255,25 +446,56 @@ class RAWHeaderStruct:
         self.code = ""
 
 
-def include_file_in_raw_header(filename: str, header_data: RAWHeaderStruct, depth: int) -> None:
+def include_file_in_raw_header(
+    filename: str,
+    header_data: RAWHeaderStruct,
+    depth: int,
+    include_paths: list[str],
+    external_includes_enabled: bool,
+) -> None:
+    filename = os.path.normpath(os.path.abspath(filename))
     with open(filename, "r", encoding="utf-8") as fs:
         line = fs.readline()
 
         while line:
-            while line.find("#include ") != -1:
-                includeline = line.replace("#include ", "").strip()[1:-1]
+            include_directive = _get_include_directive(line)
+            while include_directive is not None:
+                include_name, is_external = include_directive
+                if is_external and not external_includes_enabled:
+                    line = fs.readline()
+                    include_directive = _get_include_directive(line)
+                    continue
 
-                included_file = os.path.relpath(os.path.dirname(filename) + "/" + includeline)
-                include_file_in_raw_header(included_file, header_data, depth + 1)
+                directive = "#include_external" if is_external else "#include"
+                included_file = _resolve_shader_include(
+                    filename,
+                    include_name,
+                    include_paths[1:] if is_external else include_paths,
+                    directive,
+                    include_current_directory=not is_external,
+                    confine_to_include_paths=is_external,
+                )
+                include_file_in_raw_header(
+                    included_file, header_data, depth + 1, include_paths, external_includes_enabled
+                )
 
                 line = fs.readline()
+                include_directive = _get_include_directive(line)
 
             header_data.code += line
             line = fs.readline()
 
 
-def build_raw_header(filename: str, shader: str) -> None:
-    include_file_in_raw_header(shader, header_data := RAWHeaderStruct(), 0)
+def build_raw_header(
+    filename: str,
+    shader: str,
+    include_paths: list[str] | None = None,
+    external_includes_enabled: bool = False,
+) -> None:
+    header_data = RAWHeaderStruct()
+    include_file_in_raw_header(
+        shader, header_data, 0, include_paths or [os.getcwd()], external_includes_enabled
+    )
 
     with generated_wrapper(filename) as file:
         file.write(f"""\
@@ -285,5 +507,7 @@ static const char {os.path.basename(shader).replace(".glsl", "_shader_glsl")}[] 
 
 def build_raw_headers(target, source, env):
     env.NoCache(target)
+    include_paths = _get_shader_include_paths(env)
+    external_includes_enabled = bool(env.get("GLSL_EXTERNAL_INCLUDES_ENABLED", False))
     for src in source:
-        build_raw_header(f"{src}.gen.h", str(src))
+        build_raw_header(f"{src}.gen.h", str(src), include_paths, external_includes_enabled)

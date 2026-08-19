@@ -136,6 +136,10 @@ float get_omni_attenuation(float distance, float inv_range, float decay) {
 
 #define REGION_SIZE 8
 
+// Keep HDDA sub-cell precision aligned with hddagi_screen_probe_phase1.glsl and
+// hddagi_integrate.glsl so visibility and radiance traces agree on voxel faces.
+const int HDDAGI_HDDA_FP_BITS = 10;
+
 bool trace_ray_hdda(vec3 ray_pos, vec3 ray_dir, float p_distance, int p_cascade) {
 	const int LEVEL_CASCADE = -1;
 	const int LEVEL_REGION = 0;
@@ -143,7 +147,7 @@ bool trace_ray_hdda(vec3 ray_pos, vec3 ray_dir, float p_distance, int p_cascade)
 	const int LEVEL_VOXEL = 2;
 	const int MAX_LEVEL = 3;
 
-	const int fp_bits = 10;
+	const int fp_bits = HDDAGI_HDDA_FP_BITS;
 	const int fp_block_bits = fp_bits + 2;
 	const int fp_region_bits = fp_block_bits + 1;
 	const int fp_cascade_bits = fp_region_bits + 4;
@@ -278,7 +282,8 @@ bool trace_ray_hdda(vec3 ray_pos, vec3 ray_dir, float p_distance, int p_cascade)
 		ivec3 mask = level_masks[level];
 		ivec3 box = mask * step;
 		ivec3 pos_diff = box - (pos & mask);
-		ivec3 tv = mix((pos_diff * inv_ray_dir_fp), ivec3(0x7FFFFFFF), ray_zero) >> fp_bits;
+		ivec3 mul_res = (pos_diff * inv_ray_dir_fp) >> fp_bits;
+		ivec3 tv = mix(mul_res, ivec3(0x7FFFFFFF), ray_zero);
 		int t = min(tv.x, min(tv.y, tv.z));
 
 		// The general idea here is that we _always_ need to increment to the closest next cell

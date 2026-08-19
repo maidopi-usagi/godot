@@ -8,6 +8,7 @@ EnsurePythonVersion(3, 9)
 import glob
 import os
 import pickle
+import re
 import sys
 from collections import OrderedDict
 from importlib.util import module_from_spec, spec_from_file_location
@@ -202,6 +203,14 @@ opts.Add(BoolVariable("use_volk", "Use the volk library to load the Vulkan loade
 opts.Add(BoolVariable("accesskit", "Enable the AccessKit driver for screen reader support", True))
 opts.Add(BoolVariable("angle", "Enable the ANGLE rendering driver for OpenGL ES 3.0 on supported platforms", True))
 opts.Add(BoolVariable("sdl", "Enable the SDL3 input driver", True))
+opts.Add("nrd_sdk_path", "Path to an external NVIDIA NRD SDK root containing Include/NRD.h", "")
+opts.Add("nrd_static_library", "Path to the external NVIDIA NRD static library (.lib on Windows, .a on Linux)", "")
+opts.Add(
+    "nrd_shadermake_static_library",
+    "Path to NRD's external ShaderMakeBlob static library (.lib on Windows, .a on Linux)",
+    "",
+)
+opts.Add("sharc_sdk_path", "Path to an external NVIDIA SHARC SDK root containing include/SharcCommon.h", "")
 opts.Add(
     EnumVariable(
         "profiler", "Specify the profiler to use", "none", ["none", "tracy", "perfetto", "instruments"], ignorecase=2
@@ -700,6 +709,133 @@ if env["scu_build"]:
 # are actually handled to change compile options, etc.
 detect.configure(env)
 
+
+def _canonical_external_path(path):
+    return os.path.normpath(os.path.abspath(os.path.expandvars(os.path.expanduser(str(path).strip()))))
+
+
+def _nvidia_sdk_error(component, message):
+    print_error(f"NVIDIA {component} SDK configuration error: {message}")
+    Exit(255)
+
+
+nrd_sdk_path = str(env["nrd_sdk_path"]).strip()
+nrd_static_library = str(env["nrd_static_library"]).strip()
+nrd_shadermake_static_library = str(env["nrd_shadermake_static_library"]).strip()
+sharc_sdk_path = str(env["sharc_sdk_path"]).strip()
+
+if nrd_sdk_path or nrd_static_library or nrd_shadermake_static_library:
+    if env["platform"] not in ["windows", "linuxbsd"]:
+        _nvidia_sdk_error("NRD", 'external NRD integration is supported only for platform="windows" or "linuxbsd".')
+    if env["platform"] == "windows" and not env.msvc:
+        _nvidia_sdk_error(
+            "NRD",
+            "external NRD integration on Windows currently requires the MSVC/clang-cl ABI; use_mingw=yes is unsupported.",
+        )
+    if env["arch"] != "x86_64":
+        _nvidia_sdk_error(
+            "NRD",
+            f'external NRD integration is currently validated only for arch="x86_64", got "{env["arch"]}".',
+        )
+    if not nrd_sdk_path:
+        _nvidia_sdk_error("NRD", 'an NRD static-library option was provided, but nrd_sdk_path is empty.')
+    if not nrd_static_library:
+        _nvidia_sdk_error("NRD", 'nrd_sdk_path was provided, but nrd_static_library is empty.')
+    if not nrd_shadermake_static_library:
+        _nvidia_sdk_error(
+            "NRD",
+            'nrd_sdk_path was provided, but nrd_shadermake_static_library is empty. '
+            "Static NRD builds with embedded shaders retain symbols from ShaderMakeBlob.",
+        )
+
+    nrd_sdk_path = _canonical_external_path(nrd_sdk_path)
+    nrd_static_library = _canonical_external_path(nrd_static_library)
+    nrd_shadermake_static_library = _canonical_external_path(nrd_shadermake_static_library)
+    nrd_include_path = os.path.join(nrd_sdk_path, "Include")
+    nrd_required_headers = ["NRD.h", "NRDDescs.h", "NRDSettings.h"]
+
+    if not os.path.isdir(nrd_sdk_path):
+        _nvidia_sdk_error("NRD", f'SDK root does not exist or is not a directory: "{nrd_sdk_path}".')
+    for header in nrd_required_headers:
+        header_path = os.path.join(nrd_include_path, header)
+        if not os.path.isfile(header_path):
+            _nvidia_sdk_error("NRD", f'required header was not found: "{header_path}".')
+    if not os.path.isfile(nrd_static_library):
+        _nvidia_sdk_error("NRD", f'static library was not found: "{nrd_static_library}".')
+    if not os.path.isfile(nrd_shadermake_static_library):
+        _nvidia_sdk_error(
+            "NRD", f'ShaderMakeBlob static library was not found: "{nrd_shadermake_static_library}".'
+        )
+
+    expected_library_suffix = ".lib" if env["platform"] == "windows" else ".a"
+    if not nrd_static_library.lower().endswith(expected_library_suffix):
+        _nvidia_sdk_error(
+            "NRD",
+            f'expected a static library ending in "{expected_library_suffix}" for platform="{env["platform"]}", '
+            f'got "{nrd_static_library}".',
+        )
+    if not nrd_shadermake_static_library.lower().endswith(expected_library_suffix):
+        _nvidia_sdk_error(
+            "NRD",
+            f'expected a ShaderMakeBlob static library ending in "{expected_library_suffix}" '
+            f'for platform="{env["platform"]}", got "{nrd_shadermake_static_library}".',
+        )
+
+    env["nrd_sdk_path"] = nrd_sdk_path
+    env["nrd_static_library"] = nrd_static_library
+    env["nrd_shadermake_static_library"] = nrd_shadermake_static_library
+    env.Prepend(CPPPATH=[nrd_include_path])
+    env.AppendUnique(CPPDEFINES=["NRD_STATIC_LIBRARY", "NVIDIA_NRD_ENABLED"])
+    env.AppendUnique(LIBS=[env.File(nrd_static_library), env.File(nrd_shadermake_static_library)])
+    print_info(f'Enabled external NVIDIA NRD SDK: "{nrd_sdk_path}".')
+
+if sharc_sdk_path:
+    if env["platform"] not in ["windows", "linuxbsd"]:
+        _nvidia_sdk_error(
+            "SHARC", 'external SHARC integration is supported only for platform="windows" or "linuxbsd".'
+        )
+    if not env.get("vulkan", False):
+        _nvidia_sdk_error("SHARC", "the current SHARC adapter is Vulkan-only; rebuild with vulkan=yes.")
+
+    sharc_sdk_path = _canonical_external_path(sharc_sdk_path)
+    sharc_include_path = os.path.join(sharc_sdk_path, "include")
+    sharc_required_headers = [
+        "HashGridCommon.h",
+        "HashGridTypes.h",
+        "SharcCommon.h",
+        "SharcGlslHelpers.h",
+        "SharcTypes.h",
+    ]
+
+    if not os.path.isdir(sharc_sdk_path):
+        _nvidia_sdk_error("SHARC", f'SDK root does not exist or is not a directory: "{sharc_sdk_path}".')
+    for header in sharc_required_headers:
+        header_path = os.path.join(sharc_include_path, header)
+        if not os.path.isfile(header_path):
+            _nvidia_sdk_error("SHARC", f'required shader header was not found: "{header_path}".')
+
+    sharc_common_path = os.path.join(sharc_include_path, "SharcCommon.h")
+    with open(sharc_common_path, "r", encoding="utf-8") as sharc_common_file:
+        sharc_common_source = sharc_common_file.read()
+    sharc_version = []
+    for component in ["MAJOR", "MINOR", "BUILD", "REVISION"]:
+        match = re.search(rf"^\s*#\s*define\s+SHARC_VERSION_{component}\s+(\d+)\s*$", sharc_common_source, re.MULTILINE)
+        if match is None:
+            _nvidia_sdk_error("SHARC", f'could not read SHARC_VERSION_{component} from "{sharc_common_path}".')
+        sharc_version.append(int(match.group(1)))
+    if tuple(sharc_version) != (1, 8, 3, 0):
+        _nvidia_sdk_error(
+            "SHARC",
+            f'expected SDK version 1.8.3.0, got {".".join(str(value) for value in sharc_version)} '
+            f'from "{sharc_common_path}".',
+        )
+
+    env["sharc_sdk_path"] = sharc_sdk_path
+    env["GLSL_EXTERNAL_INCLUDES_ENABLED"] = True
+    env.AppendUnique(CPPDEFINES=["NVIDIA_SHARC_ENABLED"])
+    env.AppendUnique(GLSL_INCLUDE_PATHS=[sharc_include_path])
+    print_info(f'Enabled external NVIDIA SHARC SDK: "{sharc_sdk_path}".')
+
 platform_string = env["platform"]
 if env.get("simulator"):
     platform_string += " (simulator)"
@@ -1173,11 +1309,13 @@ env["SHOBJPREFIX"] = env["object_prefix"]
 GLSL_BUILDERS = {
     "RD_GLSL": env.Builder(
         action=env.Run(glsl_builders.build_rd_headers),
+        emitter=glsl_builders.glsl_headers_emitter,
         suffix="glsl.gen.h",
         src_suffix=".glsl",
     ),
     "GLSL_HEADER": env.Builder(
         action=env.Run(glsl_builders.build_raw_headers),
+        emitter=glsl_builders.glsl_headers_emitter,
         suffix="glsl.gen.h",
         src_suffix=".glsl",
     ),

@@ -35,6 +35,8 @@
 #include "core/templates/rid_owner.h"
 #include "servers/rendering/environment/renderer_gi.h"
 #include "servers/rendering/renderer_compositor.h"
+#include "servers/rendering/renderer_rd/environment/nrd_context_rd.h"
+#include "servers/rendering/renderer_rd/environment/sharc_context_rd.h"
 #include "servers/rendering/renderer_rd/environment/sky.h"
 #include "servers/rendering/renderer_rd/shaders/environment/gi.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/hddagi_debug.glsl.gen.h"
@@ -42,16 +44,19 @@
 #include "servers/rendering/renderer_rd/shaders/environment/hddagi_direct_light.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/hddagi_filter.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/hddagi_integrate.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/environment/hddagi_nrd_prepare.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/hddagi_preprocess.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/environment/hddagi_screen_probe_phase1.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/voxel_gi.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/voxel_gi_debug.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_buffer_custom_data_rd.h"
-#include "servers/rendering/renderer_scene_render.h"
 #include "servers/rendering/rendering_device.h"
 #include "servers/rendering/storage/utilities.h"
 
 #define RB_SCOPE_GI SNAME("rbgi")
 #define RB_SCOPE_HDDAGI SNAME("hddagi")
+#define RB_SCOPE_HDDAGI_SCREEN_PROBES SNAME("hddagi_screen_probes")
+#define RB_SCOPE_HDDAGI_SCREEN_PROBES_DEBUG SNAME("hddagi_screen_probes_debug")
 
 #define RB_TEX_AMBIENT SNAME("ambient")
 #define RB_TEX_REFLECTION SNAME("reflection")
@@ -65,6 +70,43 @@
 
 #define RB_TEX_REFLECTION_U32_FILTERED SNAME("reflection_u32_filtered")
 
+// HDDAGI screen-probe resources are owned by GI::process_hddagi_screen_probes().
+#define RB_TEX_HDDAGI_SCREEN_PROBE_RADIANCE SNAME("radiance")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE1_PROBE_SURFACE SNAME("phase1_probe_surface")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE1_FULLRES_RAW SNAME("phase1_fullres_raw")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE1_FULLRES_SURFACE SNAME("phase1_fullres_surface")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE1_DEBUG SNAME("phase1_debug")
+// NRD input guides and output. View-Z is ping-ponged so the guide conversion
+// can expand Godot's RG velocity into a 2.5D motion vector without maintaining
+// a second depth history.
+#define RB_TEX_HDDAGI_NRD_NORMAL_ROUGHNESS SNAME("nrd_normal_roughness")
+#define RB_TEX_HDDAGI_NRD_VIEWZ SNAME("nrd_viewz")
+#define RB_TEX_HDDAGI_NRD_MOTION SNAME("nrd_motion")
+#define RB_TEX_HDDAGI_NRD_INPUT SNAME("nrd_input")
+#define RB_TEX_HDDAGI_NRD_OUTPUT SNAME("nrd_output")
+// Phase 2 reservoir v2 uses explicit FP32/UINT atlases so endpoint identity,
+// owner state, and stream normalization remain lossless.
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE2_RESERVOIR_OWNER SNAME("phase2_reservoir_owner")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE2_RESERVOIR_SAMPLE SNAME("phase2_reservoir_sample")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE2_RESERVOIR_ENDPOINT SNAME("phase2_reservoir_endpoint")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE2_RESERVOIR_RADIANCE SNAME("phase2_reservoir_radiance")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE2_RESERVOIR_IDENTITY SNAME("phase2_reservoir_identity")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE2_RESERVOIR_META SNAME("phase2_reservoir_meta")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE2_RESERVOIR_VERSION SNAME("phase2_reservoir_version")
+// Phase 3 spatial reservoirs are current-frame scratch. They never become the
+// next temporal history slot; this prevents overlapping spatial streams from
+// recursively inflating M across frames.
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE3_SPATIAL_OWNER SNAME("phase3_spatial_owner")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE3_SPATIAL_SAMPLE SNAME("phase3_spatial_sample")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE3_SPATIAL_ENDPOINT SNAME("phase3_spatial_endpoint")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE3_SPATIAL_RADIANCE SNAME("phase3_spatial_radiance")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE3_SPATIAL_IDENTITY SNAME("phase3_spatial_identity")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE3_SPATIAL_META SNAME("phase3_spatial_meta")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE3_SPATIAL_VERSION SNAME("phase3_spatial_version")
+// Display-side Phase 3 history/output. Moments are independent from reservoir
+// history and the spatially filtered image is Apply/debug-only.
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE3_MOMENTS SNAME("phase3_moments")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_PHASE3_FILTERED SNAME("phase3_filtered")
 // Forward declare RenderDataRD and RendererSceneRenderRD so we can pass it into some of our methods, these classes are pretty tightly bound
 class RenderDataRD;
 class RendererSceneRenderRD;
@@ -162,6 +204,7 @@ public:
 
 private:
 	static GI *singleton;
+	RendererRD::SkyRD *sky = nullptr;
 
 	/* VOXEL GI STORAGE */
 
@@ -459,7 +502,120 @@ private:
 		RID integrate_shader_version[INTEGRATE_MODE_MAX];
 		RID integrate_pipeline[INTEGRATE_MODE_MAX];
 
+		RID screen_probe_stats_dummy_buffer;
+
+		enum ScreenProbePhase1Mode {
+			SCREEN_PROBE_PHASE1_SURFACE,
+			SCREEN_PROBE_PHASE1_TRACE,
+			SCREEN_PROBE_PHASE1_RESOLVE,
+			SCREEN_PROBE_PHASE1_APPLY,
+			SCREEN_PROBE_PHASE2_FRESH,
+			SCREEN_PROBE_PHASE2_TEMPORAL,
+			SCREEN_PROBE_PHASE2_RESOLVE,
+			SCREEN_PROBE_PHASE3_SPATIAL,
+#ifdef NVIDIA_SHARC_ENABLED
+			SCREEN_PROBE_SHARC_UPDATE,
+			SCREEN_PROBE_SHARC_RESOLVE,
+			SCREEN_PROBE_PHASE1_TRACE_SHARC,
+			SCREEN_PROBE_PHASE2_FRESH_SHARC,
+			SCREEN_PROBE_PHASE2_TEMPORAL_SHARC,
+			SCREEN_PROBE_PHASE3_SPATIAL_SHARC,
+#endif
+			SCREEN_PROBE_PHASE1_MAX
+		};
+
+		enum ScreenProbePhase1SkyMode {
+			SCREEN_PROBE_PHASE1_SKY_DISABLED,
+			SCREEN_PROBE_PHASE1_SKY_COLOR,
+			SCREEN_PROBE_PHASE1_SKY_TEXTURE,
+		};
+
+		struct ScreenProbePhase1PushConstant {
+			int32_t gi_size[2];
+			int32_t screen_size[2];
+
+			int32_t probe_size;
+			uint32_t view_index;
+			uint32_t frame_index;
+			uint32_t flags;
+
+			float normal_bias;
+			float history_blend;
+			float history_depth_tolerance;
+			float history_normal_threshold;
+
+			uint32_t candidate_count;
+			uint32_t sky_mode;
+			float sky_energy;
+			float history_sample_count_max;
+
+			float sky_color[4];
+
+			uint32_t debug_mode;
+			float output_radiance_scale;
+			uint32_t pad[2];
+		};
+
+		struct ScreenProbePhase2PushConstant {
+			ScreenProbePhase1PushConstant base;
+
+			uint32_t history_generation;
+			uint32_t algorithm_version;
+			uint32_t robust_mode;
+			uint32_t history_m_cap;
+
+			uint32_t local_sequence;
+			uint32_t maximum_age;
+			float jacobian_max;
+			uint32_t pad;
+		};
+
+#ifdef NVIDIA_SHARC_ENABLED
+		// std140 host mirror for the shader-only SHARC integration. Device
+		// addresses are split low/high so no NVIDIA types enter the C++ ABI.
+		struct ScreenProbeSharcParameters {
+			uint32_t hash_lock_addresses[4];
+			uint32_t accumulation_resolved_addresses[4];
+			float camera_position_logarithm_base[4];
+			float previous_camera_position_scene_scale[4];
+			float tuning[4];
+			uint32_t resolve[4];
+			uint32_t control[4];
+		};
+#endif
+
+		HddagiScreenProbePhase1ShaderRD screen_probe_phase1;
+		RID screen_probe_phase1_shader;
+		RID screen_probe_phase1_shader_version[SCREEN_PROBE_PHASE1_MAX];
+		RID screen_probe_phase1_pipeline[SCREEN_PROBE_PHASE1_MAX];
+
+		struct NrdPreparePushConstant {
+			int32_t screen_size[2];
+			uint32_t view_index;
+			uint32_t history_valid;
+
+			float denoising_range;
+			float radiance_scale;
+			float current_jitter_pixels[2];
+			float previous_jitter_pixels[2];
+			uint32_t pad[2];
+		};
+
+		HddagiNrdPrepareShaderRD nrd_prepare;
+		RID nrd_prepare_shader;
+		RID nrd_prepare_shader_version;
+		RID nrd_prepare_pipeline;
+
 	} hddagi_shader;
+
+	enum ScreenProbeAlgorithmMode {
+		SCREEN_PROBE_ALGORITHM_PHASE1,
+		SCREEN_PROBE_ALGORITHM_PHASE1_REFERENCE,
+		SCREEN_PROBE_ALGORITHM_PHASE2_TEMPORAL,
+		SCREEN_PROBE_ALGORITHM_PHASE3_SPATIAL,
+	};
+
+	static void _screen_probe_stats_readback(const PackedByteArray &p_data, uint32_t p_frame_index, uint32_t p_view_count, int32_t p_width, int32_t p_height, uint32_t p_feature_flags, uint32_t p_algorithm_mode, uint32_t p_history_valid, uint32_t p_history_reset, uint32_t p_camera_cut, uint32_t p_taa_jitter_nonzero, uint32_t p_history_generation, uint32_t p_history_sequence, uint32_t p_debug_counter_tag);
 
 public:
 	static GI *get_singleton() { return singleton; }
@@ -488,16 +644,23 @@ public:
 		bool using_half_size_gi = false;
 
 		RID scene_data_ubo;
+		NrdContextRD nrd_context;
+		bool nrd_permanently_disabled = false;
+		SharcContextRD sharc_context;
+		RID sharc_parameters_ubo;
+#ifdef NVIDIA_SHARC_ENABLED
+		bool sharc_permanently_disabled = false;
+#endif
 
 		RID get_voxel_gi_buffer();
 
-		virtual void configure(RenderSceneBuffersRD *p_render_buffers) override{};
+		virtual void configure(RenderSceneBuffersRD *p_render_buffers) override {}
 		virtual void free_data() override;
 	};
 
 	/* VOXEL GI API */
 
-	bool owns_voxel_gi(RID p_rid) { return voxel_gi_owner.owns(p_rid); };
+	bool owns_voxel_gi(RID p_rid) { return voxel_gi_owner.owns(p_rid); }
 
 	virtual RID voxel_gi_allocate() override;
 	virtual void voxel_gi_free(RID p_voxel_gi) override;
@@ -554,14 +717,14 @@ public:
 		VoxelGIInstance *voxel_gi = voxel_gi_instance_owner.get_or_null(p_probe);
 		ERR_FAIL_NULL_V(voxel_gi, RID());
 		return voxel_gi->texture;
-	};
+	}
 
 	_FORCE_INLINE_ void voxel_gi_instance_set_render_index(RID p_probe, uint32_t p_index) {
 		VoxelGIInstance *voxel_gi = voxel_gi_instance_owner.get_or_null(p_probe);
 		ERR_FAIL_NULL(voxel_gi);
 
 		voxel_gi->render_index = p_index;
-	};
+	}
 
 	bool voxel_gi_instance_owns(RID p_rid) const {
 		return voxel_gi_instance_owner.owns(p_rid);
@@ -664,7 +827,9 @@ public:
 		RID lightprobe_geometry_proximity_map;
 		RID lightprobe_camera_visibility_map;
 		RID lightprobe_process_frame; // 28 bits is frame, upper 4 bits is frames remaining to do full updates (for having updated light when scrolling).
-
+		RID lightprobe_screen_probe_feedback; // Screen-query count/rank feedback consumed by the lightprobe scheduler on the next frame.
+		RID lightprobe_screen_probe_last_used; // Global frame stamp of the most recent screen-query feedback per lightprobe.
+		RID lightprobe_screen_probe_origin_vote; // Packed representative screen-query origin probe per lightprobe.
 		Vector<RID> lightprobe_camera_buffers;
 
 		RID occlusion_data[2];
@@ -702,12 +867,37 @@ public:
 
 		uint32_t version = 0;
 		uint32_t render_pass = 0;
+		bool screen_probe_history_initialized = false;
+		int32_t screen_probe_history_probe_size = 0;
+		float screen_probe_history_normal_bias = 0.0f;
+		Size2i screen_probe_history_gi_size;
+		Size2i screen_probe_history_screen_size;
+		uint32_t screen_probe_history_view_count = 0;
+		uint32_t screen_probe_history_configuration = 0;
+		uint32_t screen_probe_history_algorithm = SCREEN_PROBE_ALGORITHM_PHASE1;
+		uint32_t screen_probe_history_slot = 0;
+		uint32_t screen_probe_history_sequence = 0;
+		uint32_t screen_probe_history_generation = 1;
+		RID screen_probe_stats_buffer;
+		bool screen_probe_stats_accumulating = false;
+		bool screen_probe_scheduler_feedback_active = false;
+		bool screen_probe_previous_camera_valid = false;
+		Projection screen_probe_previous_projection[2];
+		// Raster history keeps the jittered projection above for reconstructing the
+		// previous G-buffer. Temporal association follows the final TAA convention
+		// and uses this separate jitter-neutral projection.
+		Projection screen_probe_previous_temporal_projection[2];
+		// NRD consumes a D3D-style, jitter-neutral projection without Vulkan's
+		// raster Y flip. Keep it separate from both raster history matrices.
+		Projection screen_probe_previous_nrd_projection[2];
+		Vector2 screen_probe_previous_taa_jitter;
+		Transform3D screen_probe_previous_cam_transform;
 
 		int32_t cascade_dynamic_light_count[HDDAGI::MAX_CASCADES]; //used dynamically
 
 		RID debug_probes_scene_data_ubo;
 
-		virtual void configure(RenderSceneBuffersRD *p_render_buffers) override{};
+		virtual void configure(RenderSceneBuffersRD *p_render_buffers) override {}
 		virtual void free_data() override;
 		~HDDAGI();
 
@@ -748,7 +938,6 @@ public:
 	RSE::EnvironmentHDDAGIFramesToConverge hddagi_frames_to_converge = RSE::ENV_HDDAGI_CONVERGE_IN_12_FRAMES;
 	RSE::EnvironmentHDDAGIFramesToUpdateLight hddagi_frames_to_update_light = RSE::ENV_HDDAGI_UPDATE_LIGHT_IN_4_FRAMES;
 	RSE::EnvironmentHDDAGIInactiveProbeFrames inactive_probe_frames = RSE::ENV_HDDAGI_INACTIVE_PROBE_4_FRAMES;
-
 	float hddagi_solid_cell_ratio = 0.5;
 	Vector3 hddagi_debug_probe_pos;
 	Vector3 hddagi_debug_probe_dir;
@@ -775,7 +964,7 @@ public:
 		int32_t probe_axis_size[3];
 		float esm_strength;
 
-		uint32_t pad3[4];
+		int32_t screen_probe_previous_region_world_offset[4];
 
 		struct ProbeCascadeData {
 			float position[3]; //offset of (0,0,0) in world coordinates
@@ -816,7 +1005,24 @@ public:
 		int32_t screen_size[2];
 		float pad1;
 		float pad2;
+
+		float projection[2][16];
+		float previous_projection[2][16];
+		float previous_cam_inv_transform[16];
+		// std140 mat3 used by Phase 1 directional environment lookups. Legacy
+		// shaders consume only the prefix above and safely ignore this tail.
+		float radiance_inverse_xform[12];
+		// Phase 2 reconstructs the previous representative receiver in world
+		// space. Keep this at the tail so the legacy and Phase 1 prefix ABI stays
+		// unchanged.
+		float previous_inv_projection[2][16];
+		// Jitter-neutral current/previous projections define the same motion domain
+		// as Forward+ velocity. Current G-buffer reconstruction continues to use the
+		// jittered inv_projection prefix above.
+		float temporal_projection[2][16];
+		float previous_temporal_projection[2][16];
 	};
+	static_assert(sizeof(SceneData) == 992, "HDDAGI SceneData must match the std140 shader ABI.");
 
 	struct PushConstant {
 		uint32_t max_voxel_gi_instances;
@@ -894,12 +1100,18 @@ public:
 
 	void setup_voxel_gi_instances(RenderDataRD *p_render_data, Ref<RenderSceneBuffersRD> p_render_buffers, const Transform3D &p_transform, const PagedArray<RID> &p_voxel_gi_instances, uint32_t &r_voxel_gi_instances_used);
 	void process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer, RID p_environment, uint32_t p_view_count, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_cam_transform, const PagedArray<RID> &p_voxel_gi_instances);
+	bool hddagi_uses_screen_probes(RID p_environment) const;
+	void process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, RID p_environment, uint32_t p_view_count, Size2i p_gi_size, const Projection *p_projections, const Vector2 &p_taa_jitter, const Transform3D &p_cam_transform, bool p_camera_attributes_valid, float p_exposure_normalization, float p_ibl_exposure_normalization, int p_probe_size, float p_normal_bias, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, float p_history_sample_count_max, bool p_debug_counters, uint32_t p_debug_counter_tag, bool p_reference_mode, bool p_restir_temporal_guiding, bool p_restir_spatial_guiding, int p_restir_base_candidate_count, bool p_restir_temporal_robust_mode, int p_restir_temporal_m_cap_multiplier, int p_restir_temporal_maximum_age, float p_restir_temporal_jacobian_max);
+	void disable_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers);
 
 	RID voxel_gi_instance_create(RID p_base);
 	void voxel_gi_instance_set_transform_to_data(RID p_probe, const Transform3D &p_xform);
 	bool voxel_gi_needs_update(RID p_probe) const;
 	void voxel_gi_update(RID p_probe, bool p_update_light_instances, const Vector<RID> &p_light_instances, const PagedArray<RenderGeometryInstance *> &p_dynamic_objects);
 	void debug_voxel_gi(RID p_voxel_gi, RD::DrawListID p_draw_list, RID p_framebuffer, const Projection &p_camera_with_transform, bool p_lighting, bool p_emission, float p_alpha);
+
+private:
+	void _process_hddagi_screen_probes_phase1(Ref<RenderSceneBuffersRD> p_render_buffers, Ref<RenderBuffersGI> p_rbgi, Ref<HDDAGI> p_hddagi, const RID *p_normal_roughness_slices, RID p_environment, uint32_t p_view_count, Size2i p_gi_size, const Projection *p_projections, const Vector2 &p_taa_jitter, const Transform3D &p_cam_transform, bool p_camera_attributes_valid, float p_exposure_normalization, float p_ibl_exposure_normalization, int p_probe_size, float p_normal_bias, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, float p_history_sample_count_max, int p_candidate_count, bool p_debug_counters, uint32_t p_debug_counter_tag, bool p_reference_mode, bool p_temporal_restir, bool p_spatial_restir, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale, bool p_restir_temporal_robust_mode, int p_restir_temporal_m_cap_multiplier, int p_restir_temporal_maximum_age, float p_restir_temporal_jacobian_max);
 };
 
 } // namespace RendererRD

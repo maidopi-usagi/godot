@@ -1,0 +1,751 @@
+{
+	"schema_version": "2.0.0",
+	"suite": "hddagi_screen_probe_phase2_temporal_restir",
+	"acceptance_ready": false,
+	"purpose": "Phase 2 temporal ReSTIR structural, CPU-reference, counter-conservation, lifecycle, raw-HDR, and NRD guide-path diagnostics. Previous custom-denoiser hardware thresholds are intentionally invalidated.",
+	"counter_fields": [
+		"qa_segment",
+		"frame",
+		"view_count",
+		"width",
+		"height",
+		"feature_flags",
+		"algorithm_mode",
+		"algorithm",
+		"debug_counter_tag",
+		"history_valid",
+		"history_reset",
+		"camera_cut",
+		"taa_jitter_nonzero",
+		"history_generation",
+		"history_sequence",
+		"fresh_candidates",
+		"temporal_guided_candidates",
+		"spatial_guided_candidates",
+		"hdda_rays",
+		"hdda_steps",
+		"hdda_hits",
+		"hdda_misses",
+		"sharc_query_attempts",
+		"sharc_query_hits",
+		"sharc_query_ineligible",
+		"sharc_query_misses",
+		"sharc_update_rays",
+		"sharc_update_misses",
+		"sharc_update_rejects",
+		"raw_hdr_sample_count",
+		"raw_hdr_fixed_sum_r",
+		"raw_hdr_fixed_sum_g",
+		"raw_hdr_fixed_sum_b",
+		"raw_hdr_nonfinite_or_overflow",
+		"raw_hdr_accumulated_frame_count",
+		"raw_hdr_fixed_scale",
+		"raw_hdr_lattice_stride",
+		"raw_hdr_lattice_period",
+		"raw_hdr_lattice_phase_mask_words",
+		"raw_hdr_lattice_phase_coverage_count",
+		"raw_hdr_mean_rgb",
+		"reservoir_valid_surfaces",
+		"reservoir_fresh_valid",
+		"reservoir_fresh_invalid",
+		"reservoir_temporal_attempts",
+		"reservoir_temporal_accepted",
+		"reservoir_reject_no_history",
+		"reservoir_reject_reprojection_or_owner",
+		"reservoir_reject_generation_or_algorithm",
+		"reservoir_reject_endpoint_identity_or_version",
+		"reservoir_reject_visibility",
+		"reservoir_reject_jacobian",
+		"reservoir_reject_age",
+		"reservoir_visibility_rays",
+		"reservoir_visibility_visible",
+		"reservoir_visibility_occluded",
+		"reservoir_m_cap_applied",
+		"reservoir_selected_fresh",
+		"reservoir_selected_history",
+		"reservoir_final_valid",
+		"reservoir_final_invalid",
+		"reservoir_nonfinite",
+		"reservoir_robust_jacobian_clamp",
+		"reservoir_max_m",
+		"reservoir_max_age",
+		"reservoir_sum_m",
+		"reservoir_packing_invalid",
+		"reservoir_hit_reuse",
+		"reservoir_sky_reuse",
+		"reservoir_robust_flag_final_fresh",
+		"reservoir_robust_flag_final_history",
+		"reservoir_zero_target_mass_only",
+		"reservoir_gpu_zero_target_branch_golden"
+	],
+	"profile_authoring_contract": {
+		"required_match_fields": [
+			"adapter_name_contains",
+			"adapter_vendor",
+			"api_version",
+			"driver_info",
+			"rendering_method",
+			"rendering_driver",
+			"width",
+			"height",
+			"sample_stride"
+		],
+		"required_suite_parameters": [
+			"scenario",
+			"warmup_frames",
+			"sample_frames",
+			"settle_frames",
+			"phase2_long_frames",
+			"roi_border_fraction"
+		],
+		"required_checks": [
+			"scenarios.phase2_temporal.checks.all_required_project_settings_exist",
+			"scenarios.phase2_temporal.checks.phase1_n2_and_phase2_n1_comparison_states_valid",
+			"scenarios.phase2_temporal.checks.constant_colored_and_long_run_outputs_non_black",
+			"scenarios.phase2_temporal.checks.long_run_has_at_least_1000_frames",
+			"scenarios.phase2_temporal.checks.all_finite_mean_variance_and_ghost_gate_inputs_emitted",
+			"scenarios.phase2_temporal.checks.camera_motion_and_cut_executed",
+			"scenarios.phase2_temporal.checks.cascade_scroll_executed",
+			"scenarios.phase2_temporal.checks.dynamic_blocker_light_and_sky_steps_executed",
+			"scenarios.phase2_temporal.checks.dynamic_steps_have_measurable_signal",
+			"scenarios.phase2_temporal.checks.dynamic_ghost_half_lives_reached",
+			"scenarios.phase2_temporal.checks.robust_clamp_mode_executed",
+			"scenarios.phase2_temporal.checks.maximum_age_rejection_runtime_executed",
+			"scenarios.phase2_temporal.checks.taa_jitter_runtime_executed",
+			"scenarios.phase2_temporal.checks.toggle_resize_and_update_once_executed",
+			"scenarios.phase2_temporal.checks.all_transition_metrics_finite"
+		],
+		"metrics_requiring_real_gpu_thresholds": [
+			"debug_counters.phase2_temporal.phase2_to_phase1_ray_budget_ratio",
+			"debug_counters.phase2_temporal.phase1_n2_median_hdda_rays",
+			"debug_counters.phase2_temporal.phase2_n1_visibility_median_hdda_rays",
+			"debug_counters.phase2_temporal.robust_flag_final_fresh_total",
+			"debug_counters.phase2_temporal.robust_flag_final_history_total",
+			"debug_counters.phase2_temporal.aggregates.reservoir_zero_target_mass_only",
+			"debug_counters.phase2_temporal.age_test_reject_total",
+			"debug_counters.phase2_temporal.age_test_snapshot_count",
+			"debug_counters.phase2_temporal.age_test_reject_snapshot_count",
+			"debug_counters.phase2_temporal.dynamic_blocker_guarded_two_frame_rejection_delta",
+			"debug_counters.phase2_temporal.dynamic_blocker_guarded_rejection_ratio",
+			"debug_counters.phase2_temporal.dynamic_blocker_guarded_rejection_delta_per_valid_surface",
+			"debug_counters.phase2_temporal.dynamic_blocker_generation_preserved",
+			"debug_counters.phase2_temporal.dynamic_blocker_step_reset_count",
+			"debug_counters.phase2_temporal.dynamic_light_guarded_live_history_count",
+			"debug_counters.phase2_temporal.dynamic_light_generation_preserved",
+			"debug_counters.phase2_temporal.dynamic_light_step_reset_count",
+			"debug_counters.phase2_temporal.dynamic_sky_guarded_live_history_count",
+			"debug_counters.phase2_temporal.dynamic_sky_generation_preserved",
+			"debug_counters.phase2_temporal.dynamic_sky_step_reset_count",
+			"debug_counters.phase2_temporal.taa_jitter_nonzero_snapshot_count",
+			"debug_counters.phase2_temporal.taa_jitter_stationary_snapshot_count",
+			"debug_counters.phase2_temporal.taa_jitter_motion_snapshot_count",
+			"debug_counters.phase2_temporal.taa_jitter_guarded_snapshot_count",
+			"debug_counters.phase2_temporal.taa_jitter_guarded_nonzero_ratio",
+			"debug_counters.phase2_temporal.taa_jitter_guarded_live_history_ratio",
+			"debug_counters.phase2_temporal.taa_jitter_generation_preserved",
+			"debug_counters.phase2_temporal.taa_cut_metadata_reset_count",
+			"debug_counters.phase2_temporal.update_once_idle_sequence_delta",
+			"debug_counters.phase2_temporal.update_once_second_live_history",
+			"debug_counters.phase2_temporal.update_once_resize_generation_changed",
+			"debug_counters.phase2_temporal.lifecycle_reset_zero_history_accept_count",
+			"debug_counters.phase2_raw_hdr_pre_tonemap.cases.constant.p1_n2.eligible_window_count",
+			"debug_counters.phase2_raw_hdr_pre_tonemap.cases.constant.p2_n1_visibility.eligible_window_count",
+			"debug_counters.phase2_raw_hdr_pre_tonemap.cases.colored.p1_n2.eligible_window_count",
+			"debug_counters.phase2_raw_hdr_pre_tonemap.cases.colored.p2_n1_visibility.eligible_window_count",
+			"debug_counters.phase2_raw_hdr_pre_tonemap.cases.constant.maximum_channel_relative_difference_p2_vs_p1_n2",
+			"debug_counters.phase2_raw_hdr_pre_tonemap.cases.constant.luminance_relative_difference_p2_vs_p1_n2",
+			"debug_counters.phase2_raw_hdr_pre_tonemap.cases.colored.maximum_channel_relative_difference_p2_vs_p1_n2",
+			"debug_counters.phase2_raw_hdr_pre_tonemap.cases.colored.luminance_relative_difference_p2_vs_p1_n2",
+			"scenarios.phase2_temporal.gate_metrics.constant_mean_relative_difference_p2_vs_p1_n2",
+			"scenarios.phase2_temporal.gate_metrics.colored_mean_relative_difference_p2_vs_p1_n2",
+			"scenarios.phase2_temporal.gate_metrics.colored_frame_mean_variance_ratio_p2_over_p1_n2",
+			"scenarios.phase2_temporal.gate_metrics.colored_phase1_frame_mean_variance",
+			"scenarios.phase2_temporal.gate_metrics.long_run_absolute_relative_slope_per_100_frames",
+			"scenarios.phase2_temporal.gate_metrics.long_run_absolute_half_drift_normalized",
+			"scenarios.phase2_temporal.gate_metrics.maximum_transition_ghost_proxy_normalized",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_blocker_step_signal_normalized",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_light_step_signal_normalized",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_sky_step_signal_normalized",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_blocker_ghost_half_life_frames",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_light_ghost_half_life_frames",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_sky_ghost_half_life_frames",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_blocker_residual_frame_4_normalized",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_light_residual_frame_8_normalized",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_sky_residual_frame_8_normalized",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_blocker_stable_noise_normalized",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_light_stable_noise_normalized",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_sky_stable_noise_normalized",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_blocker_noise_to_step_ratio",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_light_noise_to_step_ratio",
+			"scenarios.phase2_temporal.gate_metrics.dynamic_sky_noise_to_step_ratio",
+			"scenarios.phase2_temporal.gate_metrics.taa_cut_ghost_proxy_normalized",
+			"gpu_profile.phase2_stable_temporal_samples.task_summaries_ms.HDDAGI Screen Probe Phase 2 Fresh Reservoir.mean",
+			"gpu_profile.phase2_stable_temporal_samples.task_summaries_ms.HDDAGI Screen Probe Phase 2 Temporal Stream Merge.mean"
+		],
+		"required_counter_identities": [
+			"Phase 1 fixed-budget baseline: feature_flags=9, algorithm_mode=1, algorithm=phase1_fresh",
+			"Phase 2 strict temporal: feature_flags=3, algorithm_mode=3, algorithm=phase2_temporal_restir",
+			"Phase 2 robust temporal: feature_flags=7, algorithm_mode=3, algorithm=phase2_temporal_restir"
+		],
+		"required_gpu_task_markers": [
+			"HDDAGI Screen Probe Phase 2 Fresh Reservoir",
+			"HDDAGI Screen Probe Phase 2 Temporal Stream Merge",
+			"HDDAGI NRD Guide Preparation"
+		],
+		"calibration_rule": "Create a profile only after preserving the complete CPU JSON, GPU JSON, console log, engine log, exact editor binary provenance, and repeated same-hardware runs. Use reviewed upper/lower bounds; never copy a single observation as a threshold without margin."
+	},
+	"profiles": [
+		{
+			"id": "phase2_rtx3080_vulkan_forward_plus_640x360_stride2",
+			"match": {
+				"adapter_name_contains": "NVIDIA GeForce RTX 3080",
+				"adapter_vendor": "NVIDIA",
+				"api_version": "1.4.341",
+				"driver_info": [
+					"NVIDIA",
+					"32.0.16.1062"
+				],
+				"rendering_method": "forward_plus",
+				"rendering_driver": "vulkan",
+				"width": 640,
+				"height": 360,
+				"sample_stride": 2
+			},
+			"suite_parameters": {
+				"scenario": "phase2_temporal",
+				"warmup_frames": 64,
+				"sample_frames": 128,
+				"settle_frames": 32,
+				"phase2_long_frames": 1000,
+				"roi_border_fraction": 0.08
+			},
+			"required": {
+				"status": "completed",
+				"runtime_error_count": 0,
+				"counter_schema_valid": true,
+				"minimum_counter_snapshots": 1900,
+				"minimum_gpu_profile_blocks": 60,
+				"minimum_hddagi_gpu_samples": 300,
+				"counter_feature_flags": [
+					3,
+					7,
+					9
+				],
+				"gpu_task_names_contain": [
+					"HDDAGI Screen Probe Phase 2 Fresh Reservoir",
+					"HDDAGI Screen Probe Phase 2 Temporal Stream Merge",
+					"HDDAGI NRD Guide Preparation"
+				],
+				"checks": [
+					"scenarios.phase2_temporal.checks.all_required_project_settings_exist",
+					"scenarios.phase2_temporal.checks.phase1_n2_and_phase2_n1_comparison_states_valid",
+					"scenarios.phase2_temporal.checks.constant_colored_and_long_run_outputs_non_black",
+					"scenarios.phase2_temporal.checks.long_run_has_at_least_1000_frames",
+					"scenarios.phase2_temporal.checks.all_finite_mean_variance_and_ghost_gate_inputs_emitted",
+					"scenarios.phase2_temporal.checks.camera_motion_and_cut_executed",
+					"scenarios.phase2_temporal.checks.cascade_scroll_executed",
+					"scenarios.phase2_temporal.checks.dynamic_blocker_light_and_sky_steps_executed",
+					"scenarios.phase2_temporal.checks.dynamic_steps_have_measurable_signal",
+					"scenarios.phase2_temporal.checks.dynamic_ghost_half_lives_reached",
+					"scenarios.phase2_temporal.checks.robust_clamp_mode_executed",
+					"scenarios.phase2_temporal.checks.maximum_age_rejection_runtime_executed",
+					"scenarios.phase2_temporal.checks.taa_jitter_runtime_executed",
+					"scenarios.phase2_temporal.checks.toggle_resize_and_update_once_executed",
+					"scenarios.phase2_temporal.checks.all_transition_metrics_finite"
+				],
+				"counter_fields": [
+					"qa_segment",
+					"frame",
+					"view_count",
+					"width",
+					"height",
+					"feature_flags",
+					"algorithm_mode",
+					"algorithm",
+					"debug_counter_tag",
+					"history_valid",
+					"history_reset",
+					"camera_cut",
+					"taa_jitter_nonzero",
+					"history_generation",
+					"history_sequence",
+					"fresh_candidates",
+					"temporal_guided_candidates",
+					"spatial_guided_candidates",
+					"hdda_rays",
+					"hdda_steps",
+					"hdda_hits",
+					"hdda_misses",
+					"sharc_query_attempts",
+					"sharc_query_hits",
+					"sharc_query_ineligible",
+					"sharc_query_misses",
+					"sharc_update_rays",
+					"sharc_update_misses",
+					"sharc_update_rejects",
+					"raw_hdr_sample_count",
+					"raw_hdr_fixed_sum_r",
+					"raw_hdr_fixed_sum_g",
+					"raw_hdr_fixed_sum_b",
+					"raw_hdr_nonfinite_or_overflow",
+					"raw_hdr_accumulated_frame_count",
+					"raw_hdr_fixed_scale",
+					"raw_hdr_lattice_stride",
+					"raw_hdr_lattice_period",
+					"raw_hdr_lattice_phase_mask_words",
+					"raw_hdr_lattice_phase_coverage_count",
+					"raw_hdr_mean_rgb",
+					"reservoir_valid_surfaces",
+					"reservoir_fresh_valid",
+					"reservoir_fresh_invalid",
+					"reservoir_temporal_attempts",
+					"reservoir_temporal_accepted",
+					"reservoir_reject_no_history",
+					"reservoir_reject_reprojection_or_owner",
+					"reservoir_reject_generation_or_algorithm",
+					"reservoir_reject_endpoint_identity_or_version",
+					"reservoir_reject_visibility",
+					"reservoir_reject_jacobian",
+					"reservoir_reject_age",
+					"reservoir_visibility_rays",
+					"reservoir_visibility_visible",
+					"reservoir_visibility_occluded",
+					"reservoir_m_cap_applied",
+					"reservoir_selected_fresh",
+					"reservoir_selected_history",
+					"reservoir_final_valid",
+					"reservoir_final_invalid",
+					"reservoir_nonfinite",
+					"reservoir_robust_jacobian_clamp",
+					"reservoir_max_m",
+					"reservoir_max_age",
+					"reservoir_sum_m",
+					"reservoir_packing_invalid",
+					"reservoir_hit_reuse",
+					"reservoir_sky_reuse",
+					"reservoir_robust_flag_final_fresh",
+					"reservoir_robust_flag_final_history",
+					"reservoir_zero_target_mass_only",
+					"reservoir_gpu_zero_target_branch_golden"
+				]
+			},
+			"thresholds": {
+				"scenarios.phase2_temporal.configuration.temporal_candidate_count": {
+					"min": 1,
+					"max": 1
+				},
+				"scenarios.phase2_temporal.configuration.fresh_baseline_candidate_count": {
+					"min": 2,
+					"max": 2
+				},
+				"scenarios.phase2_temporal.configuration.robust_test_jacobian_max": {
+					"min": 1,
+					"max": 1
+				},
+				"scenarios.phase2_temporal.configuration.age_rejection_test_maximum": {
+					"min": 2,
+					"max": 2
+				},
+				"scenarios.phase2_temporal.configuration.m_cap_multiplier": {
+					"min": 20,
+					"max": 20
+				},
+				"scenarios.phase2_temporal.configuration.effective_history_m_cap": {
+					"min": 20,
+					"max": 20
+				},
+				"scenarios.phase2_temporal.configuration.maximum_output_m": {
+					"min": 21,
+					"max": 21
+				},
+				"scenarios.phase2_temporal.configuration.maximum_age": {
+					"min": 255,
+					"max": 255
+				},
+				"scenarios.phase2_temporal.configuration.jacobian_max_setting": {
+					"min": 20,
+					"max": 20
+				},
+				"scenarios.phase2_temporal.configuration.algorithm_mode": {
+					"min": 3,
+					"max": 3
+				},
+				"cpu_reference.trials_per_fresh_candidate_count": {
+					"min": 65536
+				},
+				"cpu_reference.stress_frames": {
+					"min": 1000
+				},
+				"debug_counters.phase2_temporal.phase2_to_phase1_ray_budget_ratio": {
+					"min": 0.98,
+					"max": 1.02
+				},
+				"debug_counters.phase2_temporal.phase1_n2_median_hdda_rays": {
+					"min": 7200,
+					"max": 7200
+				},
+				"debug_counters.phase2_temporal.phase2_n1_visibility_median_hdda_rays": {
+					"min": 7200,
+					"max": 7200
+				},
+				"debug_counters.phase2_raw_hdr_pre_tonemap.cases.constant.maximum_channel_relative_difference_p2_vs_p1_n2": {
+					"max": 0.001
+				},
+				"debug_counters.phase2_raw_hdr_pre_tonemap.cases.constant.luminance_relative_difference_p2_vs_p1_n2": {
+					"max": 0.001
+				},
+				"debug_counters.phase2_raw_hdr_pre_tonemap.cases.colored.maximum_channel_relative_difference_p2_vs_p1_n2": {
+					"max": 0.005
+				},
+				"debug_counters.phase2_raw_hdr_pre_tonemap.cases.colored.luminance_relative_difference_p2_vs_p1_n2": {
+					"max": 0.001
+				},
+				"debug_counters.phase2_raw_hdr_pre_tonemap.cases.constant.p1_n2.eligible_window_count": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_raw_hdr_pre_tonemap.cases.constant.p2_n1_visibility.eligible_window_count": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_raw_hdr_pre_tonemap.cases.colored.p1_n2.eligible_window_count": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_raw_hdr_pre_tonemap.cases.colored.p2_n1_visibility.eligible_window_count": {
+					"min": 1,
+					"max": 1
+				},
+				"scenarios.phase2_temporal.gate_metrics.constant_mean_relative_difference_p2_vs_p1_n2": {
+					"max": 0.01
+				},
+				"scenarios.phase2_temporal.gate_metrics.colored_mean_relative_difference_p2_vs_p1_n2": {
+					"max": 0.02
+				},
+				"scenarios.phase2_temporal.gate_metrics.colored_frame_mean_variance_ratio_p2_over_p1_n2": {
+					"max": 0.25
+				},
+				"scenarios.phase2_temporal.gate_metrics.colored_phase1_frame_mean_variance": {
+					"min": 1e-8
+				},
+				"scenarios.phase2_temporal.gate_metrics.long_run_absolute_relative_slope_per_100_frames": {
+					"max": 0.001
+				},
+				"scenarios.phase2_temporal.gate_metrics.long_run_absolute_half_drift_normalized": {
+					"max": 0.01
+				},
+				"scenarios.phase2_temporal.gate_metrics.maximum_transition_ghost_proxy_normalized": {
+					"max": 0.1
+				},
+				"scenarios.phase2_temporal.gate_metrics.motion_stop_ghost_proxy_normalized": {
+					"max": 0.05
+				},
+				"scenarios.phase2_temporal.gate_metrics.camera_cut_ghost_proxy_normalized": {
+					"max": 0.1
+				},
+				"scenarios.phase2_temporal.gate_metrics.cascade_scroll_ghost_proxy_normalized": {
+					"max": 0.1
+				},
+				"scenarios.phase2_temporal.gate_metrics.taa_cut_ghost_proxy_normalized": {
+					"max": 0.1
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_blocker_ghost_proxy_normalized": {
+					"max": 0.05
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_light_ghost_proxy_normalized": {
+					"max": 0.1
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_sky_ghost_proxy_normalized": {
+					"max": 0.1
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_blocker_step_signal_normalized": {
+					"min": 0.04
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_light_step_signal_normalized": {
+					"min": 0.1
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_sky_step_signal_normalized": {
+					"min": 0.02
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_blocker_ghost_half_life_frames": {
+					"min": 0,
+					"max": 32
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_light_ghost_half_life_frames": {
+					"min": 0,
+					"max": 32
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_sky_ghost_half_life_frames": {
+					"min": 0,
+					"max": 32
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_blocker_residual_frame_4_normalized": {
+					"min": 0,
+					"max": 0.05
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_light_residual_frame_8_normalized": {
+					"min": 0,
+					"max": 0.1
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_sky_residual_frame_8_normalized": {
+					"min": 0,
+					"max": 0.1
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_blocker_stable_noise_normalized": {
+					"min": 0,
+					"max": 0.02
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_light_stable_noise_normalized": {
+					"min": 0,
+					"max": 0.02
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_sky_stable_noise_normalized": {
+					"min": 0,
+					"max": 0.02
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_blocker_noise_to_step_ratio": {
+					"min": 0,
+					"max": 0.25
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_light_noise_to_step_ratio": {
+					"min": 0,
+					"max": 0.25
+				},
+				"scenarios.phase2_temporal.gate_metrics.dynamic_sky_noise_to_step_ratio": {
+					"min": 0,
+					"max": 0.25
+				},
+				"debug_counters.phase2_temporal.robust_snapshot_count": {
+					"min": 16
+				},
+				"debug_counters.phase2_temporal.strict_jacobian_clamp_total": {
+					"min": 0,
+					"max": 0
+				},
+				"debug_counters.phase2_temporal.robust_jacobian_clamp_total": {
+					"min": 1
+				},
+				"debug_counters.phase2_temporal.strict_robust_flag_final_fresh_total": {
+					"min": 0,
+					"max": 0
+				},
+				"debug_counters.phase2_temporal.strict_robust_flag_final_history_total": {
+					"min": 0,
+					"max": 0
+				},
+				"debug_counters.phase2_temporal.robust_flag_final_fresh_total": {
+					"min": 1
+				},
+				"debug_counters.phase2_temporal.robust_flag_final_history_total": {
+					"min": 1
+				},
+				"debug_counters.phase2_temporal.aggregates.reservoir_zero_target_mass_only": {
+					"min": 1
+				},
+				"debug_counters.phase2_temporal.age_test_snapshot_count": {
+					"min": 32,
+					"max": 32
+				},
+				"debug_counters.phase2_temporal.age_test_reject_total": {
+					"min": 1
+				},
+				"debug_counters.phase2_temporal.age_test_reject_snapshot_count": {
+					"min": 16
+				},
+				"debug_counters.phase2_temporal.age_test_observed_max_age": {
+					"min": 2,
+					"max": 2
+				},
+				"debug_counters.phase2_temporal.age_test_live_history_snapshot_count": {
+					"min": 8
+				},
+				"debug_counters.phase2_temporal.dynamic_blocker_baseline_snapshot_count": {
+					"min": 4,
+					"max": 4
+				},
+				"debug_counters.phase2_temporal.dynamic_blocker_step_snapshot_count": {
+					"min": 128,
+					"max": 128
+				},
+				"debug_counters.phase2_temporal.dynamic_blocker_guarded_two_frame_rejection_delta": {
+					"min": 1
+				},
+				"debug_counters.phase2_temporal.dynamic_blocker_guarded_rejection_ratio": {
+					"min": 1.1
+				},
+				"debug_counters.phase2_temporal.dynamic_blocker_guarded_rejection_delta_per_valid_surface": {
+					"min": 0.005
+				},
+				"debug_counters.phase2_temporal.dynamic_blocker_guarded_live_history_count": {
+					"min": 2,
+					"max": 2
+				},
+				"debug_counters.phase2_temporal.dynamic_blocker_generation_preserved": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.dynamic_blocker_step_reset_count": {
+					"min": 0,
+					"max": 0
+				},
+				"debug_counters.phase2_temporal.dynamic_light_baseline_snapshot_count": {
+					"min": 4,
+					"max": 4
+				},
+				"debug_counters.phase2_temporal.dynamic_light_step_snapshot_count": {
+					"min": 128,
+					"max": 128
+				},
+				"debug_counters.phase2_temporal.dynamic_light_guarded_live_history_count": {
+					"min": 2,
+					"max": 2
+				},
+				"debug_counters.phase2_temporal.dynamic_light_generation_preserved": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.dynamic_light_step_reset_count": {
+					"min": 0,
+					"max": 0
+				},
+				"debug_counters.phase2_temporal.dynamic_sky_baseline_snapshot_count": {
+					"min": 4,
+					"max": 4
+				},
+				"debug_counters.phase2_temporal.dynamic_sky_step_snapshot_count": {
+					"min": 128,
+					"max": 128
+				},
+				"debug_counters.phase2_temporal.dynamic_sky_guarded_live_history_count": {
+					"min": 2,
+					"max": 2
+				},
+				"debug_counters.phase2_temporal.dynamic_sky_generation_preserved": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.dynamic_sky_step_reset_count": {
+					"min": 0,
+					"max": 0
+				},
+				"debug_counters.phase2_temporal.taa_jitter_stationary_snapshot_count": {
+					"min": 16,
+					"max": 16
+				},
+				"debug_counters.phase2_temporal.taa_jitter_motion_snapshot_count": {
+					"min": 16,
+					"max": 16
+				},
+				"debug_counters.phase2_temporal.taa_jitter_guarded_snapshot_count": {
+					"min": 32,
+					"max": 32
+				},
+				"debug_counters.phase2_temporal.taa_jitter_nonzero_snapshot_count": {
+					"min": 32,
+					"max": 32
+				},
+				"debug_counters.phase2_temporal.taa_jitter_guarded_nonzero_ratio": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.taa_jitter_guarded_live_history_ratio": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.taa_jitter_generation_preserved": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.taa_cut_metadata_reset_count": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.update_once_first_snapshot_count": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.update_once_second_snapshot_count": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.update_once_resize_snapshot_count": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.update_once_first_sequence": {
+					"min": 0,
+					"max": 0
+				},
+				"debug_counters.phase2_temporal.update_once_second_sequence": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.update_once_idle_sequence_delta": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.update_once_generation_preserved_across_idle": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.update_once_second_live_history": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.update_once_resize_sequence": {
+					"min": 0,
+					"max": 0
+				},
+				"debug_counters.phase2_temporal.update_once_resize_generation_changed": {
+					"min": 1,
+					"max": 1
+				},
+				"debug_counters.phase2_temporal.lifecycle_reset_snapshot_count": {
+					"min": 4,
+					"max": 4
+				},
+				"debug_counters.phase2_temporal.lifecycle_reset_zero_history_accept_count": {
+					"min": 4,
+					"max": 4
+				},
+				"gpu_profile.phase2_stable_temporal_samples.segment_coverage_count": {
+					"min": 2
+				},
+				"gpu_profile.phase2_stable_temporal_samples.block_count": {
+					"min": 8
+				},
+				"gpu_profile.phase2_stable_temporal_samples.task_summaries_ms.HDDAGI Screen Probe Phase 2 Fresh Reservoir.mean": {
+					"min": 0.05,
+					"max": 2.5
+				},
+				"gpu_profile.phase2_stable_temporal_samples.task_summaries_ms.HDDAGI Screen Probe Phase 2 Fresh Reservoir.max": {
+					"max": 3.5
+				},
+				"gpu_profile.phase2_stable_temporal_samples.task_summaries_ms.HDDAGI Screen Probe Phase 2 Temporal Stream Merge.mean": {
+					"min": 0.05,
+					"max": 1.5
+				},
+				"gpu_profile.phase2_stable_temporal_samples.task_summaries_ms.HDDAGI Screen Probe Phase 2 Temporal Stream Merge.max": {
+					"max": 2
+				},
+				"gpu_profile.phase2_stable_temporal_samples.task_summaries_ms.HDDAGI Screen Probe Raw Resolve.mean": {
+					"max": 1.5
+				},
+				"gpu_profile.phase2_stable_temporal_samples.hddagi_total_per_block_ms.mean": {
+					"min": 0.5,
+					"max": 6
+				},
+				"gpu_profile.phase2_stable_temporal_samples.hddagi_total_per_block_ms.max": {
+					"max": 8
+				}
+			},
+			"limitations": [
+				"This profile is valid only for the matched GPU class, Vulkan Forward+, resolution, sampling stride, and frame parameters.",
+				"Image metrics are same-machine display-referred regression proxies, not an offline path-traced ground truth.",
+				"Text GPU-profile aggregates are instrumented regression guards and may include scheduling variability; they are not standalone production benchmarks.",
+				"Passing proves the tested Phase 2 contracts and scenarios, not cross-GPU numerical equivalence, stereo/XR correctness, or absence of every possible disocclusion artifact."
+			]
+		}
+	],
+	"unbaselined_reason": "NRD replaced the custom Phase 2 temporal denoiser; rerun the hardware image/timing profile before restoring acceptance."
+}

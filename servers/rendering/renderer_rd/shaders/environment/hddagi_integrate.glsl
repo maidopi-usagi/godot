@@ -16,6 +16,10 @@
 
 #define REGION_SIZE 8
 
+// Keep HDDA sub-cell precision aligned with hddagi_screen_probe_phase1.glsl and
+// hddagi_direct_light.glsl so probe integration and screen traces agree on voxel faces.
+const int HDDAGI_HDDA_FP_BITS = 10;
+
 #define CACHE_IS_VALID 0x80000000
 #define CACHE_IS_HIT 0x40000000
 
@@ -43,6 +47,9 @@ layout(r32ui, set = 0, binding = 12) uniform restrict uimage2DArray lightprobe_m
 layout(r32ui, set = 0, binding = 14) uniform restrict uimage2DArray lightprobe_update_frames;
 layout(r8, set = 0, binding = 15) uniform restrict readonly image2DArray lightprobe_geometry_proximity;
 layout(r8, set = 0, binding = 16) uniform restrict readonly image2DArray lightprobe_camera_visibility;
+layout(r32ui, set = 0, binding = 17) uniform restrict uimage2DArray lightprobe_screen_query_feedback;
+layout(r32ui, set = 0, binding = 18) uniform restrict readonly uimage2DArray lightprobe_screen_query_last_used;
+layout(r32ui, set = 0, binding = 19) uniform restrict uimage2DArray lightprobe_screen_query_origin_vote;
 
 #ifdef USE_CUBEMAP_ARRAY
 layout(set = 1, binding = 0) uniform textureCubeArray sky_irradiance;
@@ -199,7 +206,7 @@ bool trace_ray_hdda(vec3 ray_pos, vec3 ray_dir, int p_cascade, out ivec3 r_cell,
 	const int LEVEL_VOXEL = 2;
 	const int MAX_LEVEL = 3;
 
-	const int fp_bits = 8;
+	const int fp_bits = HDDAGI_HDDA_FP_BITS;
 	const int fp_block_bits = fp_bits + 2;
 	const int fp_region_bits = fp_block_bits + 1;
 	const int fp_cascade_bits = fp_region_bits + 4;
@@ -313,7 +320,8 @@ bool trace_ray_hdda(vec3 ray_pos, vec3 ray_dir, int p_cascade, out ivec3 r_cell,
 		ivec3 mask = level_masks[level];
 		ivec3 box = mask * step;
 		ivec3 pos_diff = box - (pos & mask);
-		ivec3 tv = mix((pos_diff * inv_ray_dir_fp), ivec3(0x7FFFFFFF), ray_zero) >> fp_bits;
+		ivec3 mul_res = (pos_diff * inv_ray_dir_fp) >> fp_bits;
+		ivec3 tv = mix(mul_res, ivec3(0x7FFFFFFF), ray_zero);
 		int t = min(tv.x, min(tv.y, tv.z));
 
 		// The general idea here is that we _always_ need to increment to the closest next cell
@@ -387,7 +395,6 @@ shared uvec3 neighbours_accum[LIGHTPROBE_OCT_SIZE * LIGHTPROBE_OCT_SIZE];
 shared vec3 neighbours[LIGHTPROBE_OCT_SIZE * LIGHTPROBE_OCT_SIZE];
 shared uvec3 ambient_accum;
 shared int probe_history_index;
-
 // MODE_PROCESS
 #endif
 /*
@@ -412,6 +419,11 @@ ivec3 modi(ivec3 value, ivec3 p_y) {
 #define FRAME_MASK 0x0FFFFFFF
 #define FORCE_UPDATE_MASK 0xF0000000
 #define FORCE_UPDATE_SHIFT 28
+#define SCREEN_QUERY_COUNT_MASK 0x0FFFFFFF
+#define SCREEN_QUERY_MISS_BIT 0x10000000
+#define SCREEN_QUERY_HIT_BIT 0x20000000
+#define SCREEN_QUERY_RECENT_FRAME_WINDOW 240u
+#define SCREEN_QUERY_ORIGIN_SCORE_SHIFT 24u
 
 void main() {
 #ifdef MODE_PROCESS
@@ -441,6 +453,22 @@ void main() {
 		// Fetch frame.
 		uint frame = imageLoad(lightprobe_update_frames, probe_texture_pos).r;
 		uint forced_update = frame >> FORCE_UPDATE_SHIFT;
+		uint screen_query_feedback = imageAtomicExchange(lightprobe_screen_query_feedback, probe_texture_pos, 0u);
+		uint screen_query_count = screen_query_feedback & SCREEN_QUERY_COUNT_MASK;
+		uint screen_query_last_used = imageLoad(lightprobe_screen_query_last_used, probe_texture_pos).r;
+		uint screen_query_age = screen_query_last_used > 0u ? ((uint(params.global_frame) + 1u - screen_query_last_used) & SCREEN_QUERY_COUNT_MASK) : SCREEN_QUERY_RECENT_FRAME_WINDOW;
+		bool screen_query_recent = screen_query_last_used > 0u && screen_query_age < SCREEN_QUERY_RECENT_FRAME_WINDOW;
+		uint screen_query_origin_vote = imageAtomicExchange(lightprobe_screen_query_origin_vote, probe_texture_pos, 0u);
+		uint screen_query_origin_score = screen_query_origin_vote >> SCREEN_QUERY_ORIGIN_SCORE_SHIFT;
+		bool screen_query_origin_strong = screen_query_recent && screen_query_origin_score > 240u;
+		// A vote may accelerate the canonical probe update cadence, but it must never move the
+		// probe's trace origin: the ray-hit cache and irradiance atlas are keyed by the fixed grid cell.
+		if ((screen_query_feedback & SCREEN_QUERY_HIT_BIT) != 0u) {
+			forced_update = max(forced_update, 2u);
+		} else if ((screen_query_feedback & SCREEN_QUERY_MISS_BIT) != 0u) {
+			forced_update = max(forced_update, 1u);
+		}
+
 		if (forced_update > 0) {
 			// Check whether it must force the update
 			process = true;
@@ -448,10 +476,11 @@ void main() {
 			frame = (frame & FRAME_MASK) | (forced_update << FORCE_UPDATE_SHIFT);
 		}
 
+
 		bool geom_proximity = imageLoad(lightprobe_geometry_proximity, probe_texture_pos).r > 0.5;
+		bool camera_visible = imageLoad(lightprobe_camera_visibility, probe_texture_pos).r > 0.5;
 		if (geom_proximity) {
-			bool camera_visible = imageLoad(lightprobe_camera_visibility, probe_texture_pos).r > 0.5;
-			process = camera_visible;
+			process = process || camera_visible;
 		}
 
 		if (!process) {
@@ -466,8 +495,13 @@ void main() {
 				frame_offset |= 4;
 			}
 
-			if (((params.global_frame + frame_offset) % params.inactive_update_frames) == 0) {
-				// Process every params.inactive_update_frames.
+			int query_update_frames = (screen_query_count > 0u || screen_query_recent) ? max(params.inactive_update_frames >> 2, 1) : params.inactive_update_frames;
+			if (screen_query_origin_strong) {
+				query_update_frames = max(query_update_frames >> 1, 1);
+			}
+			int update_frames = camera_visible ? max(query_update_frames >> 1, 1) : query_update_frames;
+			if (((params.global_frame + frame_offset) % update_frames) == 0) {
+				// Process visible probes more often, otherwise use the inactive cadence.
 				process = true;
 			}
 		}
@@ -638,7 +672,7 @@ void main() {
 			uvec3 ucell = (uvec3(hit_cell) & uvec3(0xFF)) << uvec3(0, 8, 16);
 			cache_entry |= CACHE_IS_HIT | ucell.x | ucell.y | ucell.z | (uint(min(7, hit_cascade)) << 24) | (axis << 27);
 
-			uint region_version = imageLoad(region_versions, (hit_cell >> REGION_SIZE) + ivec3(0, hit_cascade * (params.grid_size.y / REGION_SIZE), 0)).r;
+			uint region_version = imageLoad(region_versions, (hit_cell / REGION_SIZE) + ivec3(0, hit_cascade * (params.grid_size.y / REGION_SIZE), 0)).r;
 
 			imageStore(ray_hit_cache_version, cache_texture_pos, uvec4(region_version));
 		}

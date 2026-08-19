@@ -1,0 +1,220 @@
+{
+	"schema_version": "1.0.0",
+	"suite": "hddagi_screen_probe_phase1_fresh_reference",
+	"purpose": "Phase 1 fresh-reference radiometric and lifecycle diagnostics for the NRD/raw final path. The previous hardware acceptance calibration is intentionally invalidated.",
+	"profiles": [
+		{
+			"id": "phase1_rtx3080_vulkan_forward_plus_640x360_stride2",
+			"match": {
+				"adapter_name_contains": "NVIDIA GeForce RTX 3080",
+				"rendering_method": "forward_plus",
+				"rendering_driver": "vulkan",
+				"width": 640,
+				"height": 360,
+				"sample_stride": 2
+			},
+			"suite_parameters": {
+				"scenario": "phase1_fresh",
+				"warmup_frames": 64,
+				"sample_frames": 128,
+				"settle_frames": 32,
+				"phase1_long_frames": 1000,
+				"roi_border_fraction": 0.08
+			},
+			"required": {
+				"status": "completed",
+				"runtime_error_count": 0,
+				"counter_schema_valid": true,
+				"minimum_counter_snapshots": 4,
+				"minimum_gpu_profile_blocks": 5,
+				"minimum_hddagi_gpu_samples": 20,
+				"counter_feature_flags": [
+					1,
+					9,
+					25,
+					57
+				],
+				"gpu_task_names_contain": [
+					"HDDAGI Screen Probe Fresh Trace",
+					"HDDAGI NRD Guide Preparation"
+				],
+				"checks": [
+					"scenarios.phase1_fresh.checks.all_required_project_settings_exist",
+					"scenarios.phase1_fresh.checks.all_candidate_counts_executed",
+					"scenarios.phase1_fresh.checks.all_candidate_states_are_fresh_only_reference",
+					"scenarios.phase1_fresh.checks.all_candidate_outputs_non_black",
+					"scenarios.phase1_fresh.checks.white_furnace_output_transfer_reference_non_black",
+					"scenarios.phase1_fresh.checks.white_furnace_end_to_end_output_non_black",
+					"scenarios.phase1_fresh.checks.white_furnace_matches_output_transfer_reference_within_three_percent",
+					"scenarios.phase1_fresh.checks.energy_sweep_all_levels_executed",
+					"scenarios.phase1_fresh.checks.zero_dynamic_gi_energy_produces_black_indirect_output",
+					"scenarios.phase1_fresh.checks.nonzero_dynamic_gi_energy_matches_output_transfer_reference_within_three_percent",
+					"scenarios.phase1_fresh.checks.camera_attributes_exposure_matches_output_transfer_reference_within_three_percent",
+					"scenarios.phase1_fresh.checks.candidate_count_long_time_means_within_two_percent",
+					"scenarios.phase1_fresh.checks.colored_lobe_means_match_output_transfer_reference_within_three_percent",
+					"scenarios.phase1_fresh.checks.colored_lobe_reference_is_directional_and_chromatic",
+					"scenarios.phase1_fresh.checks.neutral_environment_has_no_systematic_chroma",
+					"scenarios.phase1_fresh.checks.long_run_has_at_least_1000_frames",
+					"scenarios.phase1_fresh.checks.long_run_energy_slope_below_point_one_percent_per_100_frames",
+					"scenarios.phase1_fresh.checks.long_run_half_drift_below_one_percent",
+					"scenarios.phase1_fresh.checks.camera_cut_first_frame_non_black_and_finite",
+					"scenarios.phase1_fresh.checks.same_size_render_buffer_reconfigure_produces_valid_output",
+					"scenarios.phase1_fresh.checks.camera_attributes_exposure_change_produces_valid_output",
+					"scenarios.phase1_fresh.checks.update_once_subviewport_survives_idle_gap",
+					"scenarios.phase1_fresh.checks.subviewport_resize_recreates_valid_output",
+					"scenarios.phase1_fresh.checks.outer_reenable_first_frame_non_black_and_finite",
+					"scenarios.phase1_fresh.checks.outer_disable_produces_valid_output"
+				],
+				"counter_fields": [
+					"qa_segment",
+					"frame",
+					"view_count",
+					"width",
+					"height",
+					"feature_flags",
+					"algorithm_mode",
+					"algorithm",
+					"fresh_candidates",
+					"temporal_guided_candidates",
+					"spatial_guided_candidates",
+					"hdda_rays",
+					"hdda_steps",
+					"hdda_hits",
+					"hdda_misses",
+					"sharc_query_attempts",
+					"sharc_query_hits",
+					"sharc_query_ineligible",
+					"sharc_query_misses",
+					"sharc_update_rays",
+					"sharc_update_misses",
+					"sharc_update_rejects",
+					"raw_hdr_sample_count",
+					"raw_hdr_fixed_sum_r",
+					"raw_hdr_fixed_sum_g",
+					"raw_hdr_fixed_sum_b",
+					"raw_hdr_nonfinite_or_overflow",
+					"raw_hdr_accumulated_frame_count",
+					"raw_hdr_fixed_scale",
+					"raw_hdr_lattice_stride",
+					"raw_hdr_lattice_period",
+					"raw_hdr_lattice_phase_mask_words",
+					"raw_hdr_lattice_phase_coverage_count",
+					"raw_hdr_mean_rgb"
+				]
+			},
+			"thresholds": {
+				"cpu_reference.frames_per_monte_carlo_case": {
+					"min": 65536
+				},
+				"debug_counters.phase1_raw_hdr_reference.constant_maximum_channel_relative_error": {
+					"max": 0.01
+				},
+				"debug_counters.phase1_raw_hdr_reference.constant_lattice_phase_coverage_count": {
+					"min": 256,
+					"max": 256
+				},
+				"debug_counters.phase1_raw_hdr_reference.colored_lobe_by_candidate_count.1.maximum_channel_relative_error": {
+					"max": 0.03
+				},
+				"debug_counters.phase1_raw_hdr_reference.colored_lobe_by_candidate_count.2.maximum_channel_relative_error": {
+					"max": 0.03
+				},
+				"debug_counters.phase1_raw_hdr_reference.colored_lobe_by_candidate_count.4.maximum_channel_relative_error": {
+					"max": 0.03
+				},
+				"debug_counters.phase1_raw_hdr_reference.colored_lobe_by_candidate_count.8.maximum_channel_relative_error": {
+					"max": 0.03
+				},
+				"debug_counters.phase1_raw_hdr_reference.colored_lobe_maximum_pairwise_relative_error": {
+					"max": 0.02
+				},
+				"debug_counters.phase1_raw_hdr_reference.energy_scaling.by_level.zero.maximum_channel_absolute_error": {
+					"max": 0.001
+				},
+				"debug_counters.phase1_raw_hdr_reference.energy_scaling.by_level.half.maximum_channel_relative_error": {
+					"max": 0.01
+				},
+				"debug_counters.phase1_raw_hdr_reference.energy_scaling.by_level.half.maximum_ratio_to_energy_one_relative_error": {
+					"max": 0.01
+				},
+				"debug_counters.phase1_raw_hdr_reference.energy_scaling.by_level.double.maximum_channel_relative_error": {
+					"max": 0.01
+				},
+				"debug_counters.phase1_raw_hdr_reference.energy_scaling.by_level.double.maximum_ratio_to_energy_one_relative_error": {
+					"max": 0.01
+				},
+				"debug_counters.phase1_raw_hdr_reference.camera_attributes_exposure.maximum_channel_relative_error": {
+					"max": 0.01
+				},
+				"scenarios.phase1_fresh.metrics.maximum_candidate_count_mean_relative_difference": {
+					"max": 0.02
+				},
+				"scenarios.phase1_fresh.metrics.white_furnace_end_to_end_relative_error": {
+					"max": 0.03
+				},
+				"scenarios.phase1_fresh.metrics.maximum_nonzero_energy_output_transfer_relative_error": {
+					"max": 0.03
+				},
+				"scenarios.phase1_fresh.metrics.camera_attributes_exposure_output_transfer_relative_error": {
+					"max": 0.03
+				},
+				"scenarios.phase1_fresh.metrics.zero_energy_target_maximum_rgb": {
+					"max": 0.001
+				},
+				"scenarios.phase1_fresh.metrics.maximum_colored_lobe_reference_relative_error": {
+					"max": 0.03
+				},
+				"scenarios.phase1_fresh.metrics.white_furnace_neutral_chroma_spread_normalized": {
+					"max": 0.01
+				},
+				"scenarios.phase1_fresh.metrics.long_run_absolute_relative_slope_per_100_frames": {
+					"max": 0.001
+				},
+				"scenarios.phase1_fresh.metrics.long_run_absolute_half_drift_normalized": {
+					"max": 0.01
+				},
+				"scenarios.phase1_fresh.outer_disable_lifecycle.buffer_allocation_delta": {
+					"min": 33554432
+				},
+				"scenarios.phase1_fresh.outer_disable_lifecycle.buffer_release_delta": {
+					"min": 33554432
+				},
+				"gpu_profile.phase1_stable_candidate_samples.candidate_segment_coverage_count": {
+					"min": 4
+				},
+				"gpu_profile.phase1_stable_candidate_samples.block_count": {
+					"min": 4
+				},
+				"gpu_profile.phase1_stable_candidate_samples.task_summaries_ms.HDDAGI Screen Probe Fresh Trace.mean": {
+					"min": 0.01,
+					"max": 1.6
+				},
+				"gpu_profile.phase1_stable_candidate_samples.task_summaries_ms.HDDAGI Screen Probe Fresh Trace.max": {
+					"max": 2.75
+				},
+				"gpu_profile.phase1_stable_candidate_samples.task_summaries_ms.HDDAGI Screen Probe Raw Resolve.mean": {
+					"max": 0.9
+				},
+				"gpu_profile.phase1_stable_candidate_samples.task_summaries_ms.HDDAGI Screen Probe Raw Resolve.max": {
+					"max": 1.1
+				},
+				"gpu_profile.phase1_stable_candidate_samples.hddagi_total_per_block_ms.mean": {
+					"min": 0.05,
+					"max": 2.75
+				},
+				"gpu_profile.phase1_stable_candidate_samples.hddagi_total_per_block_ms.max": {
+					"max": 3.75
+				}
+			},
+			"limitations": [
+				"The authoritative radiometric metric is the raw pre-apply/pre-tonemap GPU reduction; screenshot values are display-referred output-transfer guards.",
+				"The screenshot reference renders analytic linear D through an unshaded plane with the same exposure, tonemap, and display transfer; it is not an offline path trace.",
+				"The analytic cosine-PDF, radiometry, visibility/miss, and candidate-count proofs are run separately by phase1_reference.py.",
+				"The profiled Raw Resolve time includes an acceptance-only rotating 16x16 fixed-point HDR diagnostic lattice because debug counters are enabled; use the dedicated Fresh Trace thresholds for transport performance.",
+				"This profile is valid only for the matched renderer, hardware class, resolution, and frame parameters."
+			]
+		}
+	],
+	"acceptance_ready": false,
+	"unbaselined_reason": "NRD replaced the custom full-resolution denoiser; the hardware profile must be rerun and recalibrated."
+}

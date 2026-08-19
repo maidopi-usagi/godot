@@ -30,16 +30,17 @@
 
 #include "gi.h"
 
-#include "core/math/geometry_3d.h"
-
 #include "core/config/project_settings.h"
-#include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
+#include "core/io/json.h"
+#include "core/io/marshalls.h"
+#include "core/math/geometry_3d.h"
+#include "servers/rendering/renderer_rd/effects/ss_effects.h"
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
-#include "servers/rendering/rendering_server_default.h"
+#include "servers/rendering/rendering_server_globals.h"
 
 // Debug recreating everything every frame.
 //#define DIRTY_ALL_FRAMES
@@ -49,6 +50,151 @@ using namespace RendererRD;
 const Vector3i GI::HDDAGI::Cascade::DIRTY_ALL = Vector3i(0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF);
 
 GI *GI::singleton = nullptr;
+
+void GI::_screen_probe_stats_readback(const PackedByteArray &p_data, uint32_t p_frame_index, uint32_t p_view_count, int32_t p_width, int32_t p_height, uint32_t p_feature_flags, uint32_t p_algorithm_mode, uint32_t p_history_valid, uint32_t p_history_reset, uint32_t p_camera_cut, uint32_t p_taa_jitter_nonzero, uint32_t p_history_generation, uint32_t p_history_sequence, uint32_t p_debug_counter_tag) {
+	static constexpr uint32_t SCREEN_PROBE_STAT_COUNT = 81;
+	static constexpr double SCREEN_PROBE_RAW_HDR_FIXED_SCALE = 1024.0;
+	if (p_data.size() < int64_t(SCREEN_PROBE_STAT_COUNT * sizeof(uint32_t))) {
+		WARN_PRINT(vformat("HDDAGI screen-probe stats readback returned %d bytes; expected at least %d.", p_data.size(), SCREEN_PROBE_STAT_COUNT * sizeof(uint32_t)));
+		return;
+	}
+
+	const uint8_t *data = p_data.ptr();
+	auto stat = [data](uint32_t p_index) -> uint32_t {
+		return decode_uint32(data + p_index * sizeof(uint32_t));
+	};
+
+	Dictionary output;
+	output["frame"] = p_frame_index;
+	output["view_count"] = p_view_count;
+	output["width"] = p_width;
+	output["height"] = p_height;
+	output["feature_flags"] = p_feature_flags;
+	output["algorithm_mode"] = p_algorithm_mode;
+	output["history_valid"] = p_history_valid;
+	output["history_reset"] = p_history_reset;
+	output["camera_cut"] = p_camera_cut;
+	output["taa_jitter_nonzero"] = p_taa_jitter_nonzero;
+	output["history_generation"] = p_history_generation;
+	output["history_sequence"] = p_history_sequence;
+	output["debug_counter_tag"] = p_debug_counter_tag;
+	switch (p_algorithm_mode) {
+		case SCREEN_PROBE_ALGORITHM_PHASE1:
+			output["algorithm"] = "phase1_fresh";
+			break;
+		case SCREEN_PROBE_ALGORITHM_PHASE1_REFERENCE:
+			output["algorithm"] = "phase1_reference";
+			break;
+		case SCREEN_PROBE_ALGORITHM_PHASE2_TEMPORAL:
+			output["algorithm"] = "phase2_temporal_restir";
+			break;
+		case SCREEN_PROBE_ALGORITHM_PHASE3_SPATIAL:
+			output["algorithm"] = "phase3_spatial_restir";
+			break;
+		default:
+			output["algorithm"] = "unknown";
+			break;
+	}
+	output["fresh_candidates"] = stat(0);
+	output["temporal_guided_candidates"] = stat(1);
+	output["spatial_guided_candidates"] = stat(2);
+	output["hdda_rays"] = stat(3);
+	output["hdda_steps"] = stat(4);
+	output["hdda_hits"] = stat(5);
+	output["hdda_misses"] = stat(6);
+	output["history_accepted"] = stat(7);
+	output["history_rejected"] = stat(8);
+	output["sharc_query_attempts"] = stat(9);
+	output["sharc_query_hits"] = stat(10);
+	output["sharc_query_ineligible"] = stat(11);
+	output["sharc_query_misses"] = stat(12);
+	output["sharc_update_rays"] = stat(13);
+	output["sharc_update_misses"] = stat(14);
+	output["sharc_update_rejects"] = stat(15);
+	const uint32_t raw_hdr_sample_count = stat(16);
+	output["raw_hdr_sample_count"] = raw_hdr_sample_count;
+	output["raw_hdr_fixed_sum_r"] = stat(17);
+	output["raw_hdr_fixed_sum_g"] = stat(18);
+	output["raw_hdr_fixed_sum_b"] = stat(19);
+	output["raw_hdr_nonfinite_or_overflow"] = stat(20);
+	output["raw_hdr_accumulated_frame_count"] = stat(21);
+	Array raw_hdr_lattice_phase_mask_words;
+	uint32_t raw_hdr_lattice_phase_coverage_count = 0;
+	for (uint32_t word_index = 0; word_index < 8; word_index++) {
+		const uint32_t word = stat(24 + word_index);
+		raw_hdr_lattice_phase_mask_words.push_back(word);
+		uint32_t remaining_bits = word;
+		while (remaining_bits != 0u) {
+			remaining_bits &= remaining_bits - 1u;
+			raw_hdr_lattice_phase_coverage_count++;
+		}
+	}
+	output["raw_hdr_fixed_scale"] = SCREEN_PROBE_RAW_HDR_FIXED_SCALE;
+	output["raw_hdr_lattice_stride"] = 16;
+	output["raw_hdr_lattice_period"] = 256;
+	output["raw_hdr_lattice_phase_mask_words"] = raw_hdr_lattice_phase_mask_words;
+	output["raw_hdr_lattice_phase_coverage_count"] = raw_hdr_lattice_phase_coverage_count;
+	if (raw_hdr_sample_count > 0) {
+		Array raw_hdr_mean;
+		raw_hdr_mean.push_back(double(stat(17)) / (double(raw_hdr_sample_count) * SCREEN_PROBE_RAW_HDR_FIXED_SCALE));
+		raw_hdr_mean.push_back(double(stat(18)) / (double(raw_hdr_sample_count) * SCREEN_PROBE_RAW_HDR_FIXED_SCALE));
+		raw_hdr_mean.push_back(double(stat(19)) / (double(raw_hdr_sample_count) * SCREEN_PROBE_RAW_HDR_FIXED_SCALE));
+		output["raw_hdr_mean_rgb"] = raw_hdr_mean;
+	}
+	output["reservoir_valid_surfaces"] = stat(32);
+	output["reservoir_fresh_valid"] = stat(33);
+	output["reservoir_fresh_invalid"] = stat(34);
+	output["reservoir_temporal_attempts"] = stat(35);
+	output["reservoir_temporal_accepted"] = stat(36);
+	output["reservoir_reject_no_history"] = stat(37);
+	output["reservoir_reject_reprojection_or_owner"] = stat(38);
+	output["reservoir_reject_generation_or_algorithm"] = stat(39);
+	output["reservoir_reject_endpoint_identity_or_version"] = stat(40);
+	output["reservoir_reject_visibility"] = stat(41);
+	output["reservoir_reject_jacobian"] = stat(42);
+	output["reservoir_reject_age"] = stat(43);
+	output["reservoir_visibility_rays"] = stat(44);
+	output["reservoir_visibility_visible"] = stat(45);
+	output["reservoir_visibility_occluded"] = stat(46);
+	output["reservoir_m_cap_applied"] = stat(47);
+	output["reservoir_selected_fresh"] = stat(48);
+	output["reservoir_selected_history"] = stat(49);
+	output["reservoir_final_valid"] = stat(50);
+	output["reservoir_final_invalid"] = stat(51);
+	output["reservoir_nonfinite"] = stat(52);
+	output["reservoir_robust_jacobian_clamp"] = stat(53);
+	output["reservoir_max_m"] = stat(54);
+	output["reservoir_max_age"] = stat(55);
+	output["reservoir_sum_m"] = stat(56);
+	output["reservoir_packing_invalid"] = stat(57);
+	output["reservoir_hit_reuse"] = stat(58);
+	output["reservoir_sky_reuse"] = stat(59);
+	Array reservoir_gpu_golden_digest;
+	for (uint32_t lane = 0; lane < 4; lane++) {
+		reservoir_gpu_golden_digest.push_back(stat(60 + lane));
+	}
+	output["reservoir_gpu_golden_digest"] = reservoir_gpu_golden_digest;
+	output["reservoir_gpu_golden_word_count"] = 26;
+	output["reservoir_gpu_golden_schema_version"] = 3;
+	output["spatial_streams"] = stat(68);
+	output["spatial_accepted"] = stat(69);
+	output["spatial_edge_rejected"] = stat(70);
+	output["spatial_identity_rejected"] = stat(71);
+	output["spatial_visibility_rays"] = stat(72);
+	output["spatial_visibility_visible"] = stat(73);
+	output["spatial_visibility_occluded"] = stat(74);
+	output["spatial_m_cap_applied"] = stat(75);
+	output["spatial_zero_target_mass_only"] = stat(76);
+	output["spatial_selected_center"] = stat(77);
+	output["spatial_selected_neighbor"] = stat(78);
+	output["spatial_nonfinite"] = stat(79);
+	output["spatial_max_m"] = stat(80);
+	output["reservoir_robust_flag_final_fresh"] = stat(64);
+	output["reservoir_robust_flag_final_history"] = stat(65);
+	output["reservoir_zero_target_mass_only"] = stat(66);
+	output["reservoir_gpu_zero_target_branch_golden"] = stat(67);
+	print_line("HDDAGI_SCREEN_PROBE_COUNTERS " + JSON::stringify(output));
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // VOXEL GI STORAGE
@@ -73,10 +219,10 @@ void GI::voxel_gi_allocate_data(RID p_voxel_gi, const Transform3D &p_to_cell_xfo
 	ERR_FAIL_NULL(voxel_gi);
 
 	if (voxel_gi->octree_buffer.is_valid()) {
-		RD::get_singleton()->free(voxel_gi->octree_buffer);
-		RD::get_singleton()->free(voxel_gi->data_buffer);
+		RD::get_singleton()->free_rid(voxel_gi->octree_buffer);
+		RD::get_singleton()->free_rid(voxel_gi->data_buffer);
 		if (voxel_gi->sdf_texture.is_valid()) {
-			RD::get_singleton()->free(voxel_gi->sdf_texture);
+			RD::get_singleton()->free_rid(voxel_gi->sdf_texture);
 		}
 
 		voxel_gi->sdf_texture = RID();
@@ -287,7 +433,7 @@ bool GI::voxel_gi_is_using_two_bounces(RID p_voxel_gi) const {
 
 bool GI::voxel_gi_is_interior(RID p_voxel_gi) const {
 	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
-	ERR_FAIL_NULL_V(voxel_gi, 0);
+	ERR_FAIL_NULL_V(voxel_gi, false);
 	return voxel_gi->interior;
 }
 
@@ -582,6 +728,9 @@ void GI::HDDAGI::create(RID p_env, const Vector3 &p_world_position, uint32_t p_r
 		RD::TextureFormat tf_process_frame = tf_neighbours;
 		tf_process_frame.format = RD::DATA_FORMAT_R32_UINT;
 		lightprobe_process_frame = create_clear_texture(tf_process_frame, String("HDDAGI Lightprobe Frame"));
+		lightprobe_screen_probe_feedback = create_clear_texture(tf_process_frame, String("HDDAGI Lightprobe Screen Query Feedback"));
+		lightprobe_screen_probe_last_used = create_clear_texture(tf_process_frame, String("HDDAGI Lightprobe Screen Query Last Used"));
+		lightprobe_screen_probe_origin_vote = create_clear_texture(tf_process_frame, String("HDDAGI Lightprobe Screen Query Origin Vote"));
 	}
 
 	// Occlusion
@@ -668,6 +817,9 @@ void GI::HDDAGI::render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p
 		RD::get_singleton()->texture_clear(lightprobe_specular_data, Color(0, 0, 0, 0), 0, 1, cascade, 1);
 		RD::get_singleton()->texture_clear(lightprobe_diffuse_data, Color(0, 0, 0, 0), 0, 1, cascade, 1);
 		RD::get_singleton()->texture_clear(lightprobe_process_frame, Color(0, 0, 0, 0), 0, 1, cascade, 1);
+		RD::get_singleton()->texture_clear(lightprobe_screen_probe_feedback, Color(0, 0, 0, 0), 0, 1, cascade, 1);
+		RD::get_singleton()->texture_clear(lightprobe_screen_probe_last_used, Color(0, 0, 0, 0), 0, 1, cascade, 1);
+		RD::get_singleton()->texture_clear(lightprobe_screen_probe_origin_vote, Color(0, 0, 0, 0), 0, 1, cascade, 1);
 	}
 
 	//print_line("rendering cascade " + itos(p_region) + " objects: " + itos(p_cull_count) + " bounds: " + bounds + " from: " + from + " size: " + size + " cell size: " + rtos(cascades[cascade].cell_size));
@@ -1020,7 +1172,19 @@ void GI::HDDAGI::render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p
 }
 
 void GI::HDDAGI::free_data() {
-	// we don't free things here, we handle HDDAGI differently at the moment destructing the object when it needs to change.
+	// The HDDAGI volume resources outlive a render-buffer reconfiguration, but
+	// named screen-probe textures do not. Invalidate every owner-side history
+	// token before RenderSceneBuffersRD::cleanup() releases those textures.
+	screen_probe_history_initialized = false;
+	screen_probe_previous_camera_valid = false;
+	screen_probe_history_configuration = 0;
+	screen_probe_history_slot = 0;
+	screen_probe_history_sequence = 0;
+	screen_probe_stats_accumulating = false;
+	screen_probe_history_generation = (screen_probe_history_generation + 1u) & 0x00ffffffu;
+	if (screen_probe_history_generation == 0u) {
+		screen_probe_history_generation = 1u;
+	}
 }
 
 GI::HDDAGI::~HDDAGI() {
@@ -1030,12 +1194,18 @@ GI::HDDAGI::~HDDAGI() {
 		}
 		p_texture = RID();
 	};
+	auto free_buffer = [](RID &p_buffer) {
+		if (p_buffer.is_valid()) {
+			RD::get_singleton()->free_rid(p_buffer);
+		}
+		p_buffer = RID();
+	};
 
 	for (const HDDAGI::Cascade &c : cascades) {
-		RD::get_singleton()->free(c.light_process_buffer);
-		RD::get_singleton()->free(c.light_process_dispatch_buffer);
-		RD::get_singleton()->free(c.light_process_dispatch_buffer_copy);
-		RD::get_singleton()->free(c.light_position_bufer);
+		RD::get_singleton()->free_rid(c.light_process_buffer);
+		RD::get_singleton()->free_rid(c.light_process_dispatch_buffer);
+		RD::get_singleton()->free_rid(c.light_process_dispatch_buffer_copy);
+		RD::get_singleton()->free_rid(c.light_position_bufer);
 	}
 
 	free_texture(render_albedo);
@@ -1050,10 +1220,10 @@ GI::HDDAGI::~HDDAGI() {
 	free_texture(voxel_light_neighbour_data);
 	free_texture(region_version_data);
 
-	RD::get_singleton()->free(light_process_buffer_render);
-	RD::get_singleton()->free(light_process_dispatch_buffer_render);
+	RD::get_singleton()->free_rid(light_process_buffer_render);
+	RD::get_singleton()->free_rid(light_process_dispatch_buffer_render);
 
-	RD::get_singleton()->free(cascades_ubo);
+	RD::get_singleton()->free_rid(cascades_ubo);
 
 	free_texture(lightprobe_specular_data);
 	free_texture(lightprobe_diffuse_data);
@@ -1069,16 +1239,20 @@ GI::HDDAGI::~HDDAGI() {
 	free_texture(lightprobe_geometry_proximity_map);
 	free_texture(lightprobe_camera_visibility_map);
 	for (int i = 0; i < lightprobe_camera_buffers.size(); i++) {
-		RD::get_singleton()->free(lightprobe_camera_buffers[i]);
+		RD::get_singleton()->free_rid(lightprobe_camera_buffers[i]);
 	}
 	lightprobe_camera_buffers.clear();
 	free_texture(lightprobe_process_frame);
+	free_texture(lightprobe_screen_probe_feedback);
+	free_texture(lightprobe_screen_probe_last_used);
+	free_texture(lightprobe_screen_probe_origin_vote);
+	free_buffer(screen_probe_stats_buffer);
 
 	free_texture(occlusion_data[0]);
 	free_texture(occlusion_data[1]);
 
 	if (debug_probes_scene_data_ubo.is_valid()) {
-		RD::get_singleton()->free(debug_probes_scene_data_ubo);
+		RD::get_singleton()->free_rid(debug_probes_scene_data_ubo);
 		debug_probes_scene_data_ubo = RID();
 	}
 }
@@ -1385,7 +1559,10 @@ void GI::HDDAGI::update_probes(RID p_env, SkyRD::Sky *p_sky, uint32_t p_view_cou
 			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 13, cascades_ubo),
 			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 14, lightprobe_process_frame),
 			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 15, lightprobe_geometry_proximity_map),
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 16, lightprobe_camera_visibility_map));
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 16, lightprobe_camera_visibility_map),
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 17, lightprobe_screen_probe_feedback),
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 18, lightprobe_screen_probe_last_used),
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 19, lightprobe_screen_probe_origin_vote));
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->hddagi_shader.integrate_pipeline[HDDAGIShader::INTEGRATE_MODE_PROCESS]);
@@ -1788,6 +1965,11 @@ void GI::HDDAGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_
 
 	for (int32_t i = 0; i < hddagi_data.max_cascades; i++) {
 		HDDAGIData::ProbeCascadeData &c = hddagi_data.cascades[i];
+		Vector3i previous_position = cascades[i].position;
+		if (cascades[i].dirty_regions != HDDAGI::Cascade::DIRTY_ALL) {
+			// dirty_regions is old_position - current_position, as maintained by HDDAGI::update().
+			previous_position += cascades[i].dirty_regions;
+		}
 		Vector3 pos = Vector3((Vector3i(1, 1, 1) * -(cascade_size / 2) + cascades[i].position)) * cascades[i].cell_size;
 		Vector3 cam_origin = p_transform.origin;
 		cam_origin.y *= y_mult;
@@ -1800,6 +1982,12 @@ void GI::HDDAGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_
 		c.region_world_offset[0] = cascades[i].position.x / REGION_CELLS;
 		c.region_world_offset[1] = cascades[i].position.y / REGION_CELLS;
 		c.region_world_offset[2] = cascades[i].position.z / REGION_CELLS;
+		if (i == 0) {
+			hddagi_data.screen_probe_previous_region_world_offset[0] = previous_position.x / REGION_CELLS;
+			hddagi_data.screen_probe_previous_region_world_offset[1] = previous_position.y / REGION_CELLS;
+			hddagi_data.screen_probe_previous_region_world_offset[2] = previous_position.z / REGION_CELLS;
+			hddagi_data.screen_probe_previous_region_world_offset[3] = 0;
+		}
 
 		c.to_cell = 1.0 / cascades[i].cell_size;
 		c.exposure_normalization = 1.0;
@@ -2827,8 +3015,8 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 
 void GI::VoxelGIInstance::free_resources() {
 	if (texture.is_valid()) {
-		RD::get_singleton()->free(texture);
-		RD::get_singleton()->free(write_buffer);
+		RD::get_singleton()->free_rid(texture);
+		RD::get_singleton()->free_rid(write_buffer);
 
 		texture = RID();
 		write_buffer = RID();
@@ -2836,21 +3024,21 @@ void GI::VoxelGIInstance::free_resources() {
 	}
 
 	for (int i = 0; i < dynamic_maps.size(); i++) {
-		RD::get_singleton()->free(dynamic_maps[i].texture);
-		RD::get_singleton()->free(dynamic_maps[i].depth);
+		RD::get_singleton()->free_rid(dynamic_maps[i].texture);
+		RD::get_singleton()->free_rid(dynamic_maps[i].depth);
 
 		// these only exist on the first level...
 		if (dynamic_maps[i].fb_depth.is_valid()) {
-			RD::get_singleton()->free(dynamic_maps[i].fb_depth);
+			RD::get_singleton()->free_rid(dynamic_maps[i].fb_depth);
 		}
 		if (dynamic_maps[i].albedo.is_valid()) {
-			RD::get_singleton()->free(dynamic_maps[i].albedo);
+			RD::get_singleton()->free_rid(dynamic_maps[i].albedo);
 		}
 		if (dynamic_maps[i].normal.is_valid()) {
-			RD::get_singleton()->free(dynamic_maps[i].normal);
+			RD::get_singleton()->free_rid(dynamic_maps[i].normal);
 		}
 		if (dynamic_maps[i].orm.is_valid()) {
-			RD::get_singleton()->free(dynamic_maps[i].orm);
+			RD::get_singleton()->free_rid(dynamic_maps[i].orm);
 		}
 	}
 	dynamic_maps.clear();
@@ -2886,7 +3074,7 @@ void GI::VoxelGIInstance::debug(RD::DrawListID p_draw_list, RID p_framebuffer, c
 	}
 
 	if (gi->voxel_gi_debug_uniform_set.is_valid()) {
-		RD::get_singleton()->free(gi->voxel_gi_debug_uniform_set);
+		RD::get_singleton()->free_rid(gi->voxel_gi_debug_uniform_set);
 	}
 	Vector<RD::Uniform> uniforms;
 	{
@@ -2949,6 +3137,7 @@ GI::~GI() {
 }
 
 void GI::init(SkyRD *p_sky) {
+	sky = p_sky;
 	/* GI */
 
 	{
@@ -3062,6 +3251,69 @@ void GI::init(SkyRD *p_sky) {
 			hddagi_shader.integrate_pipeline[i] = RD::get_singleton()->compute_pipeline_create(hddagi_shader.integrate_shader_version[i]);
 		}
 	}
+
+	{
+		Vector<uint8_t> dummy_buffer_data;
+		dummy_buffer_data.resize(sizeof(uint32_t) * 81);
+		memset(dummy_buffer_data.ptrw(), 0, dummy_buffer_data.size());
+		hddagi_shader.screen_probe_stats_dummy_buffer = RD::get_singleton()->storage_buffer_create(dummy_buffer_data.size(), dummy_buffer_data);
+		RD::get_singleton()->set_resource_name(hddagi_shader.screen_probe_stats_dummy_buffer, "HDDAGI Screen Probe Stats Dummy Buffer");
+	}
+
+	{
+		static_assert(sizeof(HDDAGIShader::ScreenProbePhase1PushConstant) == 96, "Phase 1 screen-probe push ABI must remain 96 bytes.");
+		static_assert(sizeof(HDDAGIShader::ScreenProbePhase2PushConstant) == 128, "Phase 2 screen-probe push ABI must remain 128 bytes.");
+		Vector<String> screen_probe_phase1_modes;
+		screen_probe_phase1_modes.push_back("\n#define MODE_SURFACE\n");
+		screen_probe_phase1_modes.push_back("\n#define MODE_TRACE\n");
+		screen_probe_phase1_modes.push_back("\n#define MODE_RESOLVE\n");
+		screen_probe_phase1_modes.push_back("\n#define MODE_APPLY\n");
+		screen_probe_phase1_modes.push_back("\n#define MODE_PHASE2_FRESH\n#define MODE_PHASE2\n");
+		screen_probe_phase1_modes.push_back("\n#define MODE_PHASE2_TEMPORAL\n#define MODE_PHASE2\n");
+		screen_probe_phase1_modes.push_back("\n#define MODE_RESOLVE\n#define MODE_PHASE2_RESOLVE\n");
+
+		String screen_probe_phase1_defines;
+		screen_probe_phase1_modes.push_back("\n#define MODE_PHASE3_SPATIAL\n#define MODE_PHASE2\n");
+#ifdef NVIDIA_SHARC_ENABLED
+		static_assert(sizeof(HDDAGIShader::ScreenProbeSharcParameters) == 112, "SHARC screen-probe parameter ABI must remain 112 bytes.");
+		if (SharcContextRD::is_supported()) {
+			screen_probe_phase1_modes.push_back("\n#define MODE_SHARC_UPDATE\n");
+			screen_probe_phase1_modes.push_back("\n#define MODE_SHARC_RESOLVE\n");
+			screen_probe_phase1_modes.push_back("\n#define MODE_TRACE\n#define MODE_SHARC_QUERY\n");
+			screen_probe_phase1_modes.push_back("\n#define MODE_PHASE2_FRESH\n#define MODE_PHASE2\n#define MODE_SHARC_QUERY\n");
+			screen_probe_phase1_modes.push_back("\n#define MODE_PHASE2_TEMPORAL\n#define MODE_PHASE2\n#define MODE_SHARC_QUERY\n");
+			screen_probe_phase1_modes.push_back("\n#define MODE_PHASE3_SPATIAL\n#define MODE_PHASE2\n#define MODE_SHARC_QUERY\n");
+			screen_probe_phase1_defines += "\n#define NVIDIA_SHARC_ENABLED\n";
+		} else {
+			// Keep the generated variant indices aligned on non-Vulkan or
+			// feature-limited backends without compiling any BDA GLSL there.
+			for (uint32_t i = 0; i < 6; i++) {
+				screen_probe_phase1_modes.push_back("\n");
+			}
+		}
+#endif
+		if (p_sky->sky_use_octmap_array) {
+			screen_probe_phase1_defines += "\n#define USE_CUBEMAP_ARRAY\n";
+		}
+		hddagi_shader.screen_probe_phase1.initialize(screen_probe_phase1_modes, screen_probe_phase1_defines);
+		hddagi_shader.screen_probe_phase1_shader = hddagi_shader.screen_probe_phase1.version_create();
+		for (int i = 0; i < HDDAGIShader::SCREEN_PROBE_PHASE1_MAX; i++) {
+			hddagi_shader.screen_probe_phase1_shader_version[i] = hddagi_shader.screen_probe_phase1.version_get_shader(hddagi_shader.screen_probe_phase1_shader, i);
+			hddagi_shader.screen_probe_phase1_pipeline[i] = RD::get_singleton()->compute_pipeline_create(hddagi_shader.screen_probe_phase1_shader_version[i]);
+		}
+	}
+
+#ifdef NVIDIA_NRD_ENABLED
+	{
+		static_assert(sizeof(HDDAGIShader::NrdPreparePushConstant) == 48, "NRD guide preparation push ABI must remain 48 bytes.");
+		Vector<String> nrd_prepare_modes;
+		nrd_prepare_modes.push_back("\n");
+		hddagi_shader.nrd_prepare.initialize(nrd_prepare_modes);
+		hddagi_shader.nrd_prepare_shader = hddagi_shader.nrd_prepare.version_create();
+		hddagi_shader.nrd_prepare_shader_version = hddagi_shader.nrd_prepare.version_get_shader(hddagi_shader.nrd_prepare_shader, 0);
+		hddagi_shader.nrd_prepare_pipeline = RD::get_singleton()->compute_pipeline_create(hddagi_shader.nrd_prepare_shader_version);
+	}
+#endif
 
 	//GK
 	{
@@ -3199,14 +3451,18 @@ void GI::init(SkyRD *p_sky) {
 }
 
 void GI::free() {
+	if (hddagi_shader.screen_probe_stats_dummy_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(hddagi_shader.screen_probe_stats_dummy_buffer);
+		hddagi_shader.screen_probe_stats_dummy_buffer = RID();
+	}
 	if (default_voxel_gi_buffer.is_valid()) {
-		RD::get_singleton()->free(default_voxel_gi_buffer);
+		RD::get_singleton()->free_rid(default_voxel_gi_buffer);
 	}
 	if (voxel_gi_lights_uniform.is_valid()) {
-		RD::get_singleton()->free(voxel_gi_lights_uniform);
+		RD::get_singleton()->free_rid(voxel_gi_lights_uniform);
 	}
 	if (hddagi_ubo.is_valid()) {
-		RD::get_singleton()->free(hddagi_ubo);
+		RD::get_singleton()->free_rid(hddagi_ubo);
 	}
 
 	if (voxel_gi_debug_shader_version.is_valid()) {
@@ -3232,6 +3488,12 @@ void GI::free() {
 	}
 	if (hddagi_shader.integrate_shader.is_valid()) {
 		hddagi_shader.integrate.version_free(hddagi_shader.integrate_shader);
+	}
+	if (hddagi_shader.screen_probe_phase1_shader.is_valid()) {
+		hddagi_shader.screen_probe_phase1.version_free(hddagi_shader.screen_probe_phase1_shader);
+	}
+	if (hddagi_shader.nrd_prepare_shader.is_valid()) {
+		hddagi_shader.nrd_prepare.version_free(hddagi_shader.nrd_prepare_shader);
 	}
 	if (hddagi_shader.preprocess_shader.is_valid()) {
 		hddagi_shader.preprocess.version_free(hddagi_shader.preprocess_shader);
@@ -3345,15 +3607,26 @@ RID GI::RenderBuffersGI::get_voxel_gi_buffer() {
 }
 
 void GI::RenderBuffersGI::free_data() {
+	nrd_context.clear();
+	sharc_context.clear();
+	if (sharc_parameters_ubo.is_valid()) {
+		RD::get_singleton()->free_rid(sharc_parameters_ubo);
+		sharc_parameters_ubo = RID();
+	}
+
 	if (scene_data_ubo.is_valid()) {
-		RD::get_singleton()->free(scene_data_ubo);
+		RD::get_singleton()->free_rid(scene_data_ubo);
 		scene_data_ubo = RID();
 	}
 
 	if (voxel_gi_buffer.is_valid()) {
-		RD::get_singleton()->free(voxel_gi_buffer);
+		RD::get_singleton()->free_rid(voxel_gi_buffer);
 		voxel_gi_buffer = RID();
 	}
+}
+
+bool GI::hddagi_uses_screen_probes(RID p_environment) const {
+	return RendererSceneRenderRD::get_singleton()->environment_get_hddagi_screen_probes_enabled(p_environment);
 }
 
 void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer, RID p_environment, uint32_t p_view_count, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_cam_transform, const PagedArray<RID> &p_voxel_gi_instances) {
@@ -3374,13 +3647,14 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		p_render_buffers->clear_context(RB_SCOPE_GI);
 	}
 
-	if (!p_render_buffers->has_texture(RB_SCOPE_GI, RB_TEX_AMBIENT)) {
-		Size2i size = internal_size;
+	Size2i gi_size = internal_size;
+	if (half_resolution) {
+		gi_size.x >>= 1;
+		gi_size.y >>= 1;
+	}
 
-		if (half_resolution) {
-			size.x >>= 1;
-			size.y >>= 1;
-		}
+	if (!p_render_buffers->has_texture(RB_SCOPE_GI, RB_TEX_AMBIENT)) {
+		Size2i size = gi_size;
 
 		RD::TextureFormat tf;
 		tf.format = RD::DATA_FORMAT_R32_UINT;
@@ -3419,7 +3693,7 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 
 	// Setup our scene data
 	{
-		SceneData scene_data;
+		SceneData scene_data = {};
 
 		if (rbgi->scene_data_ubo.is_null()) {
 			rbgi->scene_data_ubo = RD::get_singleton()->uniform_buffer_create(sizeof(SceneData));
@@ -3431,6 +3705,7 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		for (uint32_t v = 0; v < p_view_count; v++) {
 			Projection temp = correction * p_projections[v];
 
+			RendererRD::MaterialStorage::store_camera(temp, scene_data.projection[v]);
 			RendererRD::MaterialStorage::store_camera(temp.inverse(), scene_data.inv_projection[v]);
 			scene_data.eye_offset[v][0] = p_eye_offsets[v].x;
 			scene_data.eye_offset[v][1] = p_eye_offsets[v].y;
@@ -3609,6 +3884,7 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		}
 	}
 	RD::get_singleton()->compute_list_end();
+
 	RD::get_singleton()->draw_command_end_label();
 }
 

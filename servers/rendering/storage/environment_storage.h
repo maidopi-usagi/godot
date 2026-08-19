@@ -174,6 +174,17 @@ private:
 		float hddagi_occlusion_bias = 1.1;
 		bool hddagi_filter_reflection = true;
 		bool hddagi_filter_ambient = true;
+		bool hddagi_screen_probes_enabled = false;
+		int hddagi_screen_probe_size = 8;
+		float hddagi_screen_probe_normal_bias = 1.1;
+		float hddagi_screen_probe_restir_history_blend_hit = 0.95;
+		float hddagi_screen_probe_restir_history_distance_tolerance = 0.25;
+		float hddagi_screen_probe_restir_history_direction_threshold = 0.65;
+		int hddagi_screen_probe_restir_spatial_reuse_radius = 1;
+		float hddagi_screen_probe_restir_spatial_normal_threshold = 0.45;
+		float hddagi_screen_probe_restir_spatial_depth_tolerance_min = 0.01;
+		float hddagi_screen_probe_restir_spatial_depth_tolerance_scale = 0.01;
+		float hddagi_screen_probe_history_sample_count_max = 64.0;
 		RSE::EnvironmentHDDAGICascadeFormat hddagi_cascade_format = RSE::ENV_HDDAGI_CASCADE_FORMAT_16x16x16;
 
 		// Adjustments
@@ -317,6 +328,9 @@ public:
 
 	// HDDAGI
 	void environment_set_hddagi(RID p_env, bool p_enable, int p_cascades, RSE::EnvironmentHDDAGICascadeFormat p_cascade_format, float p_min_cell_size, bool p_filter_probes, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_reflection_bias, float p_probe_bias, float p_occlusion_bias, bool p_filter_reflection, bool p_filter_ambient);
+	void environment_set_hddagi_screen_probes(RID p_env, bool p_enable, int p_probe_size, float p_normal_bias);
+	void environment_set_hddagi_screen_probe_restir(RID p_env, float p_history_blend_hit, float p_history_distance_tolerance, float p_history_direction_threshold, int p_spatial_reuse_radius, float p_spatial_normal_threshold, float p_spatial_depth_tolerance_min, float p_spatial_depth_tolerance_scale);
+	void environment_set_hddagi_screen_probe_tuning(RID p_env, float p_history_sample_count_max);
 	bool environment_get_hddagi_enabled(RID p_env) const;
 	int environment_get_hddagi_cascades(RID p_env) const;
 	float environment_get_hddagi_min_cell_size(RID p_env) const;
@@ -332,7 +346,17 @@ public:
 	float environment_get_hddagi_occlusion_bias(RID p_env) const;
 	bool environment_get_hddagi_filter_reflection(RID p_env) const;
 	bool environment_get_hddagi_filter_ambient(RID p_env) const;
-
+	bool environment_get_hddagi_screen_probes_enabled(RID p_env) const;
+	int environment_get_hddagi_screen_probe_size(RID p_env) const;
+	float environment_get_hddagi_screen_probe_normal_bias(RID p_env) const;
+	float environment_get_hddagi_screen_probe_restir_history_blend_hit(RID p_env) const;
+	float environment_get_hddagi_screen_probe_restir_history_distance_tolerance(RID p_env) const;
+	float environment_get_hddagi_screen_probe_restir_history_direction_threshold(RID p_env) const;
+	int environment_get_hddagi_screen_probe_restir_spatial_reuse_radius(RID p_env) const;
+	float environment_get_hddagi_screen_probe_restir_spatial_normal_threshold(RID p_env) const;
+	float environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_min(RID p_env) const;
+	float environment_get_hddagi_screen_probe_restir_spatial_depth_tolerance_scale(RID p_env) const;
+	float environment_get_hddagi_screen_probe_history_sample_count_max(RID p_env) const;
 	// Adjustment
 	void environment_set_adjustment(RID p_env, bool p_enable, float p_brightness, float p_contrast, float p_saturation, bool p_use_1d_color_correction, RID p_color_correction);
 	bool environment_get_adjustments_enabled(RID p_env) const;

@@ -284,7 +284,7 @@ void RenderSceneDataRD::update_ubo(RID p_uniform_buffer, RSE::ViewportDebugDraw 
 #endif
 
 		for (uint32_t v = 0; v < view_count; v++) {
-			prev_projection = prev_correction * view_projection[v];
+			prev_projection = prev_correction * prev_view_projection[v];
 			RendererRD::MaterialStorage::store_camera(prev_projection, prev_ubo.projection_matrix_view[v]);
 			RendererRD::MaterialStorage::store_camera(prev_projection.inverse(), prev_ubo.inv_projection_matrix_view[v]);
 		}
