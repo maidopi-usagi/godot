@@ -3838,6 +3838,11 @@ void RenderingServer::init() {
 	GLOBAL_DEF("rendering/global_illumination/hddagi/screen_probe_directional_adaptive", false);
 	GLOBAL_DEF("rendering/global_illumination/hddagi/screen_probe_directional_screen_radiance", false);
 	GLOBAL_DEF("rendering/global_illumination/hddagi/screen_probe_uniform_placement_jitter", true);
+	GLOBAL_DEF("rendering/global_illumination/hddagi/screen_probe_short_range_ao", false);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/hddagi/screen_probe_short_range_ao_radius", PROPERTY_HINT_RANGE, "0.01,1.0,0.01,suffix:m"), 0.3f);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/hddagi/screen_probe_short_range_ao_intensity", PROPERTY_HINT_RANGE, "0,1,0.01"), 0.6f);
+	GLOBAL_DEF("rendering/global_illumination/hddagi/screen_probe_short_range_gi", false);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/hddagi/screen_probe_short_range_gi_intensity", PROPERTY_HINT_RANGE, "0,1,0.01"), 1.0f);
 	GLOBAL_DEF("rendering/global_illumination/hddagi/screen_probe_guided_sampling", false);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/hddagi/screen_probe_radiance_cache", PROPERTY_HINT_ENUM, "Disabled:0,Irradiance Cache:1"), 0);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/hddagi/screen_probe_radiance_cache_minimum_cell_size", PROPERTY_HINT_RANGE, "0.001,1.0,0.001,or_greater,suffix:m"), 0.04);

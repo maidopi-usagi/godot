@@ -3113,7 +3113,7 @@
 			Reuses screen radiance for static Directional Gather detail-trace hits.
 		</member>
 		<member name="rendering/global_illumination/hddagi/screen_probe_guided_sampling" type="bool" setter="" getter="" default="false">
-			Guides stochastic probe rays toward useful lighting samples.
+			Guides stochastic probe rays toward useful lighting samples. In Directional Gather mode, reallocates rays from back-facing directions to important lighting directions on static surfaces with valid history. The total ray budget is unchanged, and each contributing direction retains at least one fresh ray. This can reduce noise from small bright sources after they have been sampled.
 		</member>
 		<member name="rendering/global_illumination/hddagi/screen_probe_radiance_cache" type="int" setter="" getter="" default="0">
 			Selects how stochastic screen probes cache world-space lighting.
@@ -3123,6 +3123,25 @@
 		</member>
 		<member name="rendering/global_illumination/hddagi/screen_probe_radiance_cache_multibounce" type="bool" setter="" getter="" default="false">
 			Enables multibounce lighting in the irradiance cache.
+		</member>
+		<member name="rendering/global_illumination/hddagi/screen_probe_short_range_ao" type="bool" setter="" getter="" default="false">
+			Adds short-range ambient occlusion to screen-probe indirect diffuse lighting after denoising. Uses one horizon slice with three depth samples per side (six neighboring depth samples) at the diffuse output resolution, without adding probe rays, a separate render pass, or history textures. Works independently of [member rendering/global_illumination/hddagi/screen_probe_detail_trace].
+			When [member Viewport.use_taa] is enabled, the slice direction and sample distances vary per pixel and frame, and the final scene TAA accumulates the result. With TAA disabled, each pixel keeps a fixed sampling pattern, which may show more spatial noise. This setting does not enable TAA automatically.
+			The correction uses only visible depth and does not affect direct lighting or reflections. Use a small radius and moderate intensity when also using SSAO or material ambient occlusion to avoid excessive darkening.
+		</member>
+		<member name="rendering/global_illumination/hddagi/screen_probe_short_range_ao_intensity" type="float" setter="" getter="" default="0.6">
+			Strength of the screen-probe short-range AO correction, from [code]0.0[/code] (disabled) to [code]1.0[/code]. The correction is bounded to retain at least 35% of the original indirect diffuse lighting at full intensity. Does not change the sampling budget.
+		</member>
+		<member name="rendering/global_illumination/hddagi/screen_probe_short_range_ao_radius" type="float" setter="" getter="" default="0.3">
+			Maximum short-range AO radius in world units (meters), clamped to the range [code]0.01[/code] to [code]1.0[/code]. Uses this radius for both the sampling range and distance falloff. Increasing the radius does not increase the number of depth samples, so a large radius may miss thin occluders between samples.
+		</member>
+		<member name="rendering/global_illumination/hddagi/screen_probe_short_range_gi" type="bool" setter="" getter="" default="false">
+			Adds nearby surface color bleeding using the six depth candidates of [member rendering/global_illumination/hddagi/screen_probe_short_range_ao]. Requires short-range AO with nonzero intensity and shares its world-space radius. Selects at most two color sources per pixel, weighted by their contribution to occlusion, without adding rays or a separate lighting pass. The final scene TAA accumulates the sampling noise when enabled.
+			Reuses existing HDDAGI screen-lighting color/depth history when required by other features. Otherwise, native TAA supplies color history and this effect adds one full-resolution R32F depth texture and depth copy per view. Without native TAA, a full-resolution RGBA16F color and R32F depth history pair is allocated and copied each frame. Native TAA is not enabled automatically; temporal upscalers use the separate history pair.
+			Only static, sufficiently rough, visible source surfaces with valid previous-frame depth contribute. Moving, back-facing and off-screen sources are rejected. Source brightness and the AO replacement fraction are limited to reduce specular contamination and repeated lighting feedback. This is a local screen-space detail approximation.
+		</member>
+		<member name="rendering/global_illumination/hddagi/screen_probe_short_range_gi_intensity" type="float" setter="" getter="" default="1.0">
+			Fraction of the short-range AO correction replaced with nearby outgoing light, from [code]0.0[/code] (disabled) to [code]1.0[/code] (full replacement). At full strength, a valid diffuse source with the same radiance as the surrounding GI compensates the corresponding AO loss. Multiplies [member rendering/global_illumination/hddagi/screen_probe_short_range_ao_intensity]. Does not change the six depth candidates or the maximum of two color samples.
 		</member>
 		<member name="rendering/global_illumination/hddagi/screen_probe_specular_reflections" type="bool" setter="" getter="" default="false">
 			Uses screen-space tracing to improve HDDAGI reflections on smooth surfaces.

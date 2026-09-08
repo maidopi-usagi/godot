@@ -68,6 +68,25 @@ static bool is_hddagi_screen_probe_reflection_debug_draw(RSE::ViewportDebugDraw 
 	return p_debug_draw == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_REFLECTIONS;
 }
 
+static bool is_hddagi_short_range_gi_enabled() {
+	return GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_short_range_ao") &&
+			GLOBAL_GET_CACHED(float, "rendering/global_illumination/hddagi/screen_probe_short_range_ao_intensity") > 0.0f &&
+			GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_short_range_gi") &&
+			GLOBAL_GET_CACHED(float, "rendering/global_illumination/hddagi/screen_probe_short_range_gi_intensity") > 0.0f;
+}
+
+static bool has_native_taa(const Ref<RenderSceneBuffersRD> &p_render_buffers) {
+	if (!p_render_buffers->get_use_taa() || p_render_buffers->get_scaling_3d_mode() == RSE::VIEWPORT_SCALING_3D_MODE_FSR2) {
+		return false;
+	}
+#ifdef METAL_MFXTEMPORAL_ENABLED
+	if (p_render_buffers->get_scaling_3d_mode() == RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL) {
+		return false;
+	}
+#endif
+	return true;
+}
+
 void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_specular() {
 	ERR_FAIL_NULL(render_buffers);
 
@@ -131,6 +150,7 @@ bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_mfx_tempor
 
 void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	ss_effects_data.last_frame_valid = false;
+	ss_effects_data.short_range_gi_history_valid = false;
 	// JIC, should already have been cleared
 	if (render_buffers) {
 		render_buffers->clear_context(RB_SCOPE_FORWARD_CLUSTERED);
@@ -139,6 +159,7 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 		render_buffers->clear_context(RB_SCOPE_SSAO);
 		render_buffers->clear_context(RB_SCOPE_SSR);
 		render_buffers->clear_context(RB_SCOPE_SS_HIZ);
+		render_buffers->clear_context(RB_SCOPE_HDDAGI_SHORT_RANGE_GI);
 	}
 
 	if (cluster_builder) {
@@ -1706,7 +1727,9 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 	const bool screen_probe_directional_screen_radiance_requested = p_use_hddagi_screen_probes && screen_probe_detail_trace_requested &&
 			GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_directional_screen_radiance") &&
 			environment_get_hddagi_screen_probe_mode(p_render_data->environment) == RSE::ENV_HDDAGI_SCREEN_PROBE_MODE_DIRECTIONAL_GATHER;
-	const bool screen_probe_screen_radiance_requested = screen_probe_specular_requested || screen_probe_directional_screen_radiance_requested;
+	const bool short_range_gi_requested = p_use_hddagi_screen_probes && is_hddagi_short_range_gi_enabled();
+	const bool short_range_gi_taa_history = short_range_gi_requested && has_native_taa(rb) && !screen_probe_specular_requested && !screen_probe_directional_screen_radiance_requested;
+	const bool screen_probe_screen_radiance_requested = screen_probe_specular_requested || screen_probe_directional_screen_radiance_requested || (short_range_gi_requested && !short_range_gi_taa_history);
 	RID previous_screen_color_views[RendererSceneRender::MAX_RENDER_VIEWS] = {};
 	RID previous_screen_depth_views[RendererSceneRender::MAX_RENDER_VIEWS] = {};
 	bool previous_screen_color_valid = false;
@@ -1720,6 +1743,31 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			previous_screen_depth_views[v] = rb->get_texture_slice(RB_SCOPE_SSLF, RB_LAST_FRAME_DEPTH, v, 0);
 			previous_screen_color_valid = previous_screen_color_views[v].is_valid() && previous_screen_depth_views[v].is_valid() &&
 					RD::get_singleton()->texture_size(previous_screen_color_views[v]) == rb->get_internal_size() && RD::get_singleton()->texture_size(previous_screen_depth_views[v]) == rb->get_internal_size();
+		}
+	} else if (rb_data.is_valid() && !p_use_ssil && !p_use_ssr && !screen_probe_screen_radiance_requested) {
+		// Release the separate color/depth pair when its last consumer stops,
+		// including a short-range GI switch from SSLF to borrowed TAA color.
+		rb->clear_context(RB_SCOPE_SSLF);
+		rb_data->ss_effects_data.last_frame_valid = false;
+	}
+	if (rb_data.is_valid()) {
+		if (short_range_gi_taa_history) {
+			// Borrow TAA's full-resolution HDR color. Only depth needs a new copy;
+			// mark the pair valid together after TAA has actually run this frame.
+			if (!rb->has_texture(RB_SCOPE_HDDAGI_SHORT_RANGE_GI, RB_TEX_HDDAGI_SHORT_RANGE_GI_DEPTH)) {
+				rb->create_texture(RB_SCOPE_HDDAGI_SHORT_RANGE_GI, RB_TEX_HDDAGI_SHORT_RANGE_GI_DEPTH, RD::DATA_FORMAT_R32_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT);
+				rb_data->ss_effects_data.short_range_gi_history_valid = false;
+			}
+			previous_screen_color_valid = rb_data->ss_effects_data.short_range_gi_history_valid && rb->has_texture(SNAME("taa"), SNAME("history"));
+			for (uint32_t v = 0; v < rb->get_view_count() && previous_screen_color_valid; v++) {
+				previous_screen_color_views[v] = rb->get_texture_slice(SNAME("taa"), SNAME("history"), v, 0);
+				previous_screen_depth_views[v] = rb->get_texture_slice(RB_SCOPE_HDDAGI_SHORT_RANGE_GI, RB_TEX_HDDAGI_SHORT_RANGE_GI_DEPTH, v, 0);
+				previous_screen_color_valid = previous_screen_color_views[v].is_valid() && previous_screen_depth_views[v].is_valid() &&
+						RD::get_singleton()->texture_size(previous_screen_color_views[v]) == rb->get_internal_size() && RD::get_singleton()->texture_size(previous_screen_depth_views[v]) == rb->get_internal_size();
+			}
+		} else {
+			rb->clear_context(RB_SCOPE_HDDAGI_SHORT_RANGE_GI);
+			rb_data->ss_effects_data.short_range_gi_history_valid = false;
 		}
 	}
 	if (p_depth_pre_pass_completed && p_use_hddagi_screen_probes && rb_data.is_valid() && ss_effects != nullptr && copy_effects != nullptr && (screen_probe_detail_trace_requested || screen_probe_specular_requested)) {
@@ -2015,6 +2063,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	bool using_hddagi = false;
 	bool using_hddagi_screen_probes = false;
 	bool using_hddagi_screen_radiance = false;
+	bool using_hddagi_short_range_gi_taa_history = false;
 	bool using_voxelgi = false;
 	bool reverse_cull = p_render_data->scene_data->cam_transform.basis.determinant() < 0;
 	bool using_ssil = !is_reflection_probe && p_render_data->environment.is_valid() && environment_get_ssil_enabled(p_render_data->environment);
@@ -2076,6 +2125,9 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_directional_screen_radiance") &&
 				environment_get_hddagi_screen_probe_mode(p_render_data->environment) == RSE::ENV_HDDAGI_SCREEN_PROBE_MODE_DIRECTIONAL_GATHER;
 		using_hddagi_screen_radiance = using_hddagi_specular_screen_radiance || using_hddagi_directional_screen_radiance;
+		const bool using_short_range_gi = using_hddagi_screen_probes && is_hddagi_short_range_gi_enabled();
+		using_hddagi_short_range_gi_taa_history = using_short_range_gi && has_native_taa(rb) && !using_hddagi_screen_radiance;
+		using_hddagi_screen_radiance |= using_short_range_gi && !using_hddagi_short_range_gi_taa_history;
 
 		if (p_render_data->scene_data->view_count > 1) {
 			color_pass_flags |= COLOR_PASS_FLAG_MULTIVIEW;
@@ -2743,6 +2795,14 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			RENDER_TIMESTAMP("TAA");
 			taa->process(rb, rb->get_base_data_format(), p_render_data->scene_data->z_near, p_render_data->scene_data->z_far);
 			RD::get_singleton()->draw_command_end_label();
+			if (using_hddagi_short_range_gi_taa_history && rb->has_texture(RB_SCOPE_HDDAGI_SHORT_RANGE_GI, RB_TEX_HDDAGI_SHORT_RANGE_GI_DEPTH)) {
+				RENDER_TIMESTAMP("HDDAGI Short Range GI Depth History");
+				for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+					copy_effects->copy_depth_to_rect(rb->get_depth_texture(v), rb->get_texture_slice(RB_SCOPE_HDDAGI_SHORT_RANGE_GI, RB_TEX_HDDAGI_SHORT_RANGE_GI_DEPTH, v, 0), Rect2i(Point2i(), rb->get_internal_size()));
+				}
+				rb_data->ss_effects_data.short_range_gi_history_valid = true;
+				RENDER_TIMESTAMP("HDDAGI Short Range GI Depth History End");
+			}
 		}
 	}
 

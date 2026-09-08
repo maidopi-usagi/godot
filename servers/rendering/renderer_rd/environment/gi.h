@@ -59,6 +59,8 @@
 #define RB_SCOPE_HDDAGI_SCREEN_PROBE_DEBUG SNAME("hddagi_screen_probe_debug")
 #define RB_SCOPE_HDDAGI_SCREEN_PROBE_DENOISER SNAME("hddagi_screen_probe_denoiser")
 #define RB_SCOPE_HDDAGI_SPECULAR_REFLECTIONS SNAME("hddagi_specular_reflections")
+#define RB_SCOPE_HDDAGI_SHORT_RANGE_GI SNAME("hddagi_short_range_gi")
+#define RB_TEX_HDDAGI_SHORT_RANGE_GI_DEPTH SNAME("previous_depth")
 
 #define RB_TEX_AMBIENT SNAME("ambient")
 #define RB_TEX_REFLECTION SNAME("reflection")
@@ -527,6 +529,8 @@ private:
 			SCREEN_PROBE_MODE_SPECULAR_APPLY,
 			SCREEN_PROBE_MODE_TRACE_DEBUG,
 			SCREEN_PROBE_MODE_TRACE_IRRADIANCE_CACHE_DEBUG,
+			SCREEN_PROBE_MODE_APPLY_SHORT_RANGE_GI,
+			SCREEN_PROBE_MODE_APPLY_SVGF_SHORT_RANGE_GI,
 			SCREEN_PROBE_MODE_MAX,
 		};
 
@@ -591,6 +595,11 @@ private:
 			float input_hit_distance_max;
 
 			uint32_t reserved[4];
+		};
+
+		struct ScreenProbeApplyPushConstant {
+			ScreenProbePushConstant base;
+			float short_range_ao[4];
 		};
 
 		struct ScreenProbeSpecularPushConstant {

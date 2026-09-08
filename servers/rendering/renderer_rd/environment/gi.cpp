@@ -3293,6 +3293,7 @@ void GI::init(SkyRD *p_sky) {
 	{
 		static_assert(sizeof(HDDAGIShader::ScreenProbePushConstant) == 80, "Screen probe push constant must match the shader ABI.");
 		static_assert(sizeof(HDDAGIShader::ScreenProbeSVGFPreparePushConstant) == 112, "Screen probe SVGF prepare push constant must match the shader ABI.");
+		static_assert(sizeof(HDDAGIShader::ScreenProbeApplyPushConstant) == 96, "Screen probe apply push constant must match the shader ABI.");
 		static_assert(sizeof(HDDAGIShader::ScreenProbeSpecularPushConstant) == 112, "Screen probe specular push constant must match the shader ABI.");
 		static_assert(sizeof(ScreenProbeSceneData) == 1088, "Screen probe scene data must match the shader ABI.");
 		static_assert(offsetof(ScreenProbeSceneData, previous_projection) == 816, "Screen probe previous projection offset must match the shader ABI.");
@@ -3320,6 +3321,8 @@ void GI::init(SkyRD *p_sky) {
 		screen_probe_modes.push_back("\n#define MODE_SPECULAR_APPLY\n");
 		screen_probe_modes.push_back("\n#define MODE_TRACE\n#define MODE_DEBUG_MONTAGE\n");
 		screen_probe_modes.push_back("\n#define MODE_TRACE\n#define MODE_IRRADIANCE_CACHE_QUERY\n#define MODE_DEBUG_MONTAGE\n");
+		screen_probe_modes.push_back("\n#define MODE_APPLY\n#define MODE_SHORT_RANGE_GI\n");
+		screen_probe_modes.push_back("\n#define MODE_APPLY\n#define MODE_SVGF_APPLY\n#define MODE_SHORT_RANGE_GI\n");
 		DEV_ASSERT(screen_probe_modes.size() == HDDAGIShader::SCREEN_PROBE_MODE_MAX);
 
 		String screen_probe_defines;
@@ -3346,6 +3349,7 @@ void GI::init(SkyRD *p_sky) {
 				HDDAGIShader::SCREEN_PROBE_MODE_RESOLVE_SVGF,
 				HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_RESOLVE_SVGF,
 				HDDAGIShader::SCREEN_PROBE_MODE_APPLY_SVGF,
+				HDDAGIShader::SCREEN_PROBE_MODE_APPLY_SVGF_SHORT_RANGE_GI,
 			};
 			for (HDDAGIShader::ScreenProbeMode mode : svgf_modes) {
 				hddagi_shader.screen_probe.set_variant_enabled(mode, false);
