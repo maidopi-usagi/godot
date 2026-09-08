@@ -2443,6 +2443,7 @@ void MaterialStorage::_material_uniform_set_erased(void *p_material) {
 
 void MaterialStorage::_material_queue_update(Material *material, bool p_uniform, bool p_texture) {
 	MutexLock lock(material_update_list_mutex);
+	material->data_version++;
 	material->uniform_dirty = material->uniform_dirty || p_uniform;
 	material->texture_dirty = material->texture_dirty || p_texture;
 
@@ -2514,6 +2515,7 @@ void MaterialStorage::material_free(RID p_rid) {
 void MaterialStorage::material_set_shader(RID p_material, RID p_shader) {
 	Material *material = material_owner.get_or_null(p_material);
 	ERR_FAIL_NULL(material);
+	material->data_version++;
 
 	if (material->data) {
 		memdelete(material->data);
@@ -2570,6 +2572,11 @@ MaterialStorage::ShaderData *MaterialStorage::material_get_shader_data(RID p_mat
 	return nullptr;
 }
 
+uint64_t MaterialStorage::material_get_data_version(RID p_material) const {
+	const Material *material = material_owner.get_or_null(p_material);
+	return material ? material->data_version : 0;
+}
+
 void MaterialStorage::material_set_param(RID p_material, const StringName &p_param, const Variant &p_value) {
 	Material *material = material_owner.get_or_null(p_material);
 	ERR_FAIL_NULL(material);
@@ -2608,6 +2615,7 @@ void MaterialStorage::material_set_next_pass(RID p_material, RID p_next_material
 	}
 
 	material->next_pass = p_next_material;
+	material->data_version++;
 	if (material->data) {
 		material->data->set_next_pass(p_next_material);
 	}
@@ -2623,6 +2631,11 @@ void MaterialStorage::material_set_render_priority(RID p_material, int priority)
 		material->data->set_render_priority(priority);
 	}
 	material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
+}
+
+RID MaterialStorage::material_get_next_pass(RID p_material) const {
+	const Material *material = material_owner.get_or_null(p_material);
+	return material ? material->next_pass : RID();
 }
 
 bool MaterialStorage::material_is_animated(RID p_material) {

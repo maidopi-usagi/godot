@@ -290,6 +290,7 @@ private:
 
 	struct Material {
 		RID self;
+		uint64_t data_version = 1; // Captured material data; independent of render-list dependency notifications.
 		MaterialData *data = nullptr;
 		Shader *shader = nullptr;
 		//shortcut to shader data and type
@@ -491,6 +492,7 @@ public:
 	virtual RID material_allocate() override;
 	virtual void material_initialize(RID p_material) override;
 	virtual void material_free(RID p_rid) override;
+	uint64_t material_get_data_version(RID p_material) const;
 
 	virtual void material_set_shader(RID p_material, RID p_shader) override;
 	ShaderData *material_get_shader_data(RID p_material);
@@ -499,6 +501,7 @@ public:
 	virtual Variant material_get_param(RID p_material, const StringName &p_param) const override;
 
 	virtual void material_set_next_pass(RID p_material, RID p_next_material) override;
+	RID material_get_next_pass(RID p_material) const;
 	virtual void material_set_render_priority(RID p_material, int priority) override;
 
 	virtual bool material_is_animated(RID p_material) override;

@@ -556,6 +556,10 @@ void RendererSceneCull::instance_initialize(RID p_rid) {
 void RendererSceneCull::_instance_update_mesh_instance(Instance *p_instance) const {
 	bool needs_instance = RSG::mesh_storage->mesh_needs_instance(p_instance->base, p_instance->skeleton.is_valid());
 	if (needs_instance != p_instance->mesh_instance.is_valid()) {
+		if (p_instance->gi_rigid && p_instance->base_type == RSE::INSTANCE_MESH && p_instance->skeleton.is_null() && p_instance->scenario && p_instance->array_index >= 0) {
+			// Adding/removing blend shapes changes whether this mesh belongs to the rigid layer.
+			p_instance->scenario->hddagi_rigid_membership_version++;
+		}
 		if (needs_instance) {
 			p_instance->mesh_instance = RSG::mesh_storage->mesh_instance_create(p_instance->base);
 
@@ -585,6 +589,7 @@ void RendererSceneCull::_instance_update_mesh_instance(Instance *p_instance) con
 void RendererSceneCull::instance_set_base(RID p_instance, RID p_base) {
 	Instance *instance = instance_owner.get_or_null(p_instance);
 	ERR_FAIL_NULL(instance);
+	instance->hddagi_capture_version++;
 
 	Scenario *scenario = instance->scenario;
 
@@ -729,6 +734,7 @@ void RendererSceneCull::instance_set_base(RID p_instance, RID p_base) {
 
 				ERR_FAIL_NULL(geom->geometry_instance);
 
+				geom->geometry_instance->set_hddagi_capture_data(instance->self.get_id(), p_base, instance->hddagi_capture_version);
 				geom->geometry_instance->set_skeleton(instance->skeleton);
 				geom->geometry_instance->set_material_override(instance->material_override);
 				geom->geometry_instance->set_material_overlay(instance->material_overlay);
@@ -1042,6 +1048,7 @@ void RendererSceneCull::instance_set_surface_override_material(RID p_instance, i
 	ERR_FAIL_INDEX(p_surface, instance->materials.size());
 
 	instance->materials.write[p_surface] = p_material;
+	instance->hddagi_capture_version++;
 
 	_instance_queue_update(instance, false, true);
 }
@@ -1130,6 +1137,8 @@ void RendererSceneCull::instance_attach_skeleton(RID p_instance, RID p_skeleton)
 		return;
 	}
 
+	const bool was_rigid_supported = instance->skeleton.is_null() && instance->mesh_instance.is_null();
+	const uint64_t rigid_membership_version = instance->scenario ? instance->scenario->hddagi_rigid_membership_version : 0;
 	instance->skeleton = p_skeleton;
 
 	if (p_skeleton.is_valid()) {
@@ -1145,6 +1154,12 @@ void RendererSceneCull::instance_attach_skeleton(RID p_instance, RID p_skeleton)
 		InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
 		ERR_FAIL_NULL(geom->geometry_instance);
 		geom->geometry_instance->set_skeleton(p_skeleton);
+	}
+	if (instance->gi_rigid && instance->base_type == RSE::INSTANCE_MESH && instance->scenario && instance->array_index >= 0 &&
+			was_rigid_supported != (instance->skeleton.is_null() && instance->mesh_instance.is_null()) &&
+			instance->scenario->hddagi_rigid_membership_version == rigid_membership_version) {
+		// Mesh-instance updates may already have published this membership change.
+		instance->scenario->hddagi_rigid_membership_version++;
 	}
 }
 
@@ -1303,6 +1318,23 @@ void RendererSceneCull::instance_geometry_set_flag(RID p_instance, RSE::Instance
 			}
 
 		} break;
+		case RSE::INSTANCE_FLAG_USE_RIGID_GI: {
+			if (instance->gi_rigid == p_enabled) {
+				return;
+			}
+			instance->gi_rigid = p_enabled;
+			if (instance->scenario) {
+				instance->scenario->hddagi_rigid_membership_version++;
+			}
+			if (instance->scenario && instance->array_index >= 0) {
+				InstanceData &idata = instance->scenario->instance_data[instance->array_index];
+				if (p_enabled) {
+					idata.flags |= InstanceData::FLAG_USES_RIGID_GI;
+				} else {
+					idata.flags &= ~InstanceData::FLAG_USES_RIGID_GI;
+				}
+			}
+		} break;
 		case RSE::INSTANCE_FLAG_IGNORE_OCCLUSION_CULLING: {
 			instance->ignore_occlusion_culling = p_enabled;
 
@@ -1357,6 +1389,7 @@ void RendererSceneCull::instance_geometry_set_material_override(RID p_instance, 
 	ERR_FAIL_NULL(instance);
 
 	instance->material_override = p_material;
+	instance->hddagi_capture_version++;
 	_instance_queue_update(instance, false, true);
 
 	if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK && instance->base_data) {
@@ -1371,6 +1404,7 @@ void RendererSceneCull::instance_geometry_set_material_overlay(RID p_instance, R
 	ERR_FAIL_NULL(instance);
 
 	instance->material_overlay = p_material;
+	instance->hddagi_capture_version++;
 	_instance_queue_update(instance, false, true);
 
 	if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK && instance->base_data) {
@@ -1571,6 +1605,11 @@ void RendererSceneCull::instance_geometry_set_shader_parameter(RID p_instance, c
 	ERR_FAIL_NULL(instance);
 
 	instance->instance_uniforms.set(instance->self, p_parameter, p_value);
+	instance->hddagi_capture_version++;
+	if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK && instance->base_data) {
+		InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
+		geom->geometry_instance->set_hddagi_capture_data(instance->self.get_id(), instance->base, instance->hddagi_capture_version);
+	}
 }
 
 Variant RendererSceneCull::instance_geometry_get_shader_parameter(RID p_instance, const StringName &p_parameter) const {
@@ -1733,6 +1772,7 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 		ERR_FAIL_NULL(geom->geometry_instance);
 
 		geom->geometry_instance->set_transform(*instance_xform, p_instance->aabb, p_instance->transformed_aabb);
+		geom->geometry_instance->set_hddagi_capture_data(p_instance->self.get_id(), p_instance->base, p_instance->hddagi_capture_version);
 		if (p_instance->teleported) {
 			geom->geometry_instance->reset_motion_vectors();
 		}
@@ -1835,6 +1875,9 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 		// dirty flags should not be set here, since no pairing has happened
 		if (p_instance->baked_light) {
 			idata.flags |= InstanceData::FLAG_USES_BAKED_LIGHT;
+		}
+		if (p_instance->gi_rigid) {
+			idata.flags |= InstanceData::FLAG_USES_RIGID_GI;
 		}
 		if (p_instance->mesh_instance.is_valid()) {
 			idata.flags |= InstanceData::FLAG_USES_MESH_INSTANCE;
@@ -2925,6 +2968,20 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 		bool mesh_visible = false;
 
 		InstanceData &idata = cull_data.scenario->instance_data[i];
+		const bool is_hddagi_rigid = (idata.flags & InstanceData::FLAG_USES_RIGID_GI) &&
+				(idata.flags & InstanceData::FLAG_BASE_TYPE_MASK) == RSE::INSTANCE_MESH &&
+				!(idata.flags & InstanceData::FLAG_USES_MESH_INSTANCE) && idata.instance->skeleton.is_null();
+		if (cull_data.cull->hddagi.collect_rigid && is_hddagi_rigid &&
+				(idata.instance->baked_light || idata.instance->dynamic_gi) && (cull_data.visible_layers & idata.layer_mask)) {
+			// GI contributors may be outside the camera frustum or hidden by occlusion culling.
+			cull_result.hddagi_rigid_geometry_instances.push_back(idata.instance_geometry);
+		}
+		if (cull_data.cull->hddagi.collect_rigid && (idata.flags & InstanceData::FLAG_BASE_TYPE_MASK) == RSE::INSTANCE_LIGHT) {
+			InstanceLightData *light = static_cast<InstanceLightData *>(idata.instance->base_data);
+			if (light->bake_mode == RSE::LIGHT_BAKE_STATIC) {
+				cull_result.hddagi_static_lights.push_back(RID::from_uint64(idata.instance_data_rid));
+			}
+		}
 		uint32_t visibility_flags = idata.flags & (InstanceData::FLAG_VISIBILITY_DEPENDENCY_HIDDEN_CLOSE_RANGE | InstanceData::FLAG_VISIBILITY_DEPENDENCY_HIDDEN | InstanceData::FLAG_VISIBILITY_DEPENDENCY_FADE_CHILDREN);
 		int32_t visibility_check = -1;
 
@@ -3287,7 +3344,7 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 						}
 					}
 				} else if ((1 << base_type) & RSE::INSTANCE_GEOMETRY_MASK) {
-					if ((idata.flags & InstanceData::FLAG_USES_BAKED_LIGHT) && (cull_data.visible_layers & idata.layer_mask)) {
+					if ((idata.flags & InstanceData::FLAG_USES_BAKED_LIGHT) && !is_hddagi_rigid && (cull_data.visible_layers & idata.layer_mask)) {
 						cull_result.hddagi_region_geometry_instances[j].push_back(idata.instance_geometry);
 						mesh_visible = true;
 					}
@@ -3401,6 +3458,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 	{ //hddagi
 		cull.hddagi.region_count = 0;
+		cull.hddagi.collect_rigid = p_reflection_probe.is_null() && p_environment.is_valid() && scene_render->environment_get_hddagi_enabled(p_environment);
 
 		if (p_reflection_probe.is_null()) {
 			cull.hddagi.cascade_light_count = 0;
@@ -3661,6 +3719,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		// Q: Should this whole block be skipped if we're rendering our reflection probe?
 
 		hddagi_update_data.update_static = false;
+		hddagi_update_data.rigid_geometry_instances = cull.hddagi.collect_rigid ? &scene_cull_result.hddagi_rigid_geometry_instances : nullptr;
+		hddagi_update_data.rigid_static_lights = cull.hddagi.collect_rigid ? &scene_cull_result.hddagi_static_lights : nullptr;
+		hddagi_update_data.rigid_membership_version = scenario->hddagi_rigid_membership_version;
 
 		if (cull.hddagi.region_count > 0) {
 			//update regions

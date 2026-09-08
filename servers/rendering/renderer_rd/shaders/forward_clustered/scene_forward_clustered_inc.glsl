@@ -332,6 +332,7 @@ struct ImplementationData {
 	uint pad1;
 
 	mat4 sdf_to_bounds;
+	mat3 sdf_to_normal;
 
 	ivec3 sdf_offset;
 	uint pad2;
@@ -486,6 +487,11 @@ layout(set = 1, binding = 35) uniform texture2D ssil_buffer;
 layout(set = 1, binding = 36) uniform texture2D ssr_buffer;
 layout(set = 1, binding = 37) uniform texture2D ssr_mip_level_buffer;
 #endif // USE_MULTIVIEW
+
+#define HDDAGI_RIGID_FORWARD
+#define HDDAGI_RIGID_SET 1
+// All regular passes share this descriptor layout, including depth and unshaded.
+#include "../environment/hddagi_rigid_data_inc.glsl"
 
 #endif
 

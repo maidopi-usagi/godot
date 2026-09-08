@@ -54,6 +54,7 @@ const float SCREEN_PROBE_SPECULAR_DETAIL_TRACE_MAX_DISTANCE = 50.0;
 const int HDDAGI_TRACE_SCREEN_ENDPOINT = -2;
 const int HDDAGI_TRACE_SCREEN_ENDPOINT_SKY_FALLBACK = -3;
 const int HDDAGI_TRACE_SCREEN_RADIANCE = -4;
+const int HDDAGI_TRACE_RIGID_ENDPOINT = -5;
 
 const int HDDAGI_REGION_SIZE = 8;
 const int HDDAGI_HDDA_FP_BITS = 10;
@@ -189,6 +190,8 @@ layout(rgba32ui, set = 0, binding = 9) uniform restrict readonly uimage2D adapti
 #endif
 
 #if defined(MODE_TRACE) || defined(MODE_SPECULAR_TRACE) || defined(MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE)
+
+#include "hddagi_rigid_inc.glsl"
 
 #if defined(MODE_TRACE) || defined(MODE_SPECULAR_TRACE)
 layout(rgba32ui, set = 0, binding = 0) uniform restrict readonly uimage2D screen_probe_surface_input;
@@ -1794,6 +1797,49 @@ bool trace_ray_hdda(vec3 ray_position, vec3 ray_direction, int first_cascade, bo
 	return hit;
 }
 
+float screen_probe_rigid_trace_distance(vec3 origin_world, vec3 direction_world) {
+	int cascade = hddagi.max_cascades - 1;
+	vec3 bounds_min = hddagi.cascades[cascade].position;
+	vec3 bounds_max = bounds_min + vec3(hddagi.grid_size) / hddagi.cascades[cascade].to_cell;
+	bounds_min.y /= hddagi.y_mult;
+	bounds_max.y /= hddagi.y_mult;
+	bounds_min += scene_data.cam_transform[3].xyz;
+	bounds_max += scene_data.cam_transform[3].xyz;
+	float entry;
+	float exit_distance;
+	return hddagi_rigid_ray_box(origin_world, direction_world, bounds_min, bounds_max, entry, exit_distance) ? max(exit_distance, 0.0) : 0.0;
+}
+
+float screen_probe_rigid_static_distance(vec3 origin_world, vec3 direction_world, ivec3 geometry_cell, int cascade) {
+	vec3 bounds_min = hddagi.cascades[cascade].position + vec3(geometry_cell) / hddagi.cascades[cascade].to_cell;
+	vec3 bounds_max = bounds_min + vec3(1.0 / hddagi.cascades[cascade].to_cell);
+	bounds_min.y /= hddagi.y_mult;
+	bounds_max.y /= hddagi.y_mult;
+	bounds_min += scene_data.cam_transform[3].xyz;
+	bounds_max += scene_data.cam_transform[3].xyz;
+	float entry;
+	float exit_distance;
+	if (hddagi_rigid_ray_box(origin_world, direction_world, bounds_min, bounds_max, entry, exit_distance) && entry >= 0.0) {
+		return entry;
+	}
+	// The static tracer's normal bias can put it on a parallel displaced ray.
+	// Bound by the geometry box, never by the exterior lighting-cell center.
+	return max(dot((bounds_min + bounds_max) * 0.5 - origin_world, direction_world) + length(bounds_max - bounds_min) * 0.5, 0.0);
+}
+
+bool screen_probe_trace_rigid(vec3 origin_world, vec3 direction_world, float max_distance, vec3 receiver_normal, inout vec3 radiance, inout int hit_cascade, inout vec3 endpoint_world, inout vec3 endpoint_normal_world) {
+	HDDAGIRigidHit hit;
+	if (!hddagi_rigid_trace_surface(origin_world, direction_world, HDDAGI_RIGID_RAY_EPSILON, max_distance, receiver_normal, hit)) {
+		return false;
+	}
+	radiance = hddagi_rigid_sample_radiance(hit);
+	hit_cascade = HDDAGI_TRACE_RIGID_ENDPOINT;
+	endpoint_world = hit.position;
+	endpoint_normal_world = hddagi_rigid_hit_normal(hit);
+	screen_probe_debug_set_source(SCREEN_PROBE_DEBUG_HDDA_VOXEL);
+	return true;
+}
+
 ivec3 light_texture_position(ivec3 light_cell, int cascade) {
 	ivec3 read_cell = (light_cell + hddagi.cascades[cascade].region_world_offset * HDDAGI_REGION_SIZE) & (hddagi.grid_size - 1);
 	return read_cell + ivec3(0, hddagi.grid_size.y * cascade, 0);
@@ -2080,7 +2126,7 @@ vec3 sample_environment(vec3 ray_direction_view) {
 
 #ifdef MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE
 
-bool trace_irradiance_cache_segment(vec3 origin_world, vec3 origin_normal_world, vec3 direction_world, out vec3 r_direct_radiance, out vec3 r_endpoint_world, out vec3 r_endpoint_normal_world, out vec3 r_surface_albedo) {
+bool trace_irradiance_cache_static_segment(vec3 origin_world, vec3 origin_normal_world, vec3 direction_world, out vec3 r_direct_radiance, out vec3 r_endpoint_world, out vec3 r_endpoint_normal_world, out vec3 r_surface_albedo) {
 	r_direct_radiance = vec3(0.0);
 	r_endpoint_world = vec3(0.0);
 	r_endpoint_normal_world = vec3(0.0, 0.0, 1.0);
@@ -2180,6 +2226,25 @@ bool trace_irradiance_cache_segment(vec3 origin_world, vec3 origin_normal_world,
 	return hddagi_irradiance_cache_is_finite(r_direct_radiance) && !any(lessThan(r_direct_radiance, vec3(0.0))) && hddagi_irradiance_cache_is_finite(r_surface_albedo);
 }
 
+bool trace_irradiance_cache_segment(vec3 origin_world, vec3 origin_normal_world, vec3 direction_world, out vec3 r_direct_radiance, out vec3 r_endpoint_world, out vec3 r_endpoint_normal_world, out vec3 r_surface_albedo, out bool r_rigid_endpoint) {
+	bool static_hit = trace_irradiance_cache_static_segment(origin_world, origin_normal_world, direction_world, r_direct_radiance, r_endpoint_world, r_endpoint_normal_world, r_surface_albedo);
+	r_rigid_endpoint = false;
+	if (hddagi_rigid_instances.header.x != 0u) {
+		direction_world = normalize(direction_world);
+		float max_distance = static_hit ? length(r_endpoint_world - origin_world) : screen_probe_rigid_trace_distance(origin_world, direction_world);
+		HDDAGIRigidHit hit;
+		if (hddagi_rigid_trace_surface(origin_world, direction_world, HDDAGI_RIGID_RAY_EPSILON, max_distance, origin_normal_world, hit)) {
+			r_direct_radiance = hddagi_rigid_sample_radiance(hit);
+			r_endpoint_world = hit.position;
+			r_endpoint_normal_world = hddagi_rigid_hit_normal(hit);
+			r_surface_albedo = hddagi_rigid_hit_albedo(hit);
+			r_rigid_endpoint = true;
+			return true;
+		}
+	}
+	return static_hit;
+}
+
 void irradiance_cache_update_multibounce_main() {
 	if (!hddagi_irradiance_cache_multibounce_enabled()) {
 		return;
@@ -2210,13 +2275,17 @@ void irradiance_cache_update_multibounce_main() {
 	vec3 endpoint_normal_world;
 	vec3 ignored_albedo;
 	vec3 incoming_radiance;
-	if (trace_irradiance_cache_segment(root_lookup.sample_position, root_lookup.sample_normal, direction_world, secondary_direct_radiance, endpoint_world, endpoint_normal_world, ignored_albedo)) {
-		HDDAGIIrradianceCacheLookup secondary_lookup = hddagi_irradiance_cache_lookup(endpoint_world, endpoint_normal_world, root_lookup.sample_position);
+	bool rigid_endpoint;
+	if (trace_irradiance_cache_segment(root_lookup.sample_position, root_lookup.sample_normal, direction_world, secondary_direct_radiance, endpoint_world, endpoint_normal_world, ignored_albedo, rigid_endpoint)) {
+		HDDAGIIrradianceCacheLookup secondary_lookup = hddagi_irradiance_cache_empty_lookup();
+		if (!rigid_endpoint) {
+			secondary_lookup = hddagi_irradiance_cache_lookup(endpoint_world, endpoint_normal_world, root_lookup.sample_position);
+		}
 		if (secondary_lookup.has_radiance) {
 			incoming_radiance = secondary_lookup.radiance;
 		} else {
 			incoming_radiance = secondary_direct_radiance;
-			if (hddagi_irradiance_cache_should_submit_endpoint_sample(secondary_lookup)) {
+			if (!rigid_endpoint && hddagi_irradiance_cache_should_submit_endpoint_sample(secondary_lookup)) {
 				hddagi_irradiance_cache_submit(secondary_lookup, endpoint_world, endpoint_normal_world, secondary_direct_radiance);
 			}
 		}
@@ -2340,11 +2409,16 @@ bool trace_hddagi_sample(ivec2 origin_position, float origin_depth, vec3 origin_
 	mat3 camera_basis = mat3(scene_data.cam_transform);
 	vec3 ray_position = camera_basis * origin_view;
 	vec3 trace_origin_world = ray_position + scene_data.cam_transform[3].xyz;
+	vec3 trace_direction_world = normalize(camera_basis * ray_direction_view);
+	vec3 trace_normal_world = normalize(camera_basis * origin_normal);
 
 	if (trace_screen_detail(origin_view, ray_direction_view, detail_distance_limit, r_endpoint_world, r_endpoint_normal_world)) {
 		r_hit_cascade = HDDAGI_TRACE_SCREEN_ENDPOINT;
+		if (hddagi_rigid_instances.header.x != 0u && screen_probe_trace_rigid(trace_origin_world, trace_direction_world, length(r_endpoint_world - trace_origin_world) + HDDAGI_RIGID_RAY_EPSILON, trace_normal_world, r_radiance, r_hit_cascade, r_endpoint_world, r_endpoint_normal_world)) {
+			return true;
+		}
 #ifdef MODE_DIRECTIONAL_TRACE
-		if (directional_sample_screen_radiance(r_endpoint_world, r_radiance)) {
+		if (!hddagi_rigid_dirty_segment(trace_origin_world, r_endpoint_world) && directional_sample_screen_radiance(r_endpoint_world, r_radiance)) {
 			r_hit_cascade = HDDAGI_TRACE_SCREEN_RADIANCE;
 			screen_probe_debug_set_source(SCREEN_PROBE_DEBUG_SCREEN_HDDAGI);
 			return true;
@@ -2359,8 +2433,8 @@ bool trace_hddagi_sample(ivec2 origin_position, float origin_depth, vec3 origin_
 		return true;
 	}
 
-	vec3 ray_direction = normalize(camera_basis * ray_direction_view);
-	vec3 hddagi_normal = normalize(camera_basis * origin_normal);
+	vec3 ray_direction = trace_direction_world;
+	vec3 hddagi_normal = trace_normal_world;
 	ray_position.y *= hddagi.y_mult;
 	ray_direction.y *= hddagi.y_mult;
 	hddagi_normal.y *= hddagi.y_mult;
@@ -2380,7 +2454,7 @@ bool trace_hddagi_sample(ivec2 origin_position, float origin_depth, vec3 origin_
 		}
 	}
 	if (cascade >= hddagi.max_cascades) {
-		return false;
+		return hddagi_rigid_instances.header.x != 0u && screen_probe_trace_rigid(trace_origin_world, trace_direction_world, screen_probe_rigid_trace_distance(trace_origin_world, trace_direction_world), trace_normal_world, r_radiance, r_hit_cascade, r_endpoint_world, r_endpoint_normal_world);
 	}
 
 	vec3 start_cell = (ray_position - hddagi.cascades[cascade].position) * hddagi.cascades[cascade].to_cell;
@@ -2401,10 +2475,26 @@ bool trace_hddagi_sample(ivec2 origin_position, float origin_depth, vec3 origin_
 	exclude_receiver_cell = exclude_receiver_cell && (params.flags & SCREEN_PROBE_FLAG_DETAIL_TRACE) != 0u;
 #endif
 	if (!trace_ray_hdda(ray_position, ray_direction, cascade, exclude_receiver_cell, hit_cell, hit_face, hit_cascade)) {
-		return false;
+		return hddagi_rigid_instances.header.x != 0u && screen_probe_trace_rigid(trace_origin_world, trace_direction_world, screen_probe_rigid_trace_distance(trace_origin_world, trace_direction_world), trace_normal_world, r_radiance, r_hit_cascade, r_endpoint_world, r_endpoint_normal_world);
 	}
 
 	bool reconnectable_endpoint = !(hit_cascade == cascade && all(equal(ivec3(start_cell), hit_cell)));
+	if (hddagi_rigid_instances.header.x != 0u) {
+		float object_limit;
+		if (reconnectable_endpoint) {
+			object_limit = screen_probe_rigid_static_distance(trace_origin_world, trace_direction_world, hit_cell, hit_cascade);
+		} else {
+			// The legacy self-cell lighting fallback is not a distant blocker.
+			ivec3 next_cell;
+			ivec3 next_face;
+			int next_cascade;
+			bool next_hit = trace_ray_hdda(ray_position, ray_direction, cascade, true, next_cell, next_face, next_cascade);
+			object_limit = next_hit ? screen_probe_rigid_static_distance(trace_origin_world, trace_direction_world, next_cell, next_cascade) : screen_probe_rigid_trace_distance(trace_origin_world, trace_direction_world);
+		}
+		if (screen_probe_trace_rigid(trace_origin_world, trace_direction_world, object_limit, trace_normal_world, r_radiance, r_hit_cascade, r_endpoint_world, r_endpoint_normal_world)) {
+			return true;
+		}
+	}
 	bool disoccluded = false;
 	if (!reconnectable_endpoint) {
 		ivec3 read_cell = (hit_cell + hddagi.cascades[hit_cascade].region_world_offset * HDDAGI_REGION_SIZE) & (hddagi.grid_size - 1);
@@ -2707,6 +2797,7 @@ shared ivec2 directional_history_probe;
 shared uint directional_history_age;
 shared uint directional_history_valid;
 shared uint directional_history_dynamic;
+shared vec3 directional_probe_world;
 shared vec4 directional_importance_footprint_normals[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
 shared float directional_importance_pdf[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
 shared float directional_importance_lighting[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
@@ -2715,7 +2806,7 @@ shared uint directional_importance_ray_counts[SCREEN_PROBE_DIRECTIONAL_SAMPLE_CO
 shared uint directional_importance_ray_offsets[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
 shared uint directional_importance_reallocated;
 shared vec4 directional_importance_trace_samples[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
-shared uint directional_importance_synthetic_hits[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
+shared uint directional_importance_trace_flags[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
 
 bool directional_decode_history_surface(uvec4 packed, out ivec2 r_screen_position, out float r_depth, out vec3 r_normal_view, out bool r_dynamic) {
 	if (all(equal(packed.xy, uvec2(0xffffffffu)))) {
@@ -2850,6 +2941,8 @@ bool directional_select_history(ivec2 probe_position, ivec2 current_screen_posit
 	vec2 probe_screen_extent = max(vec2(params.probe_size) * vec2(params.screen_size) / vec2(params.gi_size), vec2(1.0));
 	float best_score = -1.0;
 
+	// The dynamic bit chooses current motion reprojection, not surface identity.
+	// Starting or stopping motion still uses the geometry checks below.
 	if (adaptive_probe && previous_receiver_raster_valid) {
 		vec2 adaptive_previous_probe_texel = directional_grid_uv_to_probe_texel(previous_receiver_raster_uv, params.frame_index - 1u);
 		ivec2 adaptive_search_base = ivec2(floor(adaptive_previous_probe_texel));
@@ -2890,7 +2983,7 @@ bool directional_select_history(ivec2 probe_position, ivec2 current_screen_posit
 					float previous_depth;
 					vec3 previous_normal_view;
 					bool previous_dynamic;
-					if (!directional_decode_history_surface(previous_packed, previous_screen_position_packed, previous_depth, previous_normal_view, previous_dynamic) || previous_dynamic != current_dynamic) {
+					if (!directional_decode_history_surface(previous_packed, previous_screen_position_packed, previous_depth, previous_normal_view, previous_dynamic)) {
 						continue;
 					}
 					vec2 screen_axis_distance = abs(vec2(previous_screen_position_packed) - previous_screen_position_expected) / probe_screen_extent;
@@ -2901,7 +2994,7 @@ bool directional_select_history(ivec2 probe_position, ivec2 current_screen_posit
 
 					vec3 previous_world;
 					vec3 previous_normal_world;
-					if (!directional_previous_surface_world(previous_packed, previous_cam_transform, previous_world, previous_normal_world, previous_dynamic) || previous_dynamic != current_dynamic) {
+					if (!directional_previous_surface_world(previous_packed, previous_cam_transform, previous_world, previous_normal_world, previous_dynamic)) {
 						continue;
 					}
 					vec3 candidate_previous_view = (scene_data.previous_cam_inv_transform * vec4(previous_world, 1.0)).xyz;
@@ -2971,12 +3064,12 @@ bool directional_select_history(ivec2 probe_position, ivec2 current_screen_posit
 			float previous_depth;
 			vec3 previous_normal_view;
 			bool previous_dynamic;
-			if (!directional_decode_history_surface(previous_packed, previous_screen_position, previous_depth, previous_normal_view, previous_dynamic) || previous_dynamic != current_dynamic) {
+			if (!directional_decode_history_surface(previous_packed, previous_screen_position, previous_depth, previous_normal_view, previous_dynamic)) {
 				continue;
 			}
 			vec3 previous_world;
 			vec3 previous_normal_world;
-			if (!directional_previous_surface_world(previous_packed, previous_cam_transform, previous_world, previous_normal_world, previous_dynamic) || previous_dynamic != current_dynamic) {
+			if (!directional_previous_surface_world(previous_packed, previous_cam_transform, previous_world, previous_normal_world, previous_dynamic)) {
 				continue;
 			}
 			float normal_similarity = dot(current_normal_world, previous_normal_world);
@@ -3057,7 +3150,7 @@ vec3 directional_importance_ray_to_world(ivec2 jitter_key, uvec2 bucket, uint sa
 	return directional_square_to_sphere((vec2(bucket) + bin_uv) / float(SCREEN_PROBE_DIRECTIONAL_TILE_SIZE));
 }
 
-vec4 directional_trace_world_direction(ivec2 origin_position, float origin_depth, vec3 origin_normal, vec3 ray_direction_world, out bool r_synthetic_self_hit) {
+vec4 directional_trace_world_direction(ivec2 origin_position, float origin_depth, vec3 origin_normal, vec3 ray_direction_world, out bool r_synthetic_self_hit, out bool r_rigid_changed) {
 	vec3 ray_direction_view = normalize(transpose(mat3(scene_data.cam_transform)) * ray_direction_world);
 	vec3 incident_radiance;
 	float hit_distance;
@@ -3070,11 +3163,17 @@ vec4 directional_trace_world_direction(ivec2 origin_position, float origin_depth
 		hit_distance = SCREEN_PROBE_DIRECTIONAL_FP16_MAX;
 		r_synthetic_self_hit = true;
 	}
+	// A conservative bin cone is useful for coverage, but cannot invalidate a
+	// radiance estimate. Test the actual visible segment only while geometry moves.
+	r_rigid_changed = false;
+	if ((hddagi_rigid_instances.header.w & 2u) != 0u) {
+		r_rigid_changed = hddagi_rigid_dirty_segment(directional_probe_world, directional_probe_world + ray_direction_world * hit_distance);
+	}
 	vec3 scene_radiance = directional_clamp_radiance(incident_radiance * (screen_radiance_used ? 1.0 : hddagi.energy));
 	return directional_sanitize_fp16(vec4(scene_radiance, hit_distance));
 }
 
-vec4 directional_apply_stable_history(vec4 current_sample, ivec2 direction_texel, bool bypass_history) {
+vec4 directional_apply_stable_history(vec4 current_sample, ivec2 direction_texel, bool bypass_history, bool rigid_changed) {
 	if (!bypass_history && directional_history_valid != 0u) {
 		ivec2 previous_atlas_position = directional_history_probe * SCREEN_PROBE_DIRECTIONAL_TILE_SIZE + direction_texel;
 		ivec2 previous_atlas_size = textureSize(sampler2D(directional_previous_radiance_input, linear_sampler), 0);
@@ -3083,6 +3182,13 @@ vec4 directional_apply_stable_history(vec4 current_sample, ivec2 direction_texel
 			if (directional_finite(previous_sample)) {
 				previous_sample = clamp(previous_sample, vec4(0.0), vec4(SCREEN_PROBE_DIRECTIONAL_FP16_MAX));
 				float current_weight = directional_history_dynamic != 0u ? 0.5 : 1.0 / float(directional_history_age + 1u);
+				if (rigid_changed) {
+					float previous_luminance = dot(previous_sample.rgb, vec3(0.2126, 0.7152, 0.0722));
+					float current_luminance = dot(current_sample.rgb, vec3(0.2126, 0.7152, 0.0722));
+					if (abs(current_luminance - previous_luminance) > max(0.5 * max(current_luminance, previous_luminance), 1e-4)) {
+						current_weight = max(current_weight, 0.25);
+					}
+				}
 				current_sample.rgb = mix(previous_sample.rgb, current_sample.rgb, current_weight);
 			}
 		}
@@ -3234,6 +3340,10 @@ void directional_trace_main() {
 			directional_history_age = min(previous_age, SCREEN_PROBE_DIRECTIONAL_HISTORY_MAX_AGE - 1u);
 			directional_history_valid = 1u;
 		}
+		if ((hddagi_rigid_instances.header.w & 2u) != 0u) {
+			vec2 origin_uv = (vec2(origin_position) + 0.5) / vec2(params.screen_size);
+			directional_probe_world = (scene_data.cam_transform * vec4(compute_view_position(vec3(origin_uv, origin_depth)), 1.0)).xyz;
+		}
 		uint current_age = directional_history_valid != 0u ? directional_history_age + 1u : 1u;
 		imageStore(directional_history_age_output, probe_position, uvec4(current_age, 0u, 0u, 0u));
 	}
@@ -3247,9 +3357,10 @@ void directional_trace_main() {
 	bool structured_importance = (params.flags & SCREEN_PROBE_FLAG_GUIDED_SAMPLING) != 0u && directional_history_valid != 0u && directional_history_dynamic == 0u;
 	if (!structured_importance) {
 		bool synthetic_self_hit;
+		bool rigid_changed;
 		vec3 ray_direction_world = directional_jittered_bucket_to_world(jitter_key, direction_texel);
-		vec4 directional_sample = directional_trace_world_direction(origin_position, origin_depth, origin_normal, ray_direction_world, synthetic_self_hit);
-		directional_sample = directional_apply_stable_history(directional_sample, direction_texel, synthetic_self_hit);
+		vec4 directional_sample = directional_trace_world_direction(origin_position, origin_depth, origin_normal, ray_direction_world, synthetic_self_hit, rigid_changed);
+		directional_sample = directional_apply_stable_history(directional_sample, direction_texel, synthetic_self_hit, rigid_changed);
 		if ((params.flags & SCREEN_PROBE_FLAG_GUIDED_SAMPLING) != 0u) {
 			imageStore(directional_trace_count_output, atlas_position, uvec4(1u));
 		}
@@ -3320,16 +3431,18 @@ void directional_trace_main() {
 	uint ray_bin = first_bin;
 	uvec2 ray_bucket = uvec2(ray_bin % uint(SCREEN_PROBE_DIRECTIONAL_TILE_SIZE), ray_bin / uint(SCREEN_PROBE_DIRECTIONAL_TILE_SIZE));
 	bool synthetic_self_hit;
+	bool rigid_changed;
 	vec3 ray_direction_world = directional_importance_ray_to_world(jitter_key, ray_bucket,
 			lane - directional_importance_ray_offsets[ray_bin], directional_importance_ray_counts[ray_bin]);
-	directional_importance_trace_samples[lane] = directional_trace_world_direction(origin_position, origin_depth, origin_normal, ray_direction_world, synthetic_self_hit);
-	directional_importance_synthetic_hits[lane] = synthetic_self_hit ? 1u : 0u;
+	directional_importance_trace_samples[lane] = directional_trace_world_direction(origin_position, origin_depth, origin_normal, ray_direction_world, synthetic_self_hit, rigid_changed);
+	directional_importance_trace_flags[lane] = (synthetic_self_hit ? 1u : 0u) | (rigid_changed ? 2u : 0u);
 	barrier();
 
 	vec3 scattered_radiance = vec3(0.0);
 	float scattered_hit_distance = SCREEN_PROBE_DIRECTIONAL_FP16_MAX;
 	uint scattered_trace_count = 0u;
 	bool scattered_synthetic_self_hit = false;
+	bool scattered_rigid_changed = false;
 	uint ray_count = directional_importance_ray_counts[lane];
 	if (ray_count == 0u) {
 		vec4 previous_sample;
@@ -3345,14 +3458,15 @@ void directional_trace_main() {
 			vec4 trace_sample = directional_importance_trace_samples[trace_lane];
 			scattered_radiance += trace_sample.rgb * sample_weight;
 			scattered_hit_distance = min(scattered_hit_distance, trace_sample.a);
-			scattered_synthetic_self_hit = scattered_synthetic_self_hit || directional_importance_synthetic_hits[trace_lane] != 0u;
+			scattered_synthetic_self_hit = scattered_synthetic_self_hit || (directional_importance_trace_flags[trace_lane] & 1u) != 0u;
+			scattered_rigid_changed = scattered_rigid_changed || (directional_importance_trace_flags[trace_lane] & 2u) != 0u;
 		}
 		scattered_trace_count = ray_count;
 	}
 
 	vec4 directional_sample = vec4(directional_clamp_radiance(scattered_radiance), scattered_hit_distance);
 	if (scattered_trace_count > 0u) {
-		directional_sample = directional_apply_stable_history(directional_sample, direction_texel, scattered_synthetic_self_hit);
+		directional_sample = directional_apply_stable_history(directional_sample, direction_texel, scattered_synthetic_self_hit, scattered_rigid_changed);
 	}
 	imageStore(directional_trace_count_output, atlas_position, uvec4(scattered_trace_count));
 	imageStore(raw_radiance_output, atlas_position, directional_sanitize_fp16(directional_sample));
@@ -3676,8 +3790,9 @@ void specular_trace_main() {
 			(params.flags & SCREEN_PROBE_FLAG_SPECULAR_SCREEN_RADIANCE_VALID) != 0u) {
 		vec3 endpoint_normal_world;
 		if (trace_screen_detail(view_position, ray_direction, SCREEN_PROBE_SPECULAR_DETAIL_TRACE_MAX_DISTANCE, endpoint_world, endpoint_normal_world)) {
-			if (specular_sample_screen_radiance(endpoint_world, sample_radiance)) {
-				vec3 receiver_world = (scene_data.cam_transform * vec4(view_position, 1.0)).xyz;
+			vec3 receiver_world = (scene_data.cam_transform * vec4(view_position, 1.0)).xyz;
+			vec3 receiver_normal_world = mat3(scene_data.cam_transform) * origin_normal;
+			if (hddagi_rigid_segment_visibility(receiver_world, endpoint_world, receiver_normal_world) > 0.0 && !hddagi_rigid_dirty_segment(receiver_world, endpoint_world) && specular_sample_screen_radiance(endpoint_world, sample_radiance)) {
 				hit_distance = clamp(length(endpoint_world - receiver_world), 0.0, 65504.0);
 				screen_radiance_used = true;
 			}
@@ -3688,7 +3803,7 @@ void specular_trace_main() {
 		vec3 endpoint_normal_world;
 		bool trace_hit = trace_hddagi_sample(screen_position, origin_depth, origin_normal, ray_direction, 0.0,
 				sample_radiance, hit_cascade, endpoint_world, endpoint_normal_world);
-		if (trace_hit && hit_cascade >= 0 && !any(isnan(endpoint_world)) && !any(isinf(endpoint_world))) {
+		if (trace_hit && (hit_cascade >= 0 || hit_cascade == HDDAGI_TRACE_RIGID_ENDPOINT) && !any(isnan(endpoint_world)) && !any(isinf(endpoint_world))) {
 			vec3 receiver_world = (scene_data.cam_transform * vec4(view_position, 1.0)).xyz;
 			hit_distance = clamp(length(endpoint_world - receiver_world), 0.0, 65504.0);
 		}

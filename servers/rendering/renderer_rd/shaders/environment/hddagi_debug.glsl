@@ -9,6 +9,8 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 #define MAX_CASCADES 8
 #define REGION_SIZE 8
 
+#include "hddagi_rigid_inc.glsl"
+
 #define square(m) ((m) * (m))
 
 layout(rg32ui, set = 0, binding = 1) uniform restrict readonly uimage3D voxel_cascades;
@@ -348,6 +350,8 @@ void main() {
 		cam_dir = vec3(params.cam_basis[2][0], params.cam_basis[2][1], params.cam_basis[2][2]);
 	}
 
+	vec3 ray_pos_world = ray_pos;
+	vec3 ray_dir_world = ray_dir;
 	ray_pos.y *= params.y_mult;
 	ray_dir.y *= params.y_mult;
 	ray_dir = normalize(ray_dir);
@@ -358,8 +362,16 @@ void main() {
 	int hit_cascade = 0;
 
 	ivec3 hit_face;
+	float closest_distance = 1e30;
 
 	if (trace_ray_hdda(ray_pos, ray_dir, 0, hit_cell, hit_face, hit_cascade)) {
+		// Compare the occupied face in world-ray distance, before advancing to
+		// the exterior lighting cell. Rigid grids do not use the cascade Y scale.
+		vec3 hit_position = (vec3(hit_cell) + 0.5 + vec3(hit_face) * 0.5) / cascades.data[hit_cascade].to_cell + cascades.data[hit_cascade].offset;
+		hit_position.y /= params.y_mult;
+		int hit_axis = hit_face.x != 0 ? 0 : (hit_face.y != 0 ? 1 : 2);
+		closest_distance = max((hit_position[hit_axis] - ray_pos_world[hit_axis]) / ray_dir_world[hit_axis], 0.0);
+
 		hit_cell += hit_face;
 		ivec3 read_cell = (hit_cell + (cascades.data[hit_cascade].region_world_offset * REGION_SIZE)) & (ivec3(params.grid_size) - 1);
 		light = texelFetch(sampler3D(light_cascades, linear_sampler), read_cell + ivec3(0, (params.grid_size.y * hit_cascade), 0), 0).rgb;
@@ -456,6 +468,11 @@ void main() {
 		}
 
 		//light = abs(hit_normal);//texelFetch(sampler3D(light_cascades, linear_sampler), hit_cell + normal_ofs,0).rgb;
+	}
+
+	HDDAGIRigidHit rigid_hit;
+	if (hddagi_rigid_trace(ray_pos_world, ray_dir_world, 0.0, closest_distance, false, rigid_hit)) {
+		light = hddagi_rigid_sample_radiance(rigid_hit);
 	}
 
 	imageStore(screen_buffer, screen_pos, vec4(linear_to_srgb(light), 1.0));

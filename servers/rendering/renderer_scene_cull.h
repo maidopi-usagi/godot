@@ -277,6 +277,7 @@ public:
 			FLAG_VISIBILITY_DEPENDENCY_FADE_CHILDREN = (1 << 22),
 			FLAG_GEOM_PROJECTOR_SOFTSHADOW_DIRTY = (1 << 23),
 			FLAG_IGNORE_ALL_CULLING = (1 << 24),
+			FLAG_USES_RIGID_GI = (1 << 25),
 		};
 
 		uint32_t flags = 0;
@@ -349,6 +350,7 @@ public:
 		SelfList<Instance>::List instances;
 
 		LocalVector<RID> dynamic_lights;
+		uint64_t hddagi_rigid_membership_version = 0;
 
 		PagedArray<InstanceBounds> instance_aabbs;
 		PagedArray<InstanceData> instance_data;
@@ -429,6 +431,7 @@ public:
 		bool visible : 1;
 		bool baked_light : 1; // This flag is only to know if it actually did use baked light.
 		bool dynamic_gi : 1; // Same as above for dynamic objects.
+		bool gi_rigid : 1;
 		bool redraw_if_visible : 1;
 
 		Instance *lightmap = nullptr;
@@ -481,6 +484,7 @@ public:
 		uint64_t last_frame_pass;
 
 		uint64_t version; // changes to this, and changes to base increase version
+		uint64_t hddagi_capture_version = 1; // Geometry/material changes only; transforms preserve local captures.
 
 		InstanceBaseData *base_data = nullptr;
 
@@ -491,6 +495,9 @@ public:
 
 		static void dependency_changed(Dependency::DependencyChangedNotification p_notification, DependencyTracker *tracker) {
 			Instance *instance = (Instance *)tracker->userdata;
+			if (p_notification == Dependency::DEPENDENCY_CHANGED_MESH || p_notification == Dependency::DEPENDENCY_CHANGED_MATERIAL || p_notification == Dependency::DEPENDENCY_CHANGED_AABB) {
+				instance->hddagi_capture_version++;
+			}
 			switch (p_notification) {
 				case Dependency::DEPENDENCY_CHANGED_SKELETON_DATA:
 				case Dependency::DEPENDENCY_CHANGED_SKELETON_BONES:
@@ -527,6 +534,7 @@ public:
 
 		static void dependency_deleted(const RID &p_dependency, DependencyTracker *tracker) {
 			Instance *instance = (Instance *)tracker->userdata;
+			instance->hddagi_capture_version++;
 
 			if (p_dependency == instance->base) {
 				singleton->instance_set_base(instance->self, RID());
@@ -570,6 +578,7 @@ public:
 			layer_mask = 1;
 			baked_light = true;
 			dynamic_gi = false;
+			gi_rigid = false;
 			redraw_if_visible = false;
 
 			lightmap_slice_index = 0;
@@ -882,6 +891,8 @@ public:
 
 	struct InstanceCullResult {
 		PagedArray<RenderGeometryInstance *> geometry_instances;
+		PagedArray<RenderGeometryInstance *> hddagi_rigid_geometry_instances;
+		PagedArray<RID> hddagi_static_lights;
 		PagedArray<Instance *> lights;
 		PagedArray<RID> light_instances;
 		PagedArray<RID> lightmaps;
@@ -900,6 +911,8 @@ public:
 
 		void clear() {
 			geometry_instances.clear();
+			hddagi_rigid_geometry_instances.clear();
+			hddagi_static_lights.clear();
 			lights.clear();
 			light_instances.clear();
 			lightmaps.clear();
@@ -925,6 +938,8 @@ public:
 
 		void reset() {
 			geometry_instances.reset();
+			hddagi_rigid_geometry_instances.reset();
+			hddagi_static_lights.reset();
 			lights.reset();
 			light_instances.reset();
 			lightmaps.reset();
@@ -950,6 +965,8 @@ public:
 
 		void append_from(InstanceCullResult &p_cull_result) {
 			geometry_instances.merge_unordered(p_cull_result.geometry_instances);
+			hddagi_rigid_geometry_instances.merge_unordered(p_cull_result.hddagi_rigid_geometry_instances);
+			hddagi_static_lights.merge_unordered(p_cull_result.hddagi_static_lights);
 			lights.merge_unordered(p_cull_result.lights);
 			light_instances.merge_unordered(p_cull_result.light_instances);
 			lightmaps.merge_unordered(p_cull_result.lightmaps);
@@ -976,6 +993,8 @@ public:
 
 		void init(PagedArrayPool<RID> *p_rid_pool, PagedArrayPool<RenderGeometryInstance *> *p_geometry_instance_pool, PagedArrayPool<Instance *> *p_instance_pool) {
 			geometry_instances.set_page_pool(p_geometry_instance_pool);
+			hddagi_rigid_geometry_instances.set_page_pool(p_geometry_instance_pool);
+			hddagi_static_lights.set_page_pool(p_rid_pool);
 			light_instances.set_page_pool(p_rid_pool);
 			lights.set_page_pool(p_instance_pool);
 			lightmaps.set_page_pool(p_rid_pool);
@@ -1107,6 +1126,7 @@ public:
 		uint32_t shadow_count;
 
 		struct HDDAGI {
+			bool collect_rigid = false;
 			//have arrays here because HDDAGI functions expects this, plus regions can have areas
 			AABB region_aabb[HDDAGI_MAX_CASCADES * HDDAGI_MAX_REGIONS_PER_CASCADE]; //max 3 regions per cascade
 			uint32_t region_cascade[HDDAGI_MAX_CASCADES * HDDAGI_MAX_REGIONS_PER_CASCADE]; //max 3 regions per cascade

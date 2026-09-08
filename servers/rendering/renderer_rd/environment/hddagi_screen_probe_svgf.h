@@ -54,6 +54,8 @@ public:
 		float denoising_range = 500000.0f;
 		Quality quality = QUALITY_HIGH;
 		bool history_valid = false;
+		// Allow a local signal response while retaining history and its variance.
+		bool lighting_changed = false;
 		bool diffuse_temporal_only = false;
 		bool specular = false;
 		bool specular_full_resolution = false;

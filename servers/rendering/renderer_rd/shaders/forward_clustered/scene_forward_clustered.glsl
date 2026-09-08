@@ -438,7 +438,12 @@ void vertex_shader(vec3 vertex_input,
 #else
 	mat4 modelview = read_view_matrix * model_matrix;
 #endif
-	mat3 modelview_normal = mat3(read_view_matrix) * model_normal_matrix;
+	mat3 view_normal_matrix = mat3(read_view_matrix);
+#ifdef MODE_RENDER_SDF
+	// Object-local capture cameras can include scale. Normals transform covariantly.
+	view_normal_matrix = transpose(mat3(inv_view_matrix));
+#endif
+	mat3 modelview_normal = view_normal_matrix * model_normal_matrix;
 	vec2 read_viewport_size = scene_data.viewport_size;
 
 #ifdef POINT_SIZE_USED
@@ -476,7 +481,7 @@ void vertex_shader(vec3 vertex_input,
 
 	vertex = (read_view_matrix * vec4(vertex, 1.0)).xyz;
 #ifdef NORMAL_USED
-	normal = (read_view_matrix * vec4(normal, 0.0)).xyz;
+	normal = view_normal_matrix * normal;
 #endif
 
 #ifdef TANGENT_USED
@@ -2959,8 +2964,8 @@ void fragment_shader(in SceneData scene_data) {
 		const int facing_direction_count = 26;
 		const vec3 facing_directions[26] = vec3[](vec3(-1.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(0.0, -1.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, -1.0), vec3(0.0, 0.0, 1.0), vec3(-0.5773502691896258, -0.5773502691896258, -0.5773502691896258), vec3(-0.7071067811865475, -0.7071067811865475, 0.0), vec3(-0.5773502691896258, -0.5773502691896258, 0.5773502691896258), vec3(-0.7071067811865475, 0.0, -0.7071067811865475), vec3(-0.7071067811865475, 0.0, 0.7071067811865475), vec3(-0.5773502691896258, 0.5773502691896258, -0.5773502691896258), vec3(-0.7071067811865475, 0.7071067811865475, 0.0), vec3(-0.5773502691896258, 0.5773502691896258, 0.5773502691896258), vec3(0.0, -0.7071067811865475, -0.7071067811865475), vec3(0.0, -0.7071067811865475, 0.7071067811865475), vec3(0.0, 0.7071067811865475, -0.7071067811865475), vec3(0.0, 0.7071067811865475, 0.7071067811865475), vec3(0.5773502691896258, -0.5773502691896258, -0.5773502691896258), vec3(0.7071067811865475, -0.7071067811865475, 0.0), vec3(0.5773502691896258, -0.5773502691896258, 0.5773502691896258), vec3(0.7071067811865475, 0.0, -0.7071067811865475), vec3(0.7071067811865475, 0.0, 0.7071067811865475), vec3(0.5773502691896258, 0.5773502691896258, -0.5773502691896258), vec3(0.7071067811865475, 0.7071067811865475, 0.0), vec3(0.5773502691896258, 0.5773502691896258, 0.5773502691896258));
 
-		vec3 cam_normal = mat3(inv_view_matrix) * normalize(normal_interp);
-		vec3 cam_geom_normal = mat3(inv_view_matrix) * normalize(geometric_normal);
+		vec3 cam_normal = implementation_data.sdf_to_normal * normalize(normal_interp);
+		vec3 cam_geom_normal = implementation_data.sdf_to_normal * normalize(geometric_normal);
 		if (gl_FrontFacing) {
 			cam_geom_normal = -cam_geom_normal;
 		}

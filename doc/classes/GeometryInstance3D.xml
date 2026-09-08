@@ -50,6 +50,10 @@
 			The global illumination mode to use for the whole geometry. To avoid inconsistent results, use a mode that matches the purpose of the mesh during gameplay (static/dynamic).
 			[b]Note:[/b] Lights' bake mode will also affect the global illumination rendering. See [member Light3D.light_bake_mode].
 		</member>
+		<member name="gi_rigid" type="bool" setter="set_gi_rigid" getter="is_gi_rigid" default="false">
+			If [code]true[/code], a non-deforming [MeshInstance3D] contributes to HDDAGI through a cached object-local volume. Moving or rotating the instance reuses this volume instead of updating the static global geometry. [member gi_mode] must not be [constant GI_MODE_DISABLED]; its existing receiving behavior is preserved.
+			Only opaque meshes without a skeleton or blend shapes are supported. Vertex displacement and animated or world-position-dependent materials require a stable GI representation. Other geometry types ignore this property. This only affects HDDAGI in the Forward+ renderer.
+		</member>
 		<member name="ignore_occlusion_culling" type="bool" setter="set_ignore_occlusion_culling" getter="is_ignoring_occlusion_culling" default="false">
 			If [code]true[/code], disables occlusion culling for this instance. Useful for gizmos that must be rendered even when occlusion culling is in use.
 			[b]Note:[/b] [member ignore_occlusion_culling] does not affect frustum culling (which is what happens when an object is not visible given the camera's angle). To avoid frustum culling, set [member custom_aabb] to a very large AABB that covers your entire game world such as [code]AABB(-10000, -10000, -10000, 20000, 20000, 20000)[/code].

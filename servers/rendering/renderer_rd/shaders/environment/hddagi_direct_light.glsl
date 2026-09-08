@@ -13,6 +13,7 @@ layout(r8ui, set = 0, binding = 2) uniform restrict readonly uimage3D voxel_regi
 
 layout(set = 0, binding = 3) uniform sampler linear_sampler;
 
+#ifndef MODE_PROCESS_RIGID
 layout(set = 0, binding = 4, std430) restrict readonly buffer DispatchData {
 	uint x;
 	uint y;
@@ -22,7 +23,7 @@ layout(set = 0, binding = 4, std430) restrict readonly buffer DispatchData {
 dispatch_data;
 
 struct ProcessVoxel {
-	uint position; // xyz 10 bit packed - then 2 extra bits for dynamic and static pending
+	uint position; // xyz 7 bits each, plus dynamic and static pending flags
 	uint albedo_normal; // 0 - 16, 17 - 31 normal in octahedral format
 	uint emission; // RGBE emission
 	uint occlusion; // cached 4 bits occlusion for each 8 neighboring probes
@@ -38,6 +39,19 @@ layout(set = 0, binding = 5, std430) restrict buffer ProcessVoxels {
 process_voxels;
 
 layout(r32ui, set = 0, binding = 6) uniform restrict writeonly uimage3D dst_light;
+#endif
+
+#ifdef MODE_PROCESS_STATIC
+layout(set = 0, binding = 11, std430) restrict readonly buffer SourceEmission {
+	uint data[];
+}
+source_emission;
+#endif
+
+#ifdef MODE_PROCESS_RIGID
+#define HDDAGI_RIGID_LIGHTING_WRITABLE
+#endif
+#include "hddagi_rigid_inc.glsl"
 
 struct CascadeData {
 	vec3 offset; //offset of (0,0,0) in world coordinates
@@ -86,6 +100,9 @@ lights;
 
 #ifndef MODE_PROCESS_STATIC
 layout(set = 0, binding = 9) uniform texture2DArray lightprobe_texture;
+#ifdef MODE_PROCESS_RIGID
+layout(set = 0, binding = 12) uniform texture3D lightprobe_occlusion[2];
+#endif
 #ifdef MODE_WRITE_ALBEDO
 layout(r16ui, set = 0, binding = 10) uniform restrict writeonly uimage3D dst_albedo;
 #endif
@@ -391,12 +408,146 @@ ivec3 modi(ivec3 value, ivec3 p_y) {
 	return mix(value % p_y, p_y - ((abs(value) - ivec3(1)) % p_y) - 1, lessThan(sign(value), ivec3(0)));
 }
 
-ivec2 probe_to_tex(ivec3 local_probe) {
-	ivec3 cell = modi(cascades.data[params.cascade].region_world_offset + local_probe, params.probe_axis_size);
+ivec2 probe_to_tex(ivec3 local_probe, int cascade) {
+	ivec3 cell = modi(cascades.data[cascade].region_world_offset + local_probe, params.probe_axis_size);
 	return cell.xy + ivec2(0, cell.z * int(params.probe_axis_size.y));
 }
 
+// A moving occluder can affect receivers far from its own bounds. Test the
+// source-to-light segment, not just the receiver against the dirty volume.
+bool static_light_cell_needs_refresh(vec3 position) {
+	if (hddagi_rigid_instances.header.w == 0u) {
+		return false;
+	}
+	if (params.light_count == 0u) {
+		// A lighting event may remove the final static light from the cascade.
+		return true;
+	}
+	position.y /= params.y_mult;
+	for (uint i = 0u; i < params.light_count; i++) {
+		if (!lights.data[i].has_shadow) {
+			continue;
+		}
+		vec3 endpoint = lights.data[i].position;
+		endpoint.y /= params.y_mult;
+		vec3 expansion = vec3(0.0);
+		if (lights.data[i].type == LIGHT_TYPE_DIRECTIONAL) {
+			vec3 direction = -lights.data[i].direction;
+			direction.y /= params.y_mult;
+			float range = length(vec3(params.grid_size)) / cascades.data[params.max_cascades - 1].to_cell;
+			endpoint = position + normalize(direction) * range;
+		} else {
+			if (lights.data[i].type == LIGHT_TYPE_AREA) {
+				expansion = (abs(lights.data[i].area_width.xyz) + abs(lights.data[i].area_height.xyz)) * 0.5;
+			}
+			if (length(endpoint - position) > lights.data[i].radius + length(expansion)) {
+				continue;
+			}
+		}
+		float entry;
+		float exit_distance;
+		if (hddagi_rigid_ray_box(position, endpoint - position, hddagi_rigid_instances.dirty_min.xyz - expansion, hddagi_rigid_instances.dirty_max.xyz + expansion, entry, exit_distance) && entry <= 1.0 && exit_distance >= 0.0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+#ifdef MODE_PROCESS_RIGID
+int rigid_world_cascade(vec3 position) {
+	for (int cascade = 0; cascade < params.max_cascades; cascade++) {
+		vec3 cell = (position - cascades.data[cascade].offset) * cascades.data[cascade].to_cell;
+		if (all(greaterThanEqual(cell, vec3(0.0))) && all(lessThan(cell, vec3(params.grid_size)))) {
+			return cascade;
+		}
+	}
+	return -1;
+}
+
+vec3 rigid_probe_feedback(vec3 position, vec3 normal, int cascade) {
+	if (cascade < 0 || params.bounce_feedback <= 0.001) {
+		return vec3(0.0);
+	}
+	vec3 cell = (position - cascades.data[cascade].offset) * cascades.data[cascade].to_cell;
+	ivec3 celli = ivec3(floor(cell));
+	ivec3 base_probe = celli / params.probe_cell_size;
+	ivec3 world_probe = cascades.data[cascade].region_world_offset + base_probe;
+	ivec3 occ_pos = (celli + cascades.data[cascade].region_world_offset * REGION_SIZE) & (params.grid_size - ivec3(1));
+	occ_pos += ivec3(1);
+	occ_pos.y += (params.grid_size.y + 2) * cascade;
+	ivec3 occ_size = params.grid_size + ivec3(2);
+	occ_size.y *= params.max_cascades;
+	vec3 occ_uv = (vec3(occ_pos) + fract(cell)) / vec3(occ_size);
+	vec4 occ_0 = texture(sampler3D(lightprobe_occlusion[0], linear_sampler), occ_uv);
+	vec4 occ_1 = texture(sampler3D(lightprobe_occlusion[1], linear_sampler), occ_uv);
+	if ((world_probe.x & 1) != 0) {
+		occ_0 = occ_0.yxwz;
+		occ_1 = occ_1.yxwz;
+	}
+	if ((world_probe.y & 1) != 0) {
+		occ_0 = occ_0.zwxy;
+		occ_1 = occ_1.zwxy;
+	}
+	if ((world_probe.z & 1) != 0) {
+		vec4 temporary = occ_0;
+		occ_0 = occ_1;
+		occ_1 = temporary;
+	}
+	float weights[8] = float[](occ_0.x, occ_0.y, occ_0.z, occ_0.w, occ_1.x, occ_1.y, occ_1.z, occ_1.w);
+	vec3 world_position = position / vec3(1.0, params.y_mult, 1.0);
+	float total_weight = 0.0;
+	for (int i = 0; i < 8; i++) {
+		if (weights[i] == 0.0) {
+			continue;
+		}
+		ivec3 probe = base_probe + ((ivec3(i) >> ivec3(0, 1, 2)) & ivec3(1));
+		vec3 probe_position = vec3(probe * params.probe_cell_size) / cascades.data[cascade].to_cell + cascades.data[cascade].offset;
+		probe_position.y /= params.y_mult;
+		// Rigid geometry is absent from the static occlusion field. Include it
+		// before packing, as when this receiver belongs to the static field.
+		weights[i] *= hddagi_rigid_segment_visibility(world_position, probe_position);
+		total_weight += weights[i];
+	}
+	if (total_weight == 0.0) {
+		return vec3(0.0);
+	}
+	vec2 normal_oct = octahedron_encode(normal);
+	vec2 probe_tex_to_uv = 1.0 / vec2((LIGHTPROBE_OCT_SIZE + 2) * params.probe_axis_size.x, (LIGHTPROBE_OCT_SIZE + 2) * params.probe_axis_size.y * params.probe_axis_size.z);
+	vec3 feedback = vec3(0.0);
+	for (int i = 0; i < 8; i++) {
+		// Match ProcessVoxel.occlusion: normalize, truncate to four bits, then
+		// sum without another normalization or an extra spatial/normal weight.
+		float weight = float(uint(clamp(weights[i] / total_weight * 15.0, 0.0, 15.0))) / 15.0;
+		if (weight == 0.0) {
+			continue;
+		}
+		ivec3 probe = base_probe + ((ivec3(i) >> ivec3(0, 1, 2)) & ivec3(1));
+		ivec2 tex_pos = probe_to_tex(probe, cascade);
+		vec2 tex_uv = (vec2(tex_pos * (LIGHTPROBE_OCT_SIZE + 2) + ivec2(1)) + normal_oct * float(LIGHTPROBE_OCT_SIZE)) * probe_tex_to_uv;
+		feedback += texture(sampler2DArray(lightprobe_texture, linear_sampler), vec3(tex_uv, float(cascade))).rgb * weight;
+	}
+	return feedback;
+}
+
+#endif
+
 void main() {
+#ifdef MODE_PROCESS_RIGID
+	HDDAGIRigidInstance instance = hddagi_rigid_instances.data[params.cascade];
+	uint task_index = gl_GlobalInvocationID.x * max(params.process_increment, 1u) + params.process_offset;
+	if (task_index >= hddagi_rigid_geometry.data[instance.offsets.w + 3u]) {
+		return;
+	}
+	uint local_index = hddagi_rigid_geometry.data[instance.offsets.w + 4u + task_index];
+	ivec3 positioni = ivec3(local_index % instance.grid.x, (local_index / instance.grid.x) % instance.grid.y, local_index / (instance.grid.x * instance.grid.y));
+	uvec4 surface = hddagi_rigid_surfaces.data[instance.offsets.y + local_index];
+	vec3 position = (instance.cell_to_world * vec4(vec3(positioni) + vec3(0.5), 1.0)).xyz;
+	position.y *= params.y_mult;
+	vec3 normal = normalize(transpose(mat3(instance.world_to_cell)) * hddagi_rigid_decode_normal(surface.x));
+	vec3 albedo = vec3((uvec3(surface.x) >> uvec3(0, 5, 11)) & uvec3(31, 63, 31)) / vec3(31, 63, 31);
+	vec3 emission = rgbe_decode(surface.y);
+	int cascade = rigid_world_cascade(position);
+#else
 	uint voxel_index = uint(gl_GlobalInvocationID.x);
 
 	if (voxel_index >= dispatch_data.total_count) {
@@ -405,7 +556,7 @@ void main() {
 
 #ifdef MODE_PROCESS_STATIC
 	// Discard if not marked for static update
-	if (!bool(process_voxels.data[voxel_index].position & PROCESS_STATIC_PENDING_BIT)) {
+	if (!bool(process_voxels.data[voxel_index].position & PROCESS_STATIC_PENDING_BIT) && hddagi_rigid_instances.header.w == 0u) {
 		return;
 	}
 #else
@@ -439,13 +590,27 @@ void main() {
 	vec3 albedo = vec3((uvec3(process_voxels.data[voxel_index].albedo_normal) >> uvec3(0, 5, 11)) & uvec3(0x1F, 0x3F, 0x1F)) / vec3(0x1F, 0x3F, 0x1F);
 	vec2 normal_oct = vec2((uvec2(process_voxels.data[voxel_index].albedo_normal) >> uvec2(16, 24)) & uvec2(0xFF, 0xFF)) / vec2(0xFF, 0xFF);
 	vec3 normal = octahedron_decode(normal_oct);
+#ifdef MODE_PROCESS_STATIC
+	vec3 emission = rgbe_decode(source_emission.data[voxel_index]);
+	if (!bool(process_voxels.data[voxel_index].position & PROCESS_STATIC_PENDING_BIT) && !static_light_cell_needs_refresh(position)) {
+		return;
+	}
+#else
 	vec3 emission = rgbe_decode(process_voxels.data[voxel_index].emission);
+#endif
 	uint occlusionu = process_voxels.data[voxel_index].occlusion;
+
+	int cascade = params.cascade;
+#endif
 
 	vec3 light_accum = vec3(0.0);
 
 	// Add indirect light first, in order to save computation resources
-#ifndef MODE_PROCESS_STATIC
+#if defined(MODE_PROCESS_RIGID)
+	if (params.bounce_feedback > 0.001) {
+		light_accum = albedo * params.bounce_feedback * rigid_probe_feedback(position, normal, cascade) / max(instance.bounds_min.w, 0.000001);
+	}
+#elif !defined(MODE_PROCESS_STATIC)
 
 	if (params.bounce_feedback > 0.001) {
 		vec3 feedback = albedo * params.bounce_feedback;
@@ -459,7 +624,12 @@ void main() {
 				continue;
 			}
 			ivec3 probe = base_probe + ((ivec3(i) >> ivec3(0, 1, 2)) & ivec3(1, 1, 1));
-			ivec2 tex_pos = probe_to_tex(probe);
+			vec3 probe_position = vec3(probe * params.probe_cell_size) / cascades.data[cascade].to_cell + cascades.data[cascade].offset;
+			weight *= hddagi_rigid_segment_visibility(position / vec3(1.0, params.y_mult, 1.0), probe_position / vec3(1.0, params.y_mult, 1.0));
+			if (weight == 0.0) {
+				continue;
+			}
+			ivec2 tex_pos = probe_to_tex(probe, cascade);
 			vec2 tex_uv = vec2(ivec2(tex_pos * (LIGHTPROBE_OCT_SIZE + 2) + ivec2(1))) + normal_oct * float(LIGHTPROBE_OCT_SIZE);
 			tex_uv *= probe_tex_to_uv;
 			vec3 light = texture(sampler2DArray(lightprobe_texture, linear_sampler), vec3(tex_uv, float(params.cascade))).rgb;
@@ -484,7 +654,8 @@ void main() {
 				attenuation *= max(0.0, dot(normal, direction));
 			} break;
 			case LIGHT_TYPE_OMNI: {
-				vec3 rel_vec = lights.data[i].position - position;
+				vec3 light_position = lights.data[i].position;
+				vec3 rel_vec = light_position - position;
 				direction = normalize(rel_vec);
 				light_distance = length(rel_vec);
 				rel_vec.y /= params.y_mult;
@@ -493,7 +664,8 @@ void main() {
 
 			} break;
 			case LIGHT_TYPE_SPOT: {
-				vec3 rel_vec = lights.data[i].position - position;
+				vec3 light_position = lights.data[i].position;
+				vec3 rel_vec = light_position - position;
 				direction = normalize(rel_vec);
 
 				light_distance = length(rel_vec);
@@ -547,18 +719,17 @@ void main() {
 
 		bool hit = false;
 
-		vec3 ray_pos = position;
-		vec3 ray_dir = direction;
-		vec3 inv_dir = 1.0 / ray_dir;
-
-		/* No bias needed for voxels
-		float cell_size = 1.0 / cascades.data[params.cascade].to_cell;
-		ray_pos += sign(direction) * cell_size * 0.48; // go almost to the box edge but remain inside
-		ray_pos += ray_dir * 0.4 * cell_size; //apply a small bias from there
-		*/
-
 		if (lights.data[i].has_shadow) {
-			hit = trace_ray_hdda(ray_pos, ray_dir, light_distance, params.cascade);
+			hit = trace_ray_hdda(position, direction, light_distance, max(cascade, 0));
+			vec3 object_origin = position / vec3(1.0, params.y_mult, 1.0);
+			vec3 object_direction = direction / vec3(1.0, params.y_mult, 1.0);
+			float world_scale = length(object_direction);
+			object_direction /= world_scale;
+			float object_distance = light_distance * world_scale;
+			if (!hit) {
+				HDDAGIRigidHit object_hit;
+				hit = hddagi_rigid_trace(object_origin, object_direction, HDDAGI_RIGID_RAY_EPSILON, object_distance, object_hit);
+			}
 		}
 
 		if (!hit) {
@@ -582,10 +753,13 @@ void main() {
 	light_accum = an;
 #endif
 
-#ifdef MODE_PROCESS_STATIC
-	// Add to self, since its static.
+#ifdef MODE_PROCESS_RIGID
+	// Each invocation owns one output cell and only reads completed world probes.
+	hddagi_rigid_lighting.data[instance.offsets.z + local_index] = rgbe_encode(light_accum);
+#elif defined(MODE_PROCESS_STATIC)
+	// The cached static contribution is derived from immutable source emission.
 	process_voxels.data[voxel_index].emission = rgbe_encode(light_accum.rgb);
-	process_voxels.data[voxel_index].position &= ~uint(PROCESS_STATIC_PENDING_BIT); // Clear process static bit.
+	process_voxels.data[voxel_index].position = (process_voxels.data[voxel_index].position & ~uint(PROCESS_STATIC_PENDING_BIT)) | uint(PROCESS_DYNAMIC_PENDING_BIT);
 #else
 
 	// Store to light texture

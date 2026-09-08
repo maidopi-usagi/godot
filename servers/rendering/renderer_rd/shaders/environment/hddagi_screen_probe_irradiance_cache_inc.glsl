@@ -403,7 +403,7 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_finish_lookup(uint entry_ind
 		}
 	}
 	bool radiance_valid = false;
-	if (state.z >= 4u && representative_compatible) {
+	if (result.sample_count >= 4u && representative_compatible) {
 		radiance_valid = hddagi_irradiance_cache_evaluate(entry_index, normal, result.radiance);
 	}
 	result.has_radiance = radiance_valid;
@@ -522,7 +522,7 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_load_entry(uint entry_index)
 	result.generation = state.y;
 	result.sample_count = state.z;
 	result.cell_size = representative_cell_size;
-	if (state.z >= 4u) {
+	if (result.sample_count >= 4u) {
 		result.has_radiance = hddagi_irradiance_cache_evaluate(entry_index, result.sample_normal, result.radiance);
 	}
 	result.needs_refresh = !result.has_radiance;

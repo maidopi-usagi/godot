@@ -306,6 +306,9 @@ public:
 	};
 
 	struct RenderHDDAGIUpdateData {
+		const PagedArray<RenderGeometryInstance *> *rigid_geometry_instances = nullptr;
+		const PagedArray<RID> *rigid_static_lights = nullptr;
+		uint64_t rigid_membership_version = 0;
 		bool update_static = false;
 		uint32_t static_cascade_count;
 		uint32_t *static_cascade_indices = nullptr;

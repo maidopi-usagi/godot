@@ -257,6 +257,12 @@ void MeshStorage::mesh_set_blend_shape_count(RID p_mesh, int p_blend_shape_count
 	ERR_FAIL_COND(mesh->surface_count > 0); //surfaces already exist
 
 	mesh->blend_shape_count = p_blend_shape_count;
+	mesh->data_version++;
+}
+
+uint64_t MeshStorage::mesh_get_data_version(RID p_mesh) const {
+	const Mesh *mesh = mesh_owner.get_or_null(p_mesh);
+	return mesh ? mesh->data_version : 0;
 }
 
 /// Returns stride
@@ -500,6 +506,7 @@ void MeshStorage::mesh_add_surface(RID p_mesh, const RenderingServerTypes::Surfa
 	mesh->surfaces = (Mesh::Surface **)memrealloc(mesh->surfaces, sizeof(Mesh::Surface *) * (mesh->surface_count + 1));
 	mesh->surfaces[mesh->surface_count] = s;
 	mesh->surface_count++;
+	mesh->data_version++;
 
 	for (MeshInstance *mi : mesh->instances) {
 		_mesh_instance_add_surface(mi, mesh, mesh->surface_count - 1);
@@ -562,6 +569,7 @@ void MeshStorage::mesh_set_blend_shape_mode(RID p_mesh, RSE::BlendShapeMode p_mo
 	ERR_FAIL_INDEX((int)p_mode, 2);
 
 	mesh->blend_shape_mode = p_mode;
+	mesh->data_version++;
 }
 
 RSE::BlendShapeMode MeshStorage::mesh_get_blend_shape_mode(RID p_mesh) const {
@@ -581,6 +589,7 @@ void MeshStorage::mesh_surface_update_vertex_region(RID p_mesh, int p_surface, i
 	const uint8_t *r = p_data.ptr();
 
 	RD::get_singleton()->buffer_update(mesh->surfaces[p_surface]->vertex_buffer, p_offset, data_size, r);
+	mesh->data_version++;
 }
 
 void MeshStorage::mesh_surface_update_attribute_region(RID p_mesh, int p_surface, int p_offset, const Vector<uint8_t> &p_data) {
@@ -594,6 +603,7 @@ void MeshStorage::mesh_surface_update_attribute_region(RID p_mesh, int p_surface
 	const uint8_t *r = p_data.ptr();
 
 	RD::get_singleton()->buffer_update(mesh->surfaces[p_surface]->attribute_buffer, p_offset, data_size, r);
+	mesh->data_version++;
 }
 
 void MeshStorage::mesh_surface_update_skin_region(RID p_mesh, int p_surface, int p_offset, const Vector<uint8_t> &p_data) {
@@ -607,6 +617,7 @@ void MeshStorage::mesh_surface_update_skin_region(RID p_mesh, int p_surface, int
 	const uint8_t *r = p_data.ptr();
 
 	RD::get_singleton()->buffer_update(mesh->surfaces[p_surface]->skin_buffer, p_offset, data_size, r);
+	mesh->data_version++;
 }
 
 void RendererRD::MeshStorage::mesh_surface_update_index_region(RID p_mesh, int p_surface, int p_offset, const Vector<uint8_t> &p_data) {
@@ -620,6 +631,7 @@ void RendererRD::MeshStorage::mesh_surface_update_index_region(RID p_mesh, int p
 	const uint8_t *r = p_data.ptr();
 
 	RD::get_singleton()->buffer_update(mesh->surfaces[p_surface]->index_buffer, p_offset, data_size, r);
+	mesh->data_version++;
 }
 
 RID MeshStorage::mesh_surface_get_vertex_buffer_rd_rid(RID p_mesh, int p_surface) const {
@@ -655,6 +667,7 @@ void MeshStorage::mesh_surface_set_material(RID p_mesh, int p_surface, RID p_mat
 	ERR_FAIL_NULL(mesh);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_surface, mesh->surface_count);
 	mesh->surfaces[p_surface]->material = p_material;
+	mesh->data_version++;
 
 	mesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
 	mesh->material_cache.clear();
@@ -726,6 +739,7 @@ void MeshStorage::mesh_set_custom_aabb(RID p_mesh, const AABB &p_aabb) {
 	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
 	ERR_FAIL_NULL(mesh);
 	mesh->custom_aabb = p_aabb;
+	mesh->data_version++;
 
 	mesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_AABB);
 }
@@ -881,6 +895,7 @@ void MeshStorage::mesh_set_shadow_mesh(RID p_mesh, RID p_shadow_mesh) {
 		shadow_mesh->shadow_owners.erase(mesh);
 	}
 	mesh->shadow_mesh = p_shadow_mesh;
+	mesh->data_version++;
 
 	shadow_mesh = mesh_owner.get_or_null(mesh->shadow_mesh);
 
@@ -909,6 +924,7 @@ void MeshStorage::mesh_clear(RID p_mesh) {
 
 	mesh->surfaces = nullptr;
 	mesh->surface_count = 0;
+	mesh->data_version++;
 	mesh->material_cache.clear();
 	mesh->has_bone_weights = false;
 	mesh->aabb = AABB();
@@ -938,6 +954,7 @@ void MeshStorage::mesh_surface_remove(RID p_mesh, int p_surface) {
 	}
 	mesh->surfaces = (Mesh::Surface **)memrealloc(mesh->surfaces, sizeof(Mesh::Surface *) * (mesh->surface_count - 1));
 	--mesh->surface_count;
+	mesh->data_version++;
 
 	mesh->material_cache.clear();
 

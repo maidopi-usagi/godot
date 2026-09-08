@@ -8,6 +8,8 @@
 #extension GL_EXT_samplerless_texture_functions : enable
 #endif
 
+#include "hddagi_rigid_inc.glsl"
+
 #define square(m) ((m) * (m))
 
 #define GROUP_SIZE 8
@@ -590,6 +592,21 @@ void sdfvoxel_gi_process(int cascade, vec3 cascade_pos, vec3 cam_pos, vec3 cam_n
 	vec2 light_uv = octahedron_encode(vec3(cam_normal)) * float(LIGHTPROBE_OCT_SIZE);
 	vec2 light_uv_spec = octahedron_encode(vec3(cam_specular_normal)) * float(LIGHTPROBE_OCT_SIZE);
 
+	bool trace_rigid_visibility = false;
+	vec3 rigid_receiver_world = vec3(0.0);
+	vec3 rigid_receiver_normal = vec3(0.0);
+	if (hddagi_rigid_instances.header.x != 0u) {
+		rigid_receiver_world = cam_pos / vec3(1.0, hddagi.y_mult, 1.0) + scene_data.cam_transform[3].xyz;
+		rigid_receiver_normal = normalize(cam_normal / vec3(1.0, hddagi.y_mult, 1.0));
+		vec3 probe_box_min = hddagi.cascades[cascade].position + vec3(base_probe * PROBE_CELLS) / hddagi.cascades[cascade].to_cell;
+		vec3 probe_box_max = probe_box_min + vec3(float(PROBE_CELLS) / hddagi.cascades[cascade].to_cell);
+		probe_box_min = probe_box_min / vec3(1.0, hddagi.y_mult, 1.0) + scene_data.cam_transform[3].xyz;
+		probe_box_max = probe_box_max / vec3(1.0, hddagi.y_mult, 1.0) + scene_data.cam_transform[3].xyz;
+		// All eight receiver-to-probe segments lie inside this box. Include the
+		// unshifted receiver, since the normal bias may select an adjacent cell.
+		trace_rigid_visibility = hddagi_rigid_may_overlap(min(rigid_receiver_world, min(probe_box_min, probe_box_max)), max(rigid_receiver_world, max(probe_box_min, probe_box_max)));
+	}
+
 	for (int i = 0; i < 8; i++) {
 		ivec3 probe = base_probe + ((ivec3(i) >> ivec3(0, 1, 2)) & ivec3(1, 1, 1));
 
@@ -619,6 +636,13 @@ void sdfvoxel_gi_process(int cascade, vec3 cascade_pos, vec3 cam_pos, vec3 cam_n
 		}
 
 		weight *= max(params.occlusion_bias, occ_weights[weight_index]);
+		if (trace_rigid_visibility) {
+			vec3 probe_world = hddagi.cascades[cascade].position + probe_pos / hddagi.cascades[cascade].to_cell;
+			probe_world.y /= hddagi.y_mult;
+			probe_world += scene_data.cam_transform[3].xyz;
+			// Apply after the static occlusion floor: an opaque door has zero visibility.
+			weight *= hddagi_rigid_segment_visibility(rigid_receiver_world, probe_world, rigid_receiver_normal);
+		}
 
 		vec3 trilinear = vec3(1.0) - abs(probe_to_pos / float(PROBE_CELLS));
 
@@ -657,8 +681,23 @@ void sdfvoxel_gi_process(int cascade, vec3 cascade_pos, vec3 cam_pos, vec3 cam_n
 		weight_accum += weight;
 	}
 
-	diffuse_light = diffuse_accum / weight_accum;
-	specular_light = specular_accum / weight_accum;
+	diffuse_light = diffuse_accum / max(weight_accum, 1e-6);
+	specular_light = specular_accum / max(weight_accum, 1e-6);
+}
+
+float legacy_rigid_trace_distance(vec3 origin_world, vec3 direction_world, ivec3 cell, int cascade, bool static_hit) {
+	vec3 bounds_min = hddagi.cascades[cascade].position + (static_hit ? vec3(cell) / hddagi.cascades[cascade].to_cell : vec3(0.0));
+	vec3 bounds_max = bounds_min + (static_hit ? vec3(1.0) : vec3(hddagi.grid_size)) / hddagi.cascades[cascade].to_cell;
+	bounds_min.y /= hddagi.y_mult;
+	bounds_max.y /= hddagi.y_mult;
+	bounds_min += scene_data.cam_transform[3].xyz;
+	bounds_max += scene_data.cam_transform[3].xyz;
+	float entry;
+	float exit_distance;
+	if (hddagi_rigid_ray_box(origin_world, direction_world, bounds_min, bounds_max, entry, exit_distance)) {
+		return max(static_hit ? entry : exit_distance, 0.0);
+	}
+	return static_hit ? max(dot((bounds_min + bounds_max) * 0.5 - origin_world, direction_world) + length(bounds_max - bounds_min) * 0.5, 0.0) : 0.0;
 }
 
 void hddagi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, bool dynamic_object, out vec4 ambient_light, out vec4 reflection_light) {
@@ -788,7 +827,32 @@ void hddagi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, 
 			n.z = -n.z;
 			n = normal_mat * n;
 
-			if (trace_ray_hdda(ray_pos, n, cascade, hit_cell, hit_face, hit_cascade)) {
+			bool static_hit = trace_ray_hdda(ray_pos, n, cascade, hit_cell, hit_face, hit_cascade);
+			vec3 rigid_origin = cam_pos;
+			rigid_origin.y /= hddagi.y_mult;
+			rigid_origin += scene_data.cam_transform[3].xyz;
+			vec3 rigid_direction = n;
+			rigid_direction.y /= hddagi.y_mult;
+			rigid_direction = normalize(rigid_direction);
+			float rigid_limit = 0.0;
+			if (hddagi_rigid_instances.header.x != 0u) {
+				rigid_limit = static_hit ? legacy_rigid_trace_distance(rigid_origin, rigid_direction, hit_cell, hit_cascade, true) : legacy_rigid_trace_distance(rigid_origin, rigid_direction, ivec3(0), hddagi.max_cascades - 1, false);
+				if (static_hit && hit_cascade == cascade && all(equal(hit_cell, ivec3(start_cell)))) {
+					// Disocclusion shades the receiver cell itself. Find the next
+					// static blocker so this fallback cannot hide a nearby door.
+					vec3 bounds_min = hddagi.cascades[cascade].position + vec3(hit_cell) / hddagi.cascades[cascade].to_cell;
+					float entry;
+					float exit_distance;
+					hddagi_rigid_ray_box(ray_pos, n, bounds_min, bounds_min + vec3(1.0 / hddagi.cascades[cascade].to_cell), entry, exit_distance);
+					ivec3 next_cell;
+					ivec3 next_face;
+					int next_cascade;
+					vec3 next_origin = ray_pos + n * (max(exit_distance, 0.0) + 0.001 / hddagi.cascades[cascade].to_cell);
+					bool next_hit = trace_ray_hdda(next_origin, n, cascade, next_cell, next_face, next_cascade);
+					rigid_limit = next_hit ? legacy_rigid_trace_distance(rigid_origin, rigid_direction, next_cell, next_cascade, true) : legacy_rigid_trace_distance(rigid_origin, rigid_direction, ivec3(0), hddagi.max_cascades - 1, false);
+				}
+			}
+			if (static_hit) {
 				bool valid = true;
 				bool disoccluded = false;
 				if (hit_cascade == cascade) {
@@ -912,6 +976,11 @@ void hddagi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, 
 				}
 			}
 
+			HDDAGIRigidHit rigid_hit;
+			vec3 rigid_normal = normalize(cam_normal / vec3(1.0, hddagi.y_mult, 1.0));
+			if (hddagi_rigid_trace_surface(rigid_origin, rigid_direction, HDDAGI_RIGID_RAY_EPSILON, rigid_limit, rigid_normal, rigid_hit)) {
+				light = vec4(hddagi_rigid_sample_radiance(rigid_hit), 1.0);
+			}
 			reflection_light = mix(light, vec4(specular, 1.0 - blend), smoothstep(0, ROUGHNESS_TO_REFLECTION_TRESHOOLD, roughness));
 		} else {
 			reflection_light.rgb = specular;

@@ -399,7 +399,9 @@ bool svgf_history_tap_valid(ivec2 tap_pos, ivec2 size, bool current_dynamic, vec
 	}
 	vec2 previous_surface_uv_offset;
 	bool previous_dynamic;
-	if (!svgf_decode_surface_metadata(previous_moments_surface_offset.zw, previous_surface_uv_offset, previous_dynamic) || previous_dynamic != current_dynamic) {
+	// Motion state is not surface identity. Current velocity selects the tap;
+	// depth, normal and static plane checks below decide whether it is reusable.
+	if (!svgf_decode_surface_metadata(previous_moments_surface_offset.zw, previous_surface_uv_offset, previous_dynamic)) {
 		return false;
 	}
 	float expected_previous_view_z = -expected_previous_position.z;
@@ -425,7 +427,7 @@ bool svgf_history_tap_valid(ivec2 tap_pos, ivec2 size, bool current_dynamic, vec
 	return abs(dot(previous_position - expected_previous_position, current_normal_previous_view)) <= plane_tolerance;
 }
 
-bool svgf_specular_neighborhood(vec3 center_signal, out vec3 r_center, out vec3 r_extent) {
+bool svgf_temporal_neighborhood(vec3 center_signal, out vec3 r_center, out vec3 r_extent) {
 	vec3 center_ycocg = svgf_rgb_to_ycocg(center_signal);
 	vec3 sample_sum = center_ycocg;
 	vec3 sample_square_sum = center_ycocg * center_ycocg;
@@ -461,8 +463,9 @@ void svgf_temporal_main() {
 	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 size = imageSize(current_signal_output);
 	bool specular_mode = (params.control.x & 2u) != 0u;
+	bool lighting_changed = (params.control.x & 8u) != 0u;
 	bool pixel_in_bounds = all(lessThan(pixel, size));
-	if (specular_mode) {
+	if (specular_mode || lighting_changed) {
 		ivec2 shared_origin = ivec2(gl_WorkGroupID.xy) * ivec2(gl_WorkGroupSize.xy) - ivec2(SPECULAR_NEIGHBORHOOD_RADIUS);
 		for (uint shared_index = gl_LocalInvocationIndex; shared_index < uint(SPECULAR_NEIGHBORHOOD_SHARED_COUNT); shared_index += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
 			ivec2 shared_position = ivec2(int(shared_index) % SPECULAR_NEIGHBORHOOD_SHARED_SIZE, int(shared_index) / SPECULAR_NEIGHBORHOOD_SHARED_SIZE);
@@ -471,8 +474,9 @@ void svgf_temporal_main() {
 			if (all(greaterThanEqual(sample_position, ivec2(0))) && all(lessThan(sample_position, size))) {
 				float sample_view_z = texelFetch(sampler2D(current_view_z_input, nearest_sampler), sample_position, 0).r;
 				vec4 sample_signal = texelFetch(sampler2D(current_signal_input, nearest_sampler), sample_position, 0);
-				if (svgf_valid_view_z(sample_view_z) && svgf_finite_vec4(sample_signal) && sample_signal.a > 0.0) {
-					packed_sample = vec4(svgf_rgb_to_ycocg(svgf_specular_to_denoiser_space(sample_signal.rgb)), 1.0);
+				if (svgf_valid_view_z(sample_view_z) && svgf_finite_vec4(sample_signal) && (!specular_mode || sample_signal.a > 0.0)) {
+					vec3 neighborhood_signal = specular_mode ? svgf_specular_to_denoiser_space(sample_signal.rgb) : max(sample_signal.rgb, vec3(0.0));
+					packed_sample = vec4(svgf_rgb_to_ycocg(neighborhood_signal), 1.0);
 				}
 			}
 			specular_neighborhood_ycocg[shared_position.y][shared_position.x] = packed_sample;
@@ -592,6 +596,11 @@ void svgf_temporal_main() {
 		float reprojection_quality = specular_mode && !current_dynamic ? 1.0 : sqrt(clamp(history_weight_sum, 0.0, 1.0));
 		float maximum_history_length = params.atrous.w;
 		float history_confidence = 1.0;
+		float original_history_luminance = svgf_luminance(history_signal);
+		float lighting_response = 0.0;
+		vec3 neighborhood_center;
+		vec3 neighborhood_extent;
+		bool neighborhood_valid = (specular_mode || lighting_changed) && svgf_temporal_neighborhood(current_signal.rgb, neighborhood_center, neighborhood_extent);
 		if (specular_mode) {
 			float broad_history_response = smoothstep(0.05, 0.12, current_roughness);
 			float stationary_history_length = mix(12.0, params.atrous.w, broad_history_response);
@@ -602,9 +611,7 @@ void svgf_temporal_main() {
 				float temporal_roughness = current_roughness < 0.001 ? 0.0 : max(current_roughness, 0.0316227766);
 				maximum_history_length = mix(2.0, maximum_history_length, clamp(temporal_roughness / 0.05, 0.0, 1.0));
 			}
-			vec3 neighborhood_center;
-			vec3 neighborhood_extent;
-			if (svgf_specular_neighborhood(current_signal.rgb, neighborhood_center, neighborhood_extent)) {
+			if (neighborhood_valid) {
 				vec3 history_ycocg = svgf_rgb_to_ycocg(history_signal);
 				vec3 clamped_history_ycocg = clamp(history_ycocg, neighborhood_center - neighborhood_extent, neighborhood_center + neighborhood_extent);
 				vec3 normalized_history_error = abs(clamped_history_ycocg - history_ycocg) / max(neighborhood_extent, vec3(0.1));
@@ -613,9 +620,21 @@ void svgf_temporal_main() {
 				history_signal = svgf_specular_project_denoiser_space(svgf_ycocg_to_rgb(clamped_history_ycocg));
 			}
 		}
+		if (lighting_changed && neighborhood_valid) {
+			// A receiver can stay still while a door changes its illumination.
+			// Require a luminance change beyond spatial and temporal noise; near-zero
+			// chroma is not evidence of a lighting change. Never reset history age.
+			float neighborhood_luminance = max(svgf_luminance(svgf_ycocg_to_rgb(neighborhood_center)), 0.0);
+			float spatial_noise = dot(neighborhood_extent, vec3(1.0, 0.1404, 0.4304));
+			float moment_scale = specular_mode ? SPECULAR_MOMENT_LUMINANCE_SCALE : MOMENT_LUMINANCE_SCALE;
+			float temporal_noise = sqrt(max(previous_moments.y - previous_moments.x * previous_moments.x, params.atrous.z)) / moment_scale;
+			float luminance_threshold = max(3.0 * max(spatial_noise, temporal_noise), max(neighborhood_luminance, original_history_luminance) * 0.15 + 1e-6);
+			float disagreement = abs(neighborhood_luminance - original_history_luminance) / luminance_threshold;
+			lighting_response = 0.25 * smoothstep(1.0, 2.0, disagreement);
+		}
 		float advanced_history_length = specular_mode ? previous_history_length * history_confidence + 1.0 : previous_history_length + 1.0;
 		history_length = max(1.0, min(advanced_history_length, maximum_history_length) * reprojection_quality);
-		float signal_alpha = 1.0 / max(history_length, 1.0);
+		float signal_alpha = max(1.0 / max(history_length, 1.0), lighting_response);
 		output_signal.rgb = mix(history_signal, current_signal.rgb, signal_alpha);
 		output_moments = mix(max(previous_moments, vec2(0.0)), vec2(current_moment_luminance, current_moment_luminance * current_moment_luminance), signal_alpha);
 		output_screen_confidence = mix(previous_screen_confidence, current_screen_confidence, signal_alpha);

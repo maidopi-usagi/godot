@@ -508,6 +508,7 @@ void GI::HDDAGI::create(RID p_env, const Vector3 &p_world_anchor, const Vector3 
 	}
 
 	light_process_buffer_render = RD::get_singleton()->storage_buffer_create(sizeof(HDDAGI::Cascade::LightProcessCell) * solid_cell_count);
+	light_source_emission_buffer_render = RD::get_singleton()->storage_buffer_create(sizeof(uint32_t) * solid_cell_count);
 	light_process_dispatch_buffer_render = RD::get_singleton()->storage_buffer_create(sizeof(uint32_t) * 4, Vector<uint8_t>(), RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
 
 	cascades_ubo = RD::get_singleton()->uniform_buffer_create(sizeof(HDDAGI::Cascade::UBO) * HDDAGI::MAX_CASCADES);
@@ -618,6 +619,7 @@ void GI::HDDAGI::create(RID p_env, const Vector3 &p_world_anchor, const Vector3 
 		/* 3D Textures */
 
 		cascade.light_process_buffer = RD::get_singleton()->storage_buffer_create(sizeof(HDDAGI::Cascade::LightProcessCell) * solid_cell_count);
+		cascade.light_source_emission_buffer = RD::get_singleton()->storage_buffer_create(sizeof(uint32_t) * solid_cell_count);
 		cascade.light_process_dispatch_buffer = RD::get_singleton()->storage_buffer_create(sizeof(uint32_t) * 4, Vector<uint8_t>(), RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
 		cascade.light_process_dispatch_buffer_copy = RD::get_singleton()->storage_buffer_create(sizeof(uint32_t) * 4, Vector<uint8_t>(), RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
 
@@ -804,7 +806,9 @@ void GI::HDDAGI::render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p
 					RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, light_process_dispatch_buffer_render),
 					RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, light_process_buffer_render),
 					RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, cascades[cascade].light_process_dispatch_buffer_copy),
-					RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, cascades[cascade].light_process_buffer)
+					RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, cascades[cascade].light_process_buffer),
+					RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 13, light_source_emission_buffer_render),
+					RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 14, cascades[cascade].light_source_emission_buffer)
 
 			);
 
@@ -919,7 +923,8 @@ void GI::HDDAGI::render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p
 				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 9, RendererRD::MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 10, voxel_disocclusion_tex),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 11, voxel_light_neighbour_data),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 12, voxel_light_tex_data));
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 12, voxel_light_tex_data),
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 13, light_source_emission_buffer_render));
 
 		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set, 0);
 
@@ -947,6 +952,7 @@ void GI::HDDAGI::render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p
 		// Store processed ones into cascade
 		SWAP(light_process_dispatch_buffer_render, cascades[cascade].light_process_dispatch_buffer);
 		SWAP(light_process_buffer_render, cascades[cascade].light_process_buffer);
+		SWAP(light_source_emission_buffer_render, cascades[cascade].light_source_emission_buffer);
 
 		cascades[cascade].static_lights_dirty = true;
 		cascades[cascade].dynamic_lights_dirty = true;
@@ -1034,6 +1040,10 @@ void GI::HDDAGI::free_data() {
 }
 
 GI::HDDAGI::~HDDAGI() {
+	rigid.free();
+	if (rigid_lights_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(rigid_lights_buffer);
+	}
 	auto free_texture = [](RID &p_texture) {
 		if (p_texture.is_valid() && RD::get_singleton()->texture_is_valid(p_texture)) {
 			RD::get_singleton()->free_rid(p_texture);
@@ -1043,6 +1053,7 @@ GI::HDDAGI::~HDDAGI() {
 
 	for (const HDDAGI::Cascade &c : cascades) {
 		RD::get_singleton()->free_rid(c.light_process_buffer);
+		RD::get_singleton()->free_rid(c.light_source_emission_buffer);
 		RD::get_singleton()->free_rid(c.light_process_dispatch_buffer);
 		RD::get_singleton()->free_rid(c.light_process_dispatch_buffer_copy);
 		RD::get_singleton()->free_rid(c.light_position_bufer);
@@ -1062,6 +1073,7 @@ GI::HDDAGI::~HDDAGI() {
 	free_texture(region_version_data);
 
 	RD::get_singleton()->free_rid(light_process_buffer_render);
+	RD::get_singleton()->free_rid(light_source_emission_buffer_render);
 	RD::get_singleton()->free_rid(light_process_dispatch_buffer_render);
 
 	RD::get_singleton()->free_rid(cascades_ubo);
@@ -1147,6 +1159,9 @@ void GI::HDDAGI::update(RID p_env, const Vector3 &p_world_anchor, const Vector3 
 		cascade.dirty_regions = HDDAGI::Cascade::DIRTY_ALL;
 		break;
 #endif
+		if (rigid_static_recapture_pending) {
+			cascade.dirty_regions = HDDAGI::Cascade::DIRTY_ALL;
+		}
 		if (cascade.dirty_regions != Vector3i() && cascade.dirty_regions != HDDAGI::Cascade::DIRTY_ALL) {
 			//see how much the total dirty volume represents from the total volume
 			uint32_t total_volume = cascade_size.x * cascade_size.y * cascade_size.z;
@@ -1179,6 +1194,7 @@ void GI::HDDAGI::update(RID p_env, const Vector3 &p_world_anchor, const Vector3 
 		idx++;
 	}
 
+	rigid_static_recapture_pending = false;
 	update_frame++;
 }
 
@@ -1247,6 +1263,7 @@ void GI::HDDAGI::update_light() {
 		if (screen_probe_radiance_cache_multibounce_active) {
 			direct_light_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 10, voxel_albedo_data));
 		}
+		rigid.append_uniforms(direct_light_uniforms);
 		RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(
 				gi->hddagi_shader.direct_light_shader_version[direct_light_mode], 0, direct_light_uniforms);
 
@@ -1424,25 +1441,26 @@ void GI::HDDAGI::update_probes(RID p_env, SkyRD::Sky *p_sky, uint32_t p_view_cou
 
 	render_pass++;
 
-	RID integrate_unifom_set = UniformSetCacheRD::get_singleton()->get_cache(
-			gi->hddagi_shader.integrate.version_get_shader(gi->hddagi_shader.integrate_shader, 0),
-			0,
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, voxel_bits_tex),
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, voxel_region_tex),
-			RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 3, voxel_light_tex),
-			RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, RendererRD::MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)),
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, lightprobe_specular_data),
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, lightprobe_diffuse_data),
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 7, lightprobe_ambient_tex),
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 8, lightprobe_hit_cache_data),
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 9, lightprobe_hit_cache_version_data),
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 10, region_version_data),
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 11, lightprobe_moving_average_history),
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 12, lightprobe_moving_average),
-			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 13, cascades_ubo),
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 14, lightprobe_process_frame),
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 15, lightprobe_geometry_proximity_map),
-			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 16, lightprobe_camera_visibility_map));
+	LocalVector<RD::Uniform> integrate_uniforms = {
+		RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, voxel_bits_tex),
+		RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, voxel_region_tex),
+		RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 3, voxel_light_tex),
+		RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, RendererRD::MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)),
+		RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, lightprobe_specular_data),
+		RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, lightprobe_diffuse_data),
+		RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 7, lightprobe_ambient_tex),
+		RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 8, lightprobe_hit_cache_data),
+		RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 9, lightprobe_hit_cache_version_data),
+		RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 10, region_version_data),
+		RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 11, lightprobe_moving_average_history),
+		RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 12, lightprobe_moving_average),
+		RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 13, cascades_ubo),
+		RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 14, lightprobe_process_frame),
+		RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 15, lightprobe_geometry_proximity_map),
+		RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 16, lightprobe_camera_visibility_map)
+	};
+	rigid.append_uniforms(integrate_uniforms);
+	RID integrate_unifom_set = UniformSetCacheRD::get_singleton()->get_cache_vec(gi->hddagi_shader.integrate.version_get_shader(gi->hddagi_shader.integrate_shader, 0), 0, integrate_uniforms);
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->hddagi_shader.integrate_pipeline[HDDAGIShader::INTEGRATE_MODE_PROCESS]);
@@ -1609,19 +1627,20 @@ void GI::HDDAGI::debug_draw(uint32_t p_view_count, const Projection *p_projectio
 	RendererRD::CopyEffects *copy_effects = RendererRD::CopyEffects::get_singleton();
 
 	for (uint32_t v = 0; v < p_view_count; v++) {
-		RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache(
-				gi->hddagi_shader.debug_shader_version,
-				0,
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, voxel_bits_tex),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, voxel_region_tex),
-				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 3, voxel_light_tex),
-				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)),
-				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 5, material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)),
-				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 6, lightprobe_diffuse_tex),
-				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 7, get_lightprobe_occlusion_textures()),
-				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 8, cascades_ubo),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 9, p_texture_views[v]),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 10, voxel_light_neighbour_data));
+		LocalVector<RD::Uniform> uniforms = {
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, voxel_bits_tex),
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, voxel_region_tex),
+			RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 3, voxel_light_tex),
+			RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)),
+			RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 5, material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)),
+			RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 6, lightprobe_diffuse_tex),
+			RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 7, get_lightprobe_occlusion_textures()),
+			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 8, cascades_ubo),
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 9, p_texture_views[v]),
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 10, voxel_light_neighbour_data)
+		};
+		rigid.append_uniforms(uniforms);
+		RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(gi->hddagi_shader.debug_shader_version, 0, uniforms);
 
 		RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->hddagi_shader.debug_pipeline);
@@ -2204,6 +2223,7 @@ void GI::HDDAGI::render_static_lights(RenderDataRD *p_render_data, Ref<RenderSce
 	dl_push_constant.y_mult = y_mult;
 	dl_push_constant.use_occlusion = uses_occlusion;
 	dl_push_constant.probe_cell_size = REGION_CELLS;
+	dl_push_constant.dirty_dynamic_update = 0;
 
 	//all must be processed
 	dl_push_constant.process_offset = 0;
@@ -2223,18 +2243,20 @@ void GI::HDDAGI::render_static_lights(RenderDataRD *p_render_data, Ref<RenderSce
 		dl_push_constant.light_count = light_count[i];
 		dl_push_constant.cascade = p_cascade_indices[i];
 
-		if (dl_push_constant.light_count > 0) {
-			RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache(
-					gi->hddagi_shader.direct_light_shader_version[HDDAGIShader::DIRECT_LIGHT_MODE_STATIC],
-					0,
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, voxel_bits_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, voxel_region_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 3, RendererRD::MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)),
-					RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, cc.light_process_dispatch_buffer_copy),
-					RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, cc.light_process_buffer),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, voxel_light_tex_data),
-					RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 7, cascades_ubo),
-					RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, cc.light_position_bufer));
+		if (dl_push_constant.light_count > 0 || rigid.has_changes()) {
+			LocalVector<RD::Uniform> direct_light_uniforms;
+			direct_light_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, voxel_bits_tex));
+			direct_light_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, voxel_region_tex));
+			direct_light_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 3, RendererRD::MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)));
+			direct_light_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, cc.light_process_dispatch_buffer_copy));
+			direct_light_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, cc.light_process_buffer));
+			direct_light_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, voxel_light_tex_data));
+			direct_light_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 7, cascades_ubo));
+			direct_light_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, cc.light_position_bufer));
+			direct_light_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 11, cc.light_source_emission_buffer));
+			rigid.append_uniforms(direct_light_uniforms);
+			RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(
+					gi->hddagi_shader.direct_light_shader_version[HDDAGIShader::DIRECT_LIGHT_MODE_STATIC], 0, direct_light_uniforms);
 
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set, 0);
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, area_light_atlas_uniform_set, 1);
@@ -3159,6 +3181,7 @@ GI::~GI() {
 
 void GI::init(SkyRD *p_sky) {
 	sky = p_sky;
+	default_rigid.initialize();
 
 	/* GI */
 
@@ -3245,6 +3268,7 @@ void GI::init(SkyRD *p_sky) {
 		direct_light_modes.push_back("\n#define MODE_PROCESS_STATIC\n");
 		direct_light_modes.push_back("\n#define MODE_PROCESS_DYNAMIC\n");
 		direct_light_modes.push_back("\n#define MODE_PROCESS_DYNAMIC\n#define MODE_WRITE_ALBEDO\n");
+		direct_light_modes.push_back("\n#define MODE_PROCESS_RIGID\n");
 		hddagi_shader.direct_light.initialize(direct_light_modes, defines);
 		hddagi_shader.direct_light_shader = hddagi_shader.direct_light.version_create();
 		for (int i = 0; i < HDDAGIShader::DIRECT_LIGHT_MODE_MAX; i++) {
@@ -3548,6 +3572,7 @@ void GI::init(SkyRD *p_sky) {
 }
 
 void GI::free() {
+	default_rigid.free();
 	if (default_voxel_gi_buffer.is_valid()) {
 		RD::get_singleton()->free_rid(default_voxel_gi_buffer);
 	}
@@ -3940,35 +3965,34 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, bool p_use_hddag
 			vgiu.append_id(rbgi->voxel_gi_textures[i]);
 		}
 
-		RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache(
-				shader.version_get_shader(shader_version, 0),
-				0,
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, hddagi_voxel_bits_texture),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, hddagi_voxel_region_texture),
-				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 3, hddagi_voxel_light_texture),
-				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 4, hddagi_lightprobe_specular_texture),
-				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 5, hddagi_lightprobe_diffuse_texture),
-				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 6, hddagi_occlusion_textures),
-				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 7, RendererRD::MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)),
-				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 8, RendererRD::MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 9, hddagi_voxel_disocclusion_texture),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 10, hddagi_voxel_neighbours_texture),
+		LocalVector<RD::Uniform> gi_uniforms = {
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, hddagi_voxel_bits_texture),
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, hddagi_voxel_region_texture),
+			RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 3, hddagi_voxel_light_texture),
+			RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 4, hddagi_lightprobe_specular_texture),
+			RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 5, hddagi_lightprobe_diffuse_texture),
+			RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 6, hddagi_occlusion_textures),
+			RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 7, RendererRD::MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)),
+			RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 8, RendererRD::MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)),
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 9, hddagi_voxel_disocclusion_texture),
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 10, hddagi_voxel_neighbours_texture),
 
-				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 12, p_render_buffers->get_depth_texture(v)),
-				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 13, p_normal_roughness_slices[v]),
-				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 14, p_voxel_gi_buffer.is_valid() ? p_voxel_gi_buffer : texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK)),
+			RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 12, p_render_buffers->get_depth_texture(v)),
+			RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 13, p_normal_roughness_slices[v]),
+			RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 14, p_voxel_gi_buffer.is_valid() ? p_voxel_gi_buffer : texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK)),
 
-				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 15, hddagi_ubo),
-				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 16, rbgi->get_voxel_gi_buffer()),
-				vgiu, // 17
-				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 18, rbgi->scene_data_ubo),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 19, has_vrs_texture ? p_render_buffers->get_texture_slice(RB_SCOPE_VRS, RB_TEXTURE, v, 0) : texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_VRS)),
+			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 15, hddagi_ubo),
+			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 16, rbgi->get_voxel_gi_buffer()),
+			vgiu, // 17
+			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 18, rbgi->scene_data_ubo),
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 19, has_vrs_texture ? p_render_buffers->get_texture_slice(RB_SCOPE_VRS, RB_TEXTURE, v, 0) : texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_VRS)),
 
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 20, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_AMBIENT_U32, v, 0)),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 21, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_REFLECTION_U32, v, 0)),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 22, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_AMBIENT_REFLECTION_BLEND, v, 0))
-
-		);
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 20, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_AMBIENT_U32, v, 0)),
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 21, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_REFLECTION_U32, v, 0)),
+			RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 22, p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_AMBIENT_REFLECTION_BLEND, v, 0))
+		};
+		(use_hddagi ? hddagi->rigid : default_rigid).append_uniforms(gi_uniforms);
+		RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(shader.version_get_shader(shader_version, 0), 0, gi_uniforms);
 
 		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipelines[pipeline_specialization][mode]);
 		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set, 0);

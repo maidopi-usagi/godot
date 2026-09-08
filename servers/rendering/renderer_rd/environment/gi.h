@@ -34,6 +34,7 @@
 #include "core/templates/rid_owner.h"
 #include "servers/rendering/environment/renderer_gi.h"
 #include "servers/rendering/renderer_compositor.h"
+#include "servers/rendering/renderer_rd/environment/hddagi_rigid.h"
 #include "servers/rendering/renderer_rd/environment/hddagi_screen_probe_irradiance_cache.h"
 #include "servers/rendering/renderer_rd/environment/hddagi_screen_probe_svgf.h"
 #include "servers/rendering/renderer_rd/environment/sky.h"
@@ -452,6 +453,7 @@ private:
 			DIRECT_LIGHT_MODE_STATIC,
 			DIRECT_LIGHT_MODE_DYNAMIC,
 			DIRECT_LIGHT_MODE_DYNAMIC_ALBEDO,
+			DIRECT_LIGHT_MODE_RIGID,
 			DIRECT_LIGHT_MODE_MAX
 		};
 		HddagiDirectLightShaderRD direct_light;
@@ -784,6 +786,7 @@ public:
 			Vector3i dirty_regions; //(0,0,0 is not dirty, negative is refresh from the end, DIRTY_ALL is refresh all.
 
 			RID light_process_buffer;
+			RID light_source_emission_buffer;
 			RID light_process_dispatch_buffer;
 			RID light_process_dispatch_buffer_copy;
 
@@ -825,6 +828,7 @@ public:
 		RID region_version_data;
 
 		RID light_process_buffer_render;
+		RID light_source_emission_buffer_render;
 		RID light_process_dispatch_buffer_render;
 
 		RID lightprobe_specular_tex;
@@ -865,6 +869,10 @@ public:
 		float min_cell_size = 0;
 
 		RID cascades_ubo;
+		HDDAGIRigid rigid;
+		RID rigid_lights_buffer;
+		bool rigid_static_recapture_pending = false;
+		uint64_t rigid_membership_version = UINT64_MAX;
 
 		bool uses_occlusion = false;
 		float bounce_feedback = 0.5;
@@ -913,6 +921,9 @@ public:
 		void create(RID p_env, const Vector3 &p_world_anchor, const Vector3 &p_planar_world_forward, float p_cascade_forward_offset, uint32_t p_requested_history_size, GI *p_gi);
 		void update(RID p_env, const Vector3 &p_world_anchor, const Vector3 &p_planar_world_forward, float p_cascade_forward_offset);
 		void update_light();
+		void update_rigid_objects(RenderDataRD *p_render_data);
+		void update_rigid_lighting(RenderDataRD *p_render_data);
+		void refresh_rigid_static_lights(RenderDataRD *p_render_data);
 		void update_probes(RID p_env, RendererRD::SkyRD::Sky *p_sky, uint32_t p_view_count, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_cam_transform);
 		void store_probes();
 		int get_pending_region_count() const;
@@ -946,6 +957,7 @@ public:
 	};
 
 	RSE::EnvironmentHDDAGIFramesToConverge hddagi_frames_to_converge = RSE::ENV_HDDAGI_CONVERGE_IN_12_FRAMES;
+	HDDAGIRigid default_rigid;
 	RSE::EnvironmentHDDAGIFramesToUpdateLight hddagi_frames_to_update_light = RSE::ENV_HDDAGI_UPDATE_LIGHT_IN_4_FRAMES;
 	RSE::EnvironmentHDDAGIInactiveProbeFrames inactive_probe_frames = RSE::ENV_HDDAGI_INACTIVE_PROBE_8_FRAMES;
 

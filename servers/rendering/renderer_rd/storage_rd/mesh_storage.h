@@ -154,6 +154,7 @@ private:
 		};
 
 		uint32_t blend_shape_count = 0;
+		uint64_t data_version = 1; // Cached captures also depend on buffer writes that do not rebuild render lists.
 		RSE::BlendShapeMode blend_shape_mode = RSE::BLEND_SHAPE_MODE_NORMALIZED;
 
 		Surface **surfaces = nullptr;
@@ -371,6 +372,7 @@ public:
 	virtual RID mesh_allocate() override;
 	virtual void mesh_initialize(RID p_mesh) override;
 	virtual void mesh_free(RID p_rid) override;
+	uint64_t mesh_get_data_version(RID p_mesh) const;
 
 	virtual void mesh_set_blend_shape_count(RID p_mesh, int p_blend_shape_count) override;
 

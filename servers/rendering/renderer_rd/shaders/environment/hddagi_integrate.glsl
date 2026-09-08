@@ -25,6 +25,8 @@
 
 #ifdef MODE_PROCESS
 
+#include "hddagi_rigid_inc.glsl"
+
 layout(local_size_x = LIGHTPROBE_OCT_SIZE, local_size_y = LIGHTPROBE_OCT_SIZE, local_size_z = 1) in;
 
 #define TRACE_SUBPIXEL
@@ -390,6 +392,45 @@ shared vec3 neighbors[LIGHTPROBE_OCT_SIZE * LIGHTPROBE_OCT_SIZE];
 shared uvec3 ambient_accum;
 shared int probe_history_index;
 
+float rigid_integrate_trace_distance(vec3 origin, vec3 direction) {
+	int cascade = params.max_cascades - 1;
+	vec3 bounds_min = cascades.data[cascade].offset;
+	vec3 bounds_max = bounds_min + vec3(params.grid_size) / cascades.data[cascade].to_cell;
+	bounds_min.y /= params.y_mult;
+	bounds_max.y /= params.y_mult;
+	float entry;
+	float exit_distance;
+	return hddagi_rigid_ray_box(origin, direction, bounds_min, bounds_max, entry, exit_distance) ? max(exit_distance, 0.0) : 0.0;
+}
+
+float rigid_integrate_static_distance(vec3 origin, vec3 direction, float bias_distance, ivec3 wrapped_light_cell, int cascade, float fallback_distance) {
+	ivec3 region_offset = cascades.data[cascade].region_world_offset * REGION_SIZE;
+	ivec3 light_cell = (wrapped_light_cell - region_offset) & (params.grid_size - 1);
+	float closest = fallback_distance;
+	// Cache entries point at exterior light cells and do not store the face.
+	// Recover the adjacent occupied cell instead of limiting by a light center.
+	for (int i = 0; i < 6; i++) {
+		ivec3 cell = (light_cell + HDDAGI_RIGID_NEIGHBOURS[i]) & (params.grid_size - 1);
+		ivec3 wrapped_cell = (cell + region_offset) & (params.grid_size - 1);
+		ivec3 block_cell = (wrapped_cell >> 2) + ivec3(0, cascade * (params.grid_size.y >> 2), 0);
+		uvec2 bits = imageLoad(voxel_cascades, block_cell).rg;
+		uint bit = hddagi_rigid_cell_index(wrapped_cell & 3, uvec3(4));
+		if ((bits[bit >> 5u] & (1u << (bit & 31u))) == 0u) {
+			continue;
+		}
+		vec3 bounds_min = cascades.data[cascade].offset + vec3(cell) / cascades.data[cascade].to_cell;
+		vec3 bounds_max = bounds_min + vec3(1.0 / cascades.data[cascade].to_cell);
+		bounds_min.y /= params.y_mult;
+		bounds_max.y /= params.y_mult;
+		float entry;
+		float exit_distance;
+		if (hddagi_rigid_ray_box(origin, direction, bounds_min, bounds_max, entry, exit_distance) && entry >= bias_distance - HDDAGI_RIGID_RAY_EPSILON) {
+			closest = min(closest, entry);
+		}
+	}
+	return closest;
+}
+
 // MODE_PROCESS
 #endif
 /*
@@ -510,12 +551,15 @@ void main() {
 	float probe_cell_size = float(params.grid_size.x) / float(params.probe_axis_size.x - 1) / cascades.data[params.cascade].to_cell;
 
 	ray_pos = cascades.data[params.cascade].offset + vec3(probe_cell) * probe_cell_size;
+	vec3 rigid_ray_origin = ray_pos;
+	rigid_ray_origin.y /= params.y_mult;
 
 	// Ensure a unique hash that includes the probe world position, the local octahedron pixel, and the history frame index
 	uvec3 h3 = hash3(uvec3((uvec3(probe_world_pos) * LIGHTPROBE_OCT_SIZE * LIGHTPROBE_OCT_SIZE + uvec3(probe_index)) * uvec3(params.history_size) + uvec3(probe_history_index)));
 	uint h = (h3.x ^ h3.y) ^ h3.z;
 	sample_ofs = vec2(ivec2(h >> 16, h & 0xFFFF)) / vec2(0xFFFF);
 	ray_dir = octahedron_decode((vec2(local_pos) + sample_ofs) / vec2(LIGHTPROBE_OCT_SIZE));
+	vec3 rigid_ray_direction = ray_dir;
 
 	ray_dir.y *= params.y_mult;
 	ray_dir = normalize(ray_dir);
@@ -589,6 +633,28 @@ void main() {
 		light = vec3(0);
 	}
 
+	if (hddagi_rigid_instances.header.x != 0u) {
+		HDDAGIRigidBVHNode rigid_bounds = hddagi_rigid_bvh.data[0];
+		float rigid_entry;
+		float rigid_exit;
+		// Avoid reconstructing six static neighbors for rays that miss every object.
+		if (hddagi_rigid_ray_box(rigid_ray_origin, rigid_ray_direction, rigid_bounds.bounds_min, rigid_bounds.bounds_max, rigid_entry, rigid_exit) && rigid_exit > HDDAGI_RIGID_RAY_EPSILON) {
+			float max_distance = min(rigid_exit, rigid_integrate_trace_distance(rigid_ray_origin, rigid_ray_direction));
+			if (rigid_entry < max_distance) {
+				if (hit) {
+					vec3 biased_origin = ray_pos;
+					biased_origin.y /= params.y_mult;
+					max_distance = rigid_integrate_static_distance(rigid_ray_origin, rigid_ray_direction, length(biased_origin - rigid_ray_origin), hit_cell, hit_cascade, max_distance);
+				}
+				HDDAGIRigidHit rigid_hit;
+				if (hddagi_rigid_trace(rigid_ray_origin, rigid_ray_direction, HDDAGI_RIGID_RAY_EPSILON, max_distance, false, rigid_hit)) {
+					light = hddagi_rigid_sample_radiance(rigid_hit);
+				}
+			}
+		}
+		// Keep the static hit/cache variables intact. Only radiance is overlaid.
+	}
+
 	memoryBarrierShared();
 	barrier();
 
@@ -645,7 +711,7 @@ void main() {
 			uvec3 ucell = (uvec3(hit_cell) & uvec3(0xFF)) << uvec3(0, 8, 16);
 			cache_entry |= CACHE_IS_HIT | ucell.x | ucell.y | ucell.z | (uint(min(7, hit_cascade)) << 24) | (axis << 27);
 
-			uint region_version = imageLoad(region_versions, (hit_cell >> REGION_SIZE) + ivec3(0, hit_cascade * (params.grid_size.y / REGION_SIZE), 0)).r;
+			uint region_version = imageLoad(region_versions, (hit_cell / REGION_SIZE) + ivec3(0, hit_cascade * (params.grid_size.y / REGION_SIZE), 0)).r;
 
 			imageStore(ray_hit_cache_version, cache_texture_pos, uvec4(region_version));
 		}
@@ -681,6 +747,18 @@ void main() {
 
 	moving_average -= prev_val;
 	uvec3 new_val = rgbe_decode_fp(light_rgbe, FP_BITS); // Round trip to ensure integer consistency
+	float rigid_history_response = 0.0;
+	if (hddagi_rigid_instances.header.w != 0u) {
+		// The ring slot repeats the same probe/ray sample sequence. A change
+		// here also catches static endpoints whose lighting changed behind a
+		// door, even when this receiver-to-endpoint ray misses the door itself.
+		vec3 signal_delta = abs(vec3(new_val) - vec3(prev_val));
+		vec3 signal_threshold = max(max(vec3(new_val), vec3(prev_val)) * 0.2, vec3(16.0));
+		vec3 relative_delta = signal_delta / signal_threshold;
+		float current_weight = 1.0 / float(params.history_size);
+		float response_limit = max(0.25 - current_weight, 0.0) / max(1.0 - current_weight, 1e-6);
+		rigid_history_response = response_limit * smoothstep(1.0, 3.0, max(relative_delta.x, max(relative_delta.y, relative_delta.z)));
+	}
 	moving_average += new_val;
 
 	imageStore(lightprobe_moving_average_history, cache_texture_pos, uvec4(light_rgbe));
@@ -689,7 +767,12 @@ void main() {
 	imageStore(lightprobe_moving_average, ma_pos + ivec3(1, 0, 0), uvec4(moving_average.g));
 	imageStore(lightprobe_moving_average, ma_pos + ivec3(2, 0, 0), uvec4(moving_average.b));
 
+	// Pending geometry updates can span many frames. Preserve the history ring
+	// and only increase the current sample's contribution when its value changed.
 	moving_average /= params.history_size;
+	if (rigid_history_response > 0.0) {
+		moving_average = uvec3(mix(vec3(moving_average), vec3(new_val), rigid_history_response));
+	}
 
 	if (params.store_ambient_texture) {
 		atomicAdd(ambient_accum.r, moving_average.r);

@@ -48,6 +48,7 @@ static constexpr uint32_t FREE_POOL_BUFFER_SIZE = sizeof(uint32_t) * HDDAGIScree
 static constexpr uint32_t REQUESTS_BUFFER_SIZE = VEC4_SIZE_BYTES * HDDAGIScreenProbeIrradianceCache::REQUEST_STRIDE * HDDAGIScreenProbeIrradianceCache::MAX_REQUESTS;
 static constexpr uint32_t ACCUMULATION_BUFFER_SIZE = sizeof(int32_t) * HDDAGIScreenProbeIrradianceCache::ACCUMULATION_STRIDE * HDDAGIScreenProbeIrradianceCache::CAPACITY;
 static constexpr uint32_t STORAGE_BUFFER_COUNT = 11u;
+static constexpr uint32_t QUERY_STORAGE_BUFFER_COUNT = STORAGE_BUFFER_COUNT + 5u; // The trace set also binds the rigid object pools.
 static constexpr uint32_t QUERY_UNIFORM_BUFFER_COUNT = 3u;
 
 } // namespace
@@ -59,7 +60,7 @@ bool HDDAGIScreenProbeIrradianceCache::is_supported() {
 	}
 
 	return rd->limit_get(RenderingDevice::LIMIT_MAX_STORAGE_BUFFERS_PER_UNIFORM_SET) >= STORAGE_BUFFER_COUNT &&
-			rd->limit_get(RenderingDevice::LIMIT_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE) >= STORAGE_BUFFER_COUNT &&
+			rd->limit_get(RenderingDevice::LIMIT_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE) >= QUERY_STORAGE_BUFFER_COUNT &&
 			rd->limit_get(RenderingDevice::LIMIT_MAX_BOUND_UNIFORM_SETS) >= 3u &&
 			rd->limit_get(RenderingDevice::LIMIT_MAX_UNIFORM_BUFFERS_PER_UNIFORM_SET) >= 1u &&
 			rd->limit_get(RenderingDevice::LIMIT_MAX_UNIFORM_BUFFERS_PER_SHADER_STAGE) >= QUERY_UNIFORM_BUFFER_COUNT &&

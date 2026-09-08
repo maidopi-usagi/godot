@@ -176,6 +176,8 @@ void hddagi_irradiance_cache_resolve(uint entry_index) {
 	int signed_count = hddagi_irradiance_cache_accumulation[accumulation_base + 12u];
 	if (state.y != 0u && signed_count > 0) {
 		float inverse_weight = 1.0 / (HDDAGI_IRRADIANCE_CACHE_ACCUM_SCALE * float(signed_count));
+		// Moving rigid geometry changes lighting, not the cached surface identity.
+		// Keep the previous solution while budgeted updates replace its samples.
 		uint history_sample_cap = hddagi_irradiance_cache_multibounce_enabled() ? HDDAGI_IRRADIANCE_CACHE_MULTIBOUNCE_HISTORY_SAMPLE_CAP : HDDAGI_IRRADIANCE_CACHE_HISTORY_SAMPLE_CAP;
 		float history_weight = float(min(state.z, history_sample_cap));
 		float update_weight = float(signed_count);

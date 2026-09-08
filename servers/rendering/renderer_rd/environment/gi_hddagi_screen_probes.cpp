@@ -438,17 +438,19 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				if (irradiance_cache_multibounce) {
 					irradiance_cache_multibounce_set = get_query_set(HDDAGIShader::SCREEN_PROBE_MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE);
 					const HDDAGIShader::ScreenProbeMode update_mode = HDDAGIShader::SCREEN_PROBE_MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE;
-					irradiance_cache_multibounce_resources_set = UniformSetCacheRD::get_singleton()->get_cache(
-							hddagi_shader.screen_probe_shader_version[update_mode], 0,
-							RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, hddagi->voxel_bits_tex),
-							RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 3, hddagi->voxel_region_tex),
-							RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 4, hddagi->voxel_light_tex),
-							RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 5, linear_sampler),
-							RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, hddagi->voxel_light_neighbour_data),
-							RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 7, hddagi_ubo),
-							RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 8, hddagi->voxel_disocclusion_tex),
-							RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->screen_probe_scene_data_ubo),
-							RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 10, hddagi->voxel_albedo_data));
+					LocalVector<RD::Uniform> multibounce_uniforms = {
+						RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, hddagi->voxel_bits_tex),
+						RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 3, hddagi->voxel_region_tex),
+						RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 4, hddagi->voxel_light_tex),
+						RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 5, linear_sampler),
+						RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, hddagi->voxel_light_neighbour_data),
+						RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 7, hddagi_ubo),
+						RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 8, hddagi->voxel_disocclusion_tex),
+						RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->screen_probe_scene_data_ubo),
+						RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 10, hddagi->voxel_albedo_data)
+					};
+					hddagi->rigid.append_uniforms(multibounce_uniforms);
+					irradiance_cache_multibounce_resources_set = UniformSetCacheRD::get_singleton()->get_cache_vec(hddagi_shader.screen_probe_shader_version[update_mode], 0, multibounce_uniforms);
 					irradiance_cache_multibounce_sky_set = UniformSetCacheRD::get_singleton()->get_cache(
 							hddagi_shader.screen_probe_shader_version[update_mode], 1,
 							RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 0, sky_texture),
@@ -988,31 +990,33 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			const HDDAGIShader::ScreenProbeMode directional_trace_mode = HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_TRACE;
 			const RID directional_screen_radiance = directional_screen_radiance_valid ? p_previous_screen_color_slices[v] : detail_hiz_fallback;
 			const RID directional_previous_depth = directional_screen_radiance_valid ? p_previous_screen_depth_slices[v] : detail_hiz_fallback;
-			directional_trace_sets[v] = UniformSetCacheRD::get_singleton()->get_cache(
-					hddagi_shader.screen_probe_shader_version[directional_trace_mode], 0,
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 0, surface),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, directional_radiance),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, hddagi->voxel_bits_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 3, hddagi->voxel_region_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 4, hddagi->voxel_light_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 5, linear_sampler),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, hddagi->voxel_light_neighbour_data),
-					RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 7, hddagi_ubo),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 8, hddagi->voxel_disocclusion_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->screen_probe_scene_data_ubo),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, detail_trace ? p_hiz_slices[v] : detail_hiz_fallback),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 11, normal_roughness),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 12, previous_directional_radiance),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 13, previous_surface),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 14, previous_directional_history_age),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 15, directional_history_age),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 16, previous_directional_adaptive_tile_data),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 17, directional_velocity),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 18, depth),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 19, directional_filter_scratch[1]),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 20, directional_trace_count),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 21, directional_screen_radiance),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 22, directional_previous_depth));
+			LocalVector<RD::Uniform> directional_trace_uniforms = {
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 0, surface),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, directional_radiance),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, hddagi->voxel_bits_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 3, hddagi->voxel_region_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 4, hddagi->voxel_light_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 5, linear_sampler),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, hddagi->voxel_light_neighbour_data),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 7, hddagi_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 8, hddagi->voxel_disocclusion_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->screen_probe_scene_data_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, detail_trace ? p_hiz_slices[v] : detail_hiz_fallback),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 11, normal_roughness),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 12, previous_directional_radiance),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 13, previous_surface),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 14, previous_directional_history_age),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 15, directional_history_age),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 16, previous_directional_adaptive_tile_data),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 17, directional_velocity),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 18, depth),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 19, directional_filter_scratch[1]),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 20, directional_trace_count),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 21, directional_screen_radiance),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 22, directional_previous_depth)
+			};
+			hddagi->rigid.append_uniforms(directional_trace_uniforms);
+			directional_trace_sets[v] = UniformSetCacheRD::get_singleton()->get_cache_vec(hddagi_shader.screen_probe_shader_version[directional_trace_mode], 0, directional_trace_uniforms);
 			directional_trace_sky_sets[v] = UniformSetCacheRD::get_singleton()->get_cache(
 					hddagi_shader.screen_probe_shader_version[directional_trace_mode], 1,
 					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 0, sky_texture),
@@ -1048,20 +1052,22 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			}
 		}
 		if (!directional_gather) {
-			trace_sets[v] = UniformSetCacheRD::get_singleton()->get_cache(
-					hddagi_shader.screen_probe_shader_version[trace_mode], 0,
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 0, surface),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, raw_radiance),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, hddagi->voxel_bits_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 3, hddagi->voxel_region_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 4, hddagi->voxel_light_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 5, linear_sampler),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, hddagi->voxel_light_neighbour_data),
-					RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 7, hddagi_ubo),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 8, hddagi->voxel_disocclusion_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->screen_probe_scene_data_ubo),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, detail_trace ? p_hiz_slices[v] : detail_hiz_fallback),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 11, normal_roughness));
+			LocalVector<RD::Uniform> trace_uniforms = {
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 0, surface),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, raw_radiance),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, hddagi->voxel_bits_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 3, hddagi->voxel_region_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 4, hddagi->voxel_light_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 5, linear_sampler),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, hddagi->voxel_light_neighbour_data),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 7, hddagi_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 8, hddagi->voxel_disocclusion_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->screen_probe_scene_data_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, detail_trace ? p_hiz_slices[v] : detail_hiz_fallback),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 11, normal_roughness)
+			};
+			hddagi->rigid.append_uniforms(trace_uniforms);
+			trace_sets[v] = UniformSetCacheRD::get_singleton()->get_cache_vec(hddagi_shader.screen_probe_shader_version[trace_mode], 0, trace_uniforms);
 			trace_sky_sets[v] = UniformSetCacheRD::get_singleton()->get_cache(
 					hddagi_shader.screen_probe_shader_version[trace_mode], 1,
 					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 0, sky_texture),
@@ -1166,27 +1172,29 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			const RID previous_color = specular_screen_radiance_valid ? p_previous_screen_color_slices[v] : detail_hiz_fallback;
 			const RID previous_depth = specular_screen_radiance_valid ? p_previous_screen_depth_slices[v] : detail_hiz_fallback;
 			const HDDAGIShader::ScreenProbeMode specular_trace_mode = HDDAGIShader::SCREEN_PROBE_MODE_SPECULAR_TRACE;
-			specular_trace_sets[v] = UniformSetCacheRD::get_singleton()->get_cache(
-					hddagi_shader.screen_probe_shader_version[specular_trace_mode], 0,
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 0, surface),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, specular_raw[v]),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, hddagi->voxel_bits_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 3, hddagi->voxel_region_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 4, hddagi->voxel_light_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 5, linear_mipmap_sampler),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, hddagi->voxel_light_neighbour_data),
-					RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 7, hddagi_ubo),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 8, hddagi->voxel_disocclusion_tex),
-					RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->screen_probe_scene_data_ubo),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, specular_detail_trace ? p_hiz_slices[v] : detail_hiz_fallback),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 11, normal_roughness),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 12, depth),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 13, velocity),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 14, specular_normal_roughness[v]),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 15, specular_view_z[v]),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 16, specular_motion[v]),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 17, previous_color),
-					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 18, previous_depth));
+			LocalVector<RD::Uniform> specular_trace_uniforms = {
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 0, surface),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, specular_raw[v]),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, hddagi->voxel_bits_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 3, hddagi->voxel_region_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 4, hddagi->voxel_light_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 5, linear_mipmap_sampler),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, hddagi->voxel_light_neighbour_data),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 7, hddagi_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 8, hddagi->voxel_disocclusion_tex),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->screen_probe_scene_data_ubo),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 10, specular_detail_trace ? p_hiz_slices[v] : detail_hiz_fallback),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 11, normal_roughness),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 12, depth),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 13, velocity),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 14, specular_normal_roughness[v]),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 15, specular_view_z[v]),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 16, specular_motion[v]),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 17, previous_color),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 18, previous_depth)
+			};
+			hddagi->rigid.append_uniforms(specular_trace_uniforms);
+			specular_trace_sets[v] = UniformSetCacheRD::get_singleton()->get_cache_vec(hddagi_shader.screen_probe_shader_version[specular_trace_mode], 0, specular_trace_uniforms);
 			specular_trace_sky_sets[v] = UniformSetCacheRD::get_singleton()->get_cache(
 					hddagi_shader.screen_probe_shader_version[specular_trace_mode], 1,
 					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 0, sky_texture),
@@ -1398,6 +1406,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			svgf_frame.denoising_range = SCREEN_PROBE_SVGF_DENOISING_RANGE;
 			svgf_frame.quality = svgf_quality;
 			svgf_frame.history_valid = svgf_history_valid;
+			svgf_frame.lighting_changed = hddagi->rigid.has_pending_changes();
 			svgf_frame.diffuse_temporal_only = directional_gather && diffuse_temporal_only_setting;
 
 			HDDAGIScreenProbeSVGF::Resources svgf_resources;
@@ -1452,6 +1461,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				frame.denoising_range = SCREEN_PROBE_SPECULAR_DENOISING_RANGE;
 				frame.quality = svgf_quality;
 				frame.history_valid = specular_history_valid;
+				frame.lighting_changed = hddagi->rigid.has_pending_changes();
 				frame.specular = true;
 				frame.specular_full_resolution = p_gi_size == internal_size;
 

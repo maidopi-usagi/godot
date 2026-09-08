@@ -1379,12 +1379,14 @@ void RenderForwardClustered::_update_hddagi(RenderDataRD *p_render_data) {
 		if (p_render_data->camera_attributes.is_valid()) {
 			exposure_normalization = RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes);
 		}
+		hddagi->update_rigid_objects(p_render_data);
 		for (int i = 0; i < p_render_data->render_hddagi_region_count; i++) {
 			hddagi->render_region(rb, p_render_data->render_hddagi_regions[i].region, p_render_data->render_hddagi_regions[i].instances, exposure_normalization);
 		}
 		if (p_render_data->hddagi_update_data->update_static) {
 			hddagi->render_static_lights(p_render_data, rb, p_render_data->hddagi_update_data->static_cascade_count, p_render_data->hddagi_update_data->static_cascade_indices, p_render_data->hddagi_update_data->static_positional_lights);
 		}
+		hddagi->refresh_rigid_static_lights(p_render_data);
 	}
 }
 
@@ -1970,6 +1972,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				hddagi->update_cascades();
 				hddagi->pre_process_gi(p_render_data->scene_data->cam_transform, p_render_data);
 				hddagi->update_light();
+				hddagi->update_rigid_lighting(p_render_data);
 			}
 		}
 
@@ -3592,7 +3595,7 @@ void RenderForwardClustered::_render_uv2(const PagedArray<RenderGeometryInstance
 	RD::get_singleton()->draw_command_end_label();
 }
 
-void RenderForwardClustered::_render_hddagi(Ref<RenderSceneBuffersRD> p_render_buffers, const Vector3i &p_from, const Vector3i &p_size, const AABB &p_bounds, const PagedArray<RenderGeometryInstance *> &p_instances, const RID &p_albedo_texture, const RID &p_emission_texture, const RID &p_emission_aniso_texture, const RID &p_geom_facing_texture, float p_exposure_normalization) {
+void RenderForwardClustered::_render_hddagi(Ref<RenderSceneBuffersRD> p_render_buffers, const Vector3i &p_from, const Vector3i &p_size, const AABB &p_bounds, const PagedArray<RenderGeometryInstance *> &p_instances, const RID &p_albedo_texture, const RID &p_emission_texture, const RID &p_emission_aniso_texture, const RID &p_geom_facing_texture, float p_exposure_normalization, const Transform3D *p_capture_transform) {
 	RENDER_TIMESTAMP("Render HDDAGI");
 
 	RD::get_singleton()->draw_command_begin_label("Render HDDAGI Voxel");
@@ -3653,6 +3656,13 @@ void RenderForwardClustered::_render_hddagi(Ref<RenderSceneBuffersRD> p_render_b
 		Transform3D to_bounds;
 		to_bounds.origin = p_bounds.position;
 		to_bounds.basis.scale(p_bounds.size);
+
+		// Capture cameras move with the object; the real scene instances retain their transforms.
+		RendererRD::MaterialStorage::store_basis_3x4(scene_data.cam_transform.basis, scene_state.ubo.sdf_to_normal);
+		if (p_capture_transform) {
+			scene_data.cam_transform = *p_capture_transform * scene_data.cam_transform;
+			to_bounds = *p_capture_transform * to_bounds;
+		}
 
 		RendererRD::MaterialStorage::store_transform(to_bounds.affine_inverse() * scene_data.cam_transform, scene_state.ubo.sdf_to_bounds);
 
@@ -4307,6 +4317,12 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 		uniforms.push_back(u);
 	}
 
+	if (rb.is_valid() && rb->has_custom_data(RB_SCOPE_HDDAGI)) {
+		Ref<RendererRD::GI::HDDAGI> hddagi = rb->get_custom_data(RB_SCOPE_HDDAGI);
+		hddagi->rigid.append_uniforms(uniforms);
+	} else {
+		gi.default_rigid.append_uniforms(uniforms);
+	}
 	return UniformSetCacheRD::get_singleton()->get_cache_vec(scene_shader.get_default_shader_rd(is_multiview), RENDER_PASS_UNIFORM_SET, uniforms);
 }
 

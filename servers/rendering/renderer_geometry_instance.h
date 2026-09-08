@@ -38,8 +38,21 @@
 
 // API definition for our RenderGeometryInstance class so we can expose this through GDExtension in the near future
 class RenderGeometryInstance {
+	uint64_t hddagi_instance_id = 0;
+	uint64_t hddagi_capture_version = 0;
+	RID hddagi_mesh;
+
 public:
 	virtual ~RenderGeometryInstance() {}
+
+	void set_hddagi_capture_data(uint64_t p_instance_id, RID p_mesh, uint64_t p_capture_version) {
+		hddagi_instance_id = p_instance_id;
+		hddagi_mesh = p_mesh;
+		hddagi_capture_version = p_capture_version;
+	}
+	uint64_t get_hddagi_instance_id() const { return hddagi_instance_id; }
+	uint64_t get_hddagi_capture_version() const { return hddagi_capture_version; }
+	RID get_hddagi_mesh() const { return hddagi_mesh; }
 
 	virtual void _mark_dirty() = 0;
 

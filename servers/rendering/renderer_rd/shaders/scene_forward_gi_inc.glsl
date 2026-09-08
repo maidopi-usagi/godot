@@ -1,5 +1,9 @@
 // Functions related to GI/HDDAGI for our forward renderer.
 
+#ifdef HDDAGI_RIGID_FORWARD
+#include "environment/hddagi_rigid_inc.glsl"
+#endif
+
 //standard voxel cone trace
 vec4 voxel_cone_trace(texture3D probe, vec3 cell_size, vec3 pos, vec3 direction, float tan_half_angle, float max_distance, float p_bias) {
 	float dist = p_bias;
@@ -158,6 +162,9 @@ void sdfvoxel_gi_process(int cascade, vec3 cascade_pos, vec3 cam_pos, vec3 cam_n
 	vec2 light_probe_tex_to_uv = 1.0 / vec2((LIGHTPROBE_OCT_SIZE + 2) * hddagi.probe_axis_size.x, (LIGHTPROBE_OCT_SIZE + 2) * hddagi.probe_axis_size.y * hddagi.probe_axis_size.z);
 	vec2 light_uv = octahedron_encode(vec3(cam_normal)) * float(LIGHTPROBE_OCT_SIZE);
 	vec2 light_uv_spec = octahedron_encode(vec3(cam_specular_normal)) * float(LIGHTPROBE_OCT_SIZE);
+#ifdef HDDAGI_RIGID_FORWARD
+	vec3 rigid_receiver_normal = normalize(cam_normal / vec3(1.0, hddagi.y_mult, 1.0));
+#endif
 	for (int i = 0; i < 8; i++) {
 		ivec3 probe = base_probe + ((ivec3(i) >> ivec3(0, 1, 2)) & ivec3(1, 1, 1));
 		vec3 probe_pos = vec3(probe * PROBE_CELLS);
@@ -175,6 +182,16 @@ void sdfvoxel_gi_process(int cascade, vec3 cascade_pos, vec3 cam_pos, vec3 cam_n
 			weight_index |= 4;
 		}
 		weight *= max(0.2, occ_weights[weight_index]);
+#ifdef HDDAGI_RIGID_FORWARD
+		if (hddagi_rigid_instances.header.x != 0u) {
+			vec3 camera_origin = vec3(scene_data_block.data.inv_view_matrix[0].w, scene_data_block.data.inv_view_matrix[1].w, scene_data_block.data.inv_view_matrix[2].w);
+			vec3 receiver_world = cam_pos;
+			vec3 probe_world = hddagi.cascades[cascade].position + probe_pos / hddagi.cascades[cascade].to_cell;
+			receiver_world.y /= hddagi.y_mult;
+			probe_world.y /= hddagi.y_mult;
+			weight *= hddagi_rigid_segment_visibility(receiver_world + camera_origin, probe_world + camera_origin, rigid_receiver_normal);
+		}
+#endif
 		vec3 trilinear = vec3(1.0) - abs(probe_to_pos / float(PROBE_CELLS));
 		weight *= trilinear.x * trilinear.y * trilinear.z;
 		ivec2 tex_pos = probe_to_tex(probe, cascade);
@@ -189,8 +206,8 @@ void sdfvoxel_gi_process(int cascade, vec3 cascade_pos, vec3 cam_pos, vec3 cam_n
 		specular_accum += probe_ref_light * weight;
 		weight_accum += weight;
 	}
-	diffuse_light = diffuse_accum / weight_accum;
-	specular_light = specular_accum / weight_accum;
+	diffuse_light = diffuse_accum / max(weight_accum, 1e-6);
+	specular_light = specular_accum / max(weight_accum, 1e-6);
 }
 
 void hddagi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, out vec4 ambient_light, out vec4 reflection_light) {
