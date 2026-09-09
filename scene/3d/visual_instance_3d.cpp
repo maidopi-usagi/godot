@@ -508,10 +508,21 @@ GeometryInstance3D::GIMode GeometryInstance3D::get_gi_mode() const {
 void GeometryInstance3D::set_gi_rigid(bool p_enabled) {
 	gi_rigid = p_enabled;
 	RS::get_singleton()->instance_geometry_set_flag(get_instance(), RSE::INSTANCE_FLAG_USE_RIGID_GI, p_enabled);
+	notify_property_list_changed();
 }
 
 bool GeometryInstance3D::is_gi_rigid() const {
 	return gi_rigid;
+}
+
+void GeometryInstance3D::set_gi_rigid_cache_resolution(int p_resolution) {
+	ERR_FAIL_COND(p_resolution != 32 && p_resolution != 64 && p_resolution != 128);
+	gi_rigid_cache_resolution = p_resolution;
+	RS::get_singleton()->instance_geometry_set_rigid_cache_resolution(get_instance(), p_resolution);
+}
+
+int GeometryInstance3D::get_gi_rigid_cache_resolution() const {
+	return gi_rigid_cache_resolution;
 }
 
 void GeometryInstance3D::set_ignore_occlusion_culling(bool p_enabled) {
@@ -554,6 +565,9 @@ PackedStringArray GeometryInstance3D::get_configuration_warnings() const {
 }
 
 void GeometryInstance3D::_validate_property(PropertyInfo &p_property) const {
+	if (p_property.name == "gi_rigid_cache_resolution" && !gi_rigid) {
+		p_property.usage &= ~PROPERTY_USAGE_EDITOR;
+	}
 	if (p_property.name == "sorting_offset" || p_property.name == "sorting_use_aabb_center") {
 		p_property.usage = PROPERTY_USAGE_DEFAULT;
 	}
@@ -608,6 +622,8 @@ void GeometryInstance3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_gi_mode"), &GeometryInstance3D::get_gi_mode);
 	ClassDB::bind_method(D_METHOD("set_gi_rigid", "enabled"), &GeometryInstance3D::set_gi_rigid);
 	ClassDB::bind_method(D_METHOD("is_gi_rigid"), &GeometryInstance3D::is_gi_rigid);
+	ClassDB::bind_method(D_METHOD("set_gi_rigid_cache_resolution", "resolution"), &GeometryInstance3D::set_gi_rigid_cache_resolution);
+	ClassDB::bind_method(D_METHOD("get_gi_rigid_cache_resolution"), &GeometryInstance3D::get_gi_rigid_cache_resolution);
 
 	ClassDB::bind_method(D_METHOD("set_ignore_occlusion_culling", "ignore_culling"), &GeometryInstance3D::set_ignore_occlusion_culling);
 	ClassDB::bind_method(D_METHOD("is_ignoring_occlusion_culling"), &GeometryInstance3D::is_ignoring_occlusion_culling);
@@ -628,6 +644,7 @@ void GeometryInstance3D::_bind_methods() {
 	ADD_GROUP("Global Illumination", "gi_");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "gi_mode", PROPERTY_HINT_ENUM, "Disabled,Static,Dynamic"), "set_gi_mode", "get_gi_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "gi_rigid"), "set_gi_rigid", "is_gi_rigid");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "gi_rigid_cache_resolution", PROPERTY_HINT_ENUM, "32 (Low):32,64 (Medium):64,128 (High):128"), "set_gi_rigid_cache_resolution", "get_gi_rigid_cache_resolution");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gi_lightmap_texel_scale", PROPERTY_HINT_RANGE, "0.01,10,0.0001,or_greater"), "set_lightmap_texel_scale", "get_lightmap_texel_scale");
 #ifndef DISABLE_DEPRECATED
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "gi_lightmap_scale", PROPERTY_HINT_ENUM, String::utf8("1×,2×,4×,8×"), PROPERTY_USAGE_NONE), "set_lightmap_scale", "get_lightmap_scale");

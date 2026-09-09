@@ -105,18 +105,32 @@ bool hddagi_rigid_trace_local(uint instance_index, vec3 origin_world, vec3 direc
 	if (dot(receiver_normal, receiver_normal) > 0.0) {
 		// A surface lies inside its conservative voxel shell. Excluding only one
 		// cell makes outward grazing rays hit the next cell on the same surface.
-		// Bias only this containing instance; other objects keep the original ray.
+		// Bias only the nearby surface of this instance; other objects keep the original ray.
 		exclude_origin_cell = false;
-		if (dot(receiver_normal, direction_world) > 1e-4 && hddagi_rigid_cell_occupied(instance, ivec3(floor(origin)))) {
-			vec3 local_normal = mat3(instance.world_to_cell) * receiver_normal;
-			vec3 local_bias = local_normal * (1.1 / max(abs(local_normal.x), max(abs(local_normal.y), abs(local_normal.z))));
-			world_bias = mat3(instance.cell_to_world) * local_bias;
-			origin += local_bias;
-			// Keep nearest-hit ordering and the static endpoint limit in the
-			// original world ray's parameter, despite the parallel normal offset.
-			distance_bias = dot(world_bias, direction_world);
-			t_min = max(0.0, t_min - distance_bias);
-			t_max -= distance_bias;
+		if (dot(receiver_normal, direction_world) > 1e-4) {
+			ivec3 receiver_cell = ivec3(floor(origin));
+			vec3 cell_normal = transpose(mat3(instance.cell_to_world)) * receiver_normal;
+			vec3 absolute_normal = abs(cell_normal);
+			int axis = absolute_normal.y > absolute_normal.x ? 1 : 0;
+			axis = absolute_normal.z > absolute_normal[axis] ? 2 : axis;
+			ivec3 adjacent = ivec3(0);
+			adjacent[axis] = cell_normal[axis] > 0.0 ? 1 : -1;
+			// Rasterization samples voxel centers. On a sloped surface the actual
+			// receiver can be in an empty cell next to its captured surface voxel.
+			bool near_surface = hddagi_rigid_cell_occupied(instance, receiver_cell) ||
+					hddagi_rigid_cell_occupied(instance, receiver_cell + adjacent) ||
+					hddagi_rigid_cell_occupied(instance, receiver_cell - adjacent);
+			if (near_surface) {
+				vec3 local_normal = mat3(instance.world_to_cell) * receiver_normal;
+				vec3 local_bias = local_normal * (1.1 / max(abs(local_normal.x), max(abs(local_normal.y), abs(local_normal.z))));
+				world_bias = mat3(instance.cell_to_world) * local_bias;
+				origin += local_bias;
+				// Keep nearest-hit ordering and the static endpoint limit in the
+				// original world ray's parameter, despite the parallel normal offset.
+				distance_bias = dot(world_bias, direction_world);
+				t_min = max(0.0, t_min - distance_bias);
+				t_max -= distance_bias;
+			}
 		}
 	}
 	bvec3 parallel = lessThan(abs(direction), vec3(1e-12));

@@ -485,6 +485,7 @@ public:
 
 		uint64_t version; // changes to this, and changes to base increase version
 		uint64_t hddagi_capture_version = 1; // Geometry/material changes only; transforms preserve local captures.
+		int gi_rigid_cache_resolution = 64;
 
 		InstanceBaseData *base_data = nullptr;
 
@@ -1080,6 +1081,7 @@ public:
 
 	virtual void instance_geometry_set_lightmap(RID p_instance, RID p_lightmap, const Rect2 &p_lightmap_uv_scale, int p_slice_index);
 	virtual void instance_geometry_set_lod_bias(RID p_instance, float p_lod_bias);
+	virtual void instance_geometry_set_rigid_cache_resolution(RID p_instance, int p_resolution) override;
 
 	virtual void instance_geometry_set_shader_parameter(RID p_instance, const StringName &p_parameter, const Variant &p_value);
 	virtual void instance_geometry_get_shader_parameter_list(RID p_instance, List<PropertyInfo> *p_parameters) const;

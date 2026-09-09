@@ -463,6 +463,7 @@ void svgf_temporal_main() {
 	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 size = imageSize(current_signal_output);
 	bool specular_mode = (params.control.x & 2u) != 0u;
+	bool diffuse_lighting_response = (params.control.x & 16u) != 0u;
 	bool lighting_changed = (params.control.x & 8u) != 0u;
 	bool pixel_in_bounds = all(lessThan(pixel, size));
 	if (specular_mode || lighting_changed) {
@@ -595,6 +596,11 @@ void svgf_temporal_main() {
 		float previous_screen_confidence = accumulated_history_screen_confidence / history_weight_sum;
 		float reprojection_quality = specular_mode && !current_dynamic ? 1.0 : sqrt(clamp(history_weight_sum, 0.0, 1.0));
 		float maximum_history_length = params.atrous.w;
+		if (diffuse_lighting_response) {
+			// The probe stage already rejects incoherent directional noise and
+			// strengthens spatial filtering for this local fast-update amount.
+			maximum_history_length = mix(maximum_history_length, 4.0, clamp(current_encoded_normal.a, 0.0, 1.0));
+		}
 		float history_confidence = 1.0;
 		float original_history_luminance = svgf_luminance(history_signal);
 		float lighting_response = 0.0;
@@ -627,10 +633,24 @@ void svgf_temporal_main() {
 			float neighborhood_luminance = max(svgf_luminance(svgf_ycocg_to_rgb(neighborhood_center)), 0.0);
 			float spatial_noise = dot(neighborhood_extent, vec3(1.0, 0.1404, 0.4304));
 			float moment_scale = specular_mode ? SPECULAR_MOMENT_LUMINANCE_SCALE : MOMENT_LUMINANCE_SCALE;
-			float temporal_noise = sqrt(max(previous_moments.y - previous_moments.x * previous_moments.x, params.atrous.z)) / moment_scale;
+			// The spatial filter's variance floor is much larger than dark diffuse
+			// signals in scene / 512 units. It must not suppress lighting changes.
+			bool local_lighting_change = diffuse_lighting_response && (current_dynamic || current_encoded_normal.a > 0.0);
+			float noise_floor = local_lighting_change ? 0.0 : params.atrous.z;
+			float temporal_noise = sqrt(max(previous_moments.y - previous_moments.x * previous_moments.x, noise_floor)) / moment_scale;
+			if (local_lighting_change) {
+				// Compare two filtered estimates, not a raw sample against its full
+				// temporal variance (which also grows during a real lighting change).
+				temporal_noise /= sqrt(max(previous_history_length, 1.0));
+			}
 			float luminance_threshold = max(3.0 * max(spatial_noise, temporal_noise), max(neighborhood_luminance, original_history_luminance) * 0.15 + 1e-6);
 			float disagreement = abs(neighborhood_luminance - original_history_luminance) / luminance_threshold;
 			lighting_response = 0.25 * smoothstep(1.0, 2.0, disagreement);
+			if (local_lighting_change) {
+				// Keep the shortened history after motion stops, then grow it back
+				// with successful reprojections instead of immediately returning to 30.
+				maximum_history_length = min(maximum_history_length, 1.0 / max(lighting_response, 1.0 / maximum_history_length));
+			}
 		}
 		float advanced_history_length = specular_mode ? previous_history_length * history_confidence + 1.0 : previous_history_length + 1.0;
 		history_length = max(1.0, min(advanced_history_length, maximum_history_length) * reprojection_quality);

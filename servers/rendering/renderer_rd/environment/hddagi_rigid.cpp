@@ -122,6 +122,7 @@ HDDAGIRigid::AssetKey HDDAGIRigid::_asset_key(RenderGeometryInstance *p_instance
 	RID mesh = p_instance->get_hddagi_mesh();
 	key.values.push_back(mesh.get_id());
 	key.values.push_back(mesh_storage->mesh_get_data_version(mesh));
+	key.values.push_back(p_instance->get_hddagi_rigid_cache_resolution());
 	// Per-instance uniforms cannot be shared with a different instance, even
 	// when it uses the same mesh/material resource.
 	key.values.push_back(geometry->shader_uniforms_offset >= 0 ? p_instance->get_hddagi_instance_id() : 0);
@@ -150,11 +151,12 @@ HDDAGIRigid::AssetKey HDDAGIRigid::_asset_key(RenderGeometryInstance *p_instance
 HDDAGIRigid::Asset HDDAGIRigid::_create_asset(RenderGeometryInstance *p_instance) {
 	Asset asset;
 	AABB bounds = MeshStorage::get_singleton()->mesh_get_aabb(p_instance->get_hddagi_mesh());
+	const int cache_resolution = p_instance->get_hddagi_rigid_cache_resolution();
 	// Keep two exterior cells on either side and the existing 7-bit coordinates.
 	// Rectangular dimensions are essential for thin doors and walls.
-	float cell_size = MAX(0.02f, float(bounds.size[bounds.size.max_axis_index()]) / 120.0f);
+	float cell_size = MAX(0.02f, float(bounds.size[bounds.size.max_axis_index()]) / float(cache_resolution - 8));
 	for (int axis = 0; axis < 3; axis++) {
-		asset.grid[axis] = MIN(128, (int(Math::ceil(bounds.size[axis] / cell_size)) + 4 + 7) & ~7);
+		asset.grid[axis] = MIN(cache_resolution, (int(Math::ceil(bounds.size[axis] / cell_size)) + 4 + 7) & ~7);
 	}
 	asset.bounds.size = Vector3(asset.grid) * cell_size;
 	asset.bounds.position = bounds.get_center() - asset.bounds.size * 0.5f;

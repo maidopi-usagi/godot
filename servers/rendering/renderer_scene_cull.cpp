@@ -734,7 +734,7 @@ void RendererSceneCull::instance_set_base(RID p_instance, RID p_base) {
 
 				ERR_FAIL_NULL(geom->geometry_instance);
 
-				geom->geometry_instance->set_hddagi_capture_data(instance->self.get_id(), p_base, instance->hddagi_capture_version);
+				geom->geometry_instance->set_hddagi_capture_data(instance->self.get_id(), p_base, instance->hddagi_capture_version, instance->gi_rigid_cache_resolution);
 				geom->geometry_instance->set_skeleton(instance->skeleton);
 				geom->geometry_instance->set_material_override(instance->material_override);
 				geom->geometry_instance->set_material_overlay(instance->material_overlay);
@@ -1600,6 +1600,18 @@ void RendererSceneCull::instance_geometry_set_lod_bias(RID p_instance, float p_l
 	}
 }
 
+void RendererSceneCull::instance_geometry_set_rigid_cache_resolution(RID p_instance, int p_resolution) {
+	ERR_FAIL_COND(p_resolution != 32 && p_resolution != 64 && p_resolution != 128);
+	Instance *instance = instance_owner.get_or_null(p_instance);
+	ERR_FAIL_NULL(instance);
+
+	instance->gi_rigid_cache_resolution = p_resolution;
+	if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK && instance->base_data) {
+		InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
+		geom->geometry_instance->set_hddagi_capture_data(instance->self.get_id(), instance->base, instance->hddagi_capture_version, p_resolution);
+	}
+}
+
 void RendererSceneCull::instance_geometry_set_shader_parameter(RID p_instance, const StringName &p_parameter, const Variant &p_value) {
 	Instance *instance = instance_owner.get_or_null(p_instance);
 	ERR_FAIL_NULL(instance);
@@ -1608,7 +1620,7 @@ void RendererSceneCull::instance_geometry_set_shader_parameter(RID p_instance, c
 	instance->hddagi_capture_version++;
 	if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK && instance->base_data) {
 		InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
-		geom->geometry_instance->set_hddagi_capture_data(instance->self.get_id(), instance->base, instance->hddagi_capture_version);
+		geom->geometry_instance->set_hddagi_capture_data(instance->self.get_id(), instance->base, instance->hddagi_capture_version, instance->gi_rigid_cache_resolution);
 	}
 }
 
@@ -1772,7 +1784,7 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 		ERR_FAIL_NULL(geom->geometry_instance);
 
 		geom->geometry_instance->set_transform(*instance_xform, p_instance->aabb, p_instance->transformed_aabb);
-		geom->geometry_instance->set_hddagi_capture_data(p_instance->self.get_id(), p_instance->base, p_instance->hddagi_capture_version);
+		geom->geometry_instance->set_hddagi_capture_data(p_instance->self.get_id(), p_instance->base, p_instance->hddagi_capture_version, p_instance->gi_rigid_cache_resolution);
 		if (p_instance->teleported) {
 			geom->geometry_instance->reset_motion_vectors();
 		}

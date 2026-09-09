@@ -143,6 +143,7 @@ private:
 	float lightmap_texel_scale = 1.0f;
 	GIMode gi_mode = GI_MODE_STATIC;
 	bool gi_rigid = false;
+	int gi_rigid_cache_resolution = 64;
 	bool ignore_occlusion_culling = false;
 
 	const StringName *_instance_uniform_get_remap(const StringName &p_name) const;
@@ -193,6 +194,8 @@ public:
 	GIMode get_gi_mode() const;
 	void set_gi_rigid(bool p_enabled);
 	bool is_gi_rigid() const;
+	void set_gi_rigid_cache_resolution(int p_resolution);
+	int get_gi_rigid_cache_resolution() const;
 
 	void set_lightmap_texel_scale(float p_scale);
 	float get_lightmap_texel_scale() const;

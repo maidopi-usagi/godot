@@ -52,7 +52,13 @@
 		</member>
 		<member name="gi_rigid" type="bool" setter="set_gi_rigid" getter="is_gi_rigid" default="false">
 			If [code]true[/code], a non-deforming [MeshInstance3D] contributes to HDDAGI through a cached object-local volume. Moving or rotating the instance reuses this volume instead of updating the static global geometry. [member gi_mode] must not be [constant GI_MODE_DISABLED]; its existing receiving behavior is preserved.
+			Cache precision is controlled by [member gi_rigid_cache_resolution].
 			Only opaque meshes without a skeleton or blend shapes are supported. Vertex displacement and animated or world-position-dependent materials require a stable GI representation. Other geometry types ignore this property. This only affects HDDAGI in the Forward+ renderer.
+		</member>
+		<member name="gi_rigid_cache_resolution" type="int" setter="set_gi_rigid_cache_resolution" getter="get_gi_rigid_cache_resolution" default="64">
+			Maximum resolution along each axis of this instance's object-local geometry and lighting caches when [member gi_rigid] is enabled. The available values are 32, 64, and 128. Lower values reduce cache storage and lighting work, but also reduce surface and occlusion precision, especially for thin geometry.
+			The resolution includes exterior padding and block alignment. Cell size is derived from the mesh's local bounding box, with a minimum of 0.02 local units, independently of [member Environment.dynamic_gi_min_cell_size]. Instance scaling also scales the cache's world-space cells.
+			Changing this property switches only this instance's local cache. Instances with the same mesh, compatible materials, and the same resolution share geometry caches. Translation and rotation continue to reuse them. This property is only supported in the Forward+ rendering method.
 		</member>
 		<member name="ignore_occlusion_culling" type="bool" setter="set_ignore_occlusion_culling" getter="is_ignoring_occlusion_culling" default="false">
 			If [code]true[/code], disables occlusion culling for this instance. Useful for gizmos that must be rendered even when occlusion culling is in use.

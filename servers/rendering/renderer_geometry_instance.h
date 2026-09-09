@@ -41,18 +41,21 @@ class RenderGeometryInstance {
 	uint64_t hddagi_instance_id = 0;
 	uint64_t hddagi_capture_version = 0;
 	RID hddagi_mesh;
+	int hddagi_rigid_cache_resolution = 64;
 
 public:
 	virtual ~RenderGeometryInstance() {}
 
-	void set_hddagi_capture_data(uint64_t p_instance_id, RID p_mesh, uint64_t p_capture_version) {
+	void set_hddagi_capture_data(uint64_t p_instance_id, RID p_mesh, uint64_t p_capture_version, int p_rigid_cache_resolution) {
 		hddagi_instance_id = p_instance_id;
 		hddagi_mesh = p_mesh;
 		hddagi_capture_version = p_capture_version;
+		hddagi_rigid_cache_resolution = p_rigid_cache_resolution;
 	}
 	uint64_t get_hddagi_instance_id() const { return hddagi_instance_id; }
 	uint64_t get_hddagi_capture_version() const { return hddagi_capture_version; }
 	RID get_hddagi_mesh() const { return hddagi_mesh; }
+	int get_hddagi_rigid_cache_resolution() const { return hddagi_rigid_cache_resolution; }
 
 	virtual void _mark_dirty() = 0;
 

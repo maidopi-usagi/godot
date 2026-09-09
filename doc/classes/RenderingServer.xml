@@ -2010,6 +2010,14 @@
 				Sets a material that will override the material for all surfaces on the mesh associated with this instance. Equivalent to [member GeometryInstance3D.material_override].
 			</description>
 		</method>
+		<method name="instance_geometry_set_rigid_cache_resolution">
+			<return type="void" />
+			<param index="0" name="instance" type="RID" />
+			<param index="1" name="resolution" type="int" />
+			<description>
+				Sets the object-local HDDAGI cache resolution for this instance. The available values are 32, 64, and 128. Equivalent to [member GeometryInstance3D.gi_rigid_cache_resolution].
+			</description>
+		</method>
 		<method name="instance_geometry_set_shader_parameter">
 			<return type="void" />
 			<param index="0" name="instance" type="RID" />

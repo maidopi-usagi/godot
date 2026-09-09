@@ -239,6 +239,8 @@ layout(set = 0, binding = 19) uniform texture2D directional_previous_filtered_ra
 layout(r8ui, set = 0, binding = 20) uniform restrict writeonly uimage2D directional_trace_count_output;
 layout(set = 0, binding = 21) uniform texture2D directional_screen_radiance_buffer;
 layout(set = 0, binding = 22) uniform texture2D directional_previous_depth_buffer;
+layout(set = 0, binding = 23) uniform texture2D directional_previous_lighting_response_input;
+layout(r8, set = 0, binding = 24) uniform restrict writeonly image2D directional_lighting_response_output;
 #endif
 #ifdef MODE_SPECULAR_TRACE
 layout(set = 0, binding = 12) uniform texture2D specular_depth_buffer;
@@ -284,6 +286,7 @@ layout(set = 0, binding = 4, std140) uniform DirectionalFilterSceneDataBuffer {
 	ScreenProbeSceneData scene_data;
 };
 layout(r8ui, set = 0, binding = 5) uniform restrict readonly uimage2D directional_filter_trace_count_input;
+layout(set = 0, binding = 6) uniform texture2D directional_filter_lighting_response_input;
 
 #endif
 
@@ -311,6 +314,7 @@ layout(set = 0, binding = 7, std140) uniform SceneDataBuffer {
 #ifdef MODE_DIRECTIONAL_RESOLVE
 layout(set = 0, binding = 8) uniform texture2D directional_base_ambient_input;
 layout(set = 0, binding = 13) uniform utexture2D directional_adaptive_tile_data_input;
+layout(set = 0, binding = 14) uniform texture2D directional_resolve_lighting_response_input;
 #endif
 #ifdef MODE_SVGF_PREPARE
 layout(rgba8, set = 0, binding = 6) uniform restrict writeonly image2D svgf_normal_roughness_output;
@@ -2797,6 +2801,8 @@ shared ivec2 directional_history_probe;
 shared uint directional_history_age;
 shared uint directional_history_valid;
 shared uint directional_history_dynamic;
+shared float directional_lighting_response;
+shared vec4 directional_lighting_changes[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
 shared vec3 directional_probe_world;
 shared vec4 directional_importance_footprint_normals[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
 shared float directional_importance_pdf[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
@@ -3164,16 +3170,16 @@ vec4 directional_trace_world_direction(ivec2 origin_position, float origin_depth
 		r_synthetic_self_hit = true;
 	}
 	// A conservative bin cone is useful for coverage, but cannot invalidate a
-	// radiance estimate. Test the actual visible segment only while geometry moves.
+	// radiance estimate. Test the visible segment during the pending lighting update.
 	r_rigid_changed = false;
-	if ((hddagi_rigid_instances.header.w & 2u) != 0u) {
+	if ((hddagi_rigid_instances.header.w & 1u) != 0u) {
 		r_rigid_changed = hddagi_rigid_dirty_segment(directional_probe_world, directional_probe_world + ray_direction_world * hit_distance);
 	}
 	vec3 scene_radiance = directional_clamp_radiance(incident_radiance * (screen_radiance_used ? 1.0 : hddagi.energy));
 	return directional_sanitize_fp16(vec4(scene_radiance, hit_distance));
 }
 
-vec4 directional_apply_stable_history(vec4 current_sample, ivec2 direction_texel, bool bypass_history, bool rigid_changed) {
+vec4 directional_apply_stable_history(vec4 current_sample, ivec2 direction_texel, bool bypass_history) {
 	if (!bypass_history && directional_history_valid != 0u) {
 		ivec2 previous_atlas_position = directional_history_probe * SCREEN_PROBE_DIRECTIONAL_TILE_SIZE + direction_texel;
 		ivec2 previous_atlas_size = textureSize(sampler2D(directional_previous_radiance_input, linear_sampler), 0);
@@ -3181,14 +3187,8 @@ vec4 directional_apply_stable_history(vec4 current_sample, ivec2 direction_texel
 			vec4 previous_sample = texelFetch(sampler2D(directional_previous_radiance_input, linear_sampler), previous_atlas_position, 0);
 			if (directional_finite(previous_sample)) {
 				previous_sample = clamp(previous_sample, vec4(0.0), vec4(SCREEN_PROBE_DIRECTIONAL_FP16_MAX));
-				float current_weight = directional_history_dynamic != 0u ? 0.5 : 1.0 / float(directional_history_age + 1u);
-				if (rigid_changed) {
-					float previous_luminance = dot(previous_sample.rgb, vec3(0.2126, 0.7152, 0.0722));
-					float current_luminance = dot(current_sample.rgb, vec3(0.2126, 0.7152, 0.0722));
-					if (abs(current_luminance - previous_luminance) > max(0.5 * max(current_luminance, previous_luminance), 1e-4)) {
-						current_weight = max(current_weight, 0.25);
-					}
-				}
+				float history_weight = 1.0 / float(directional_history_age + 1u);
+				float current_weight = mix(history_weight, max(history_weight, 0.5), directional_lighting_response);
 				current_sample.rgb = mix(previous_sample.rgb, current_sample.rgb, current_weight);
 			}
 		}
@@ -3213,6 +3213,38 @@ bool directional_load_previous_radiance(ivec2 direction_texel, out vec4 r_previo
 	}
 	r_previous_sample = clamp(r_previous_sample, vec4(0.0), vec4(SCREEN_PROBE_DIRECTIONAL_FP16_MAX));
 	return true;
+}
+
+void directional_update_lighting_response(ivec2 probe_position, ivec2 direction_texel, vec3 normal_world, vec4 current_sample, bool bypass_history, bool rigid_changed) {
+	// Motion only identifies candidates. Compare the hemispherical signal, so
+	// a single noisy direction cannot put the whole receiver into fast update.
+	if (directional_history_valid != 0u && (directional_history_dynamic != 0u || (hddagi_rigid_instances.header.w & 1u) != 0u)) {
+		vec4 previous_sample;
+		vec4 change = vec4(0.0);
+		if (!bypass_history && (rigid_changed || directional_history_dynamic != 0u) && directional_load_previous_radiance(direction_texel, previous_sample)) {
+			float cosine_weight = max(dot(normal_world, directional_bucket_to_world(direction_texel)), 0.0);
+			float current_luminance = dot(current_sample.rgb, vec3(0.2126, 0.7152, 0.0722)) * cosine_weight;
+			float previous_luminance = dot(previous_sample.rgb, vec3(0.2126, 0.7152, 0.0722)) * cosine_weight;
+			float difference = current_luminance - previous_luminance;
+			change = vec4(current_luminance, previous_luminance, difference * difference, cosine_weight);
+		}
+		directional_lighting_changes[gl_LocalInvocationIndex] = change;
+		barrier();
+		if (gl_LocalInvocationIndex == 0u) {
+			vec4 sum = vec4(0.0);
+			for (uint lane = 0u; lane < uint(SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT); lane++) {
+				sum += directional_lighting_changes[lane];
+			}
+			float noise_threshold = 2.0 * sqrt(sum.z);
+			float signal_threshold = 0.15 * max(sum.x, sum.y) + 1e-4 * sum.w;
+			float disagreement = abs(sum.x - sum.y) / max(max(noise_threshold, signal_threshold), 1e-6);
+			directional_lighting_response = max(directional_lighting_response, smoothstep(1.0, 2.0, disagreement));
+		}
+		barrier();
+	}
+	if (gl_LocalInvocationIndex == 0u) {
+		imageStore(directional_lighting_response_output, probe_position, vec4(directional_lighting_response));
+	}
 }
 
 vec4 directional_importance_load_footprint_normal(ivec2 origin_position, float origin_depth, vec3 origin_normal, ivec2 footprint_texel) {
@@ -3319,6 +3351,7 @@ void directional_trace_main() {
 	if (!load_probe_surface(probe_position, origin_position, origin_depth, origin_normal)) {
 		if (gl_LocalInvocationIndex == 0u) {
 			imageStore(directional_history_age_output, probe_position, uvec4(0u));
+			imageStore(directional_lighting_response_output, probe_position, vec4(0.0));
 		}
 		if ((params.flags & SCREEN_PROBE_FLAG_GUIDED_SAMPLING) != 0u) {
 			imageStore(directional_trace_count_output, atlas_position, uvec4(0u));
@@ -3331,6 +3364,7 @@ void directional_trace_main() {
 		directional_history_probe = ivec2(-1);
 		directional_history_age = 0u;
 		directional_history_valid = 0u;
+		directional_lighting_response = 0.0;
 		uvec4 current_surface = imageLoad(screen_probe_surface_input, probe_position);
 		directional_history_dynamic = surface_is_dynamic(current_surface.w) ? 1u : 0u;
 		uint previous_age;
@@ -3339,8 +3373,10 @@ void directional_trace_main() {
 			directional_history_probe = previous_probe;
 			directional_history_age = min(previous_age, SCREEN_PROBE_DIRECTIONAL_HISTORY_MAX_AGE - 1u);
 			directional_history_valid = 1u;
+			// Briefly carry fast update through stopping and indirect-light propagation.
+			directional_lighting_response = max(texelFetch(sampler2D(directional_previous_lighting_response_input, linear_sampler), previous_probe, 0).r * 0.75 - 1.0 / 255.0, 0.0);
 		}
-		if ((hddagi_rigid_instances.header.w & 2u) != 0u) {
+		if ((hddagi_rigid_instances.header.w & 1u) != 0u) {
 			vec2 origin_uv = (vec2(origin_position) + 0.5) / vec2(params.screen_size);
 			directional_probe_world = (scene_data.cam_transform * vec4(compute_view_position(vec3(origin_uv, origin_depth)), 1.0)).xyz;
 		}
@@ -3354,13 +3390,14 @@ void directional_trace_main() {
 	uint physical_index = uint(probe_position.y * surface_size.x + probe_position.x);
 	bool adaptive_probe = (params.flags & SCREEN_PROBE_FLAG_DIRECTIONAL_ADAPTIVE) != 0u && physical_index >= base_probe_total;
 	ivec2 jitter_key = adaptive_probe ? origin_position : probe_position;
-	bool structured_importance = (params.flags & SCREEN_PROBE_FLAG_GUIDED_SAMPLING) != 0u && directional_history_valid != 0u && directional_history_dynamic == 0u;
+	bool structured_importance = (params.flags & SCREEN_PROBE_FLAG_GUIDED_SAMPLING) != 0u && directional_history_valid != 0u;
 	if (!structured_importance) {
 		bool synthetic_self_hit;
 		bool rigid_changed;
 		vec3 ray_direction_world = directional_jittered_bucket_to_world(jitter_key, direction_texel);
 		vec4 directional_sample = directional_trace_world_direction(origin_position, origin_depth, origin_normal, ray_direction_world, synthetic_self_hit, rigid_changed);
-		directional_sample = directional_apply_stable_history(directional_sample, direction_texel, synthetic_self_hit, rigid_changed);
+		directional_update_lighting_response(probe_position, direction_texel, normalize(mat3(scene_data.cam_transform) * origin_normal), directional_sample, synthetic_self_hit, rigid_changed);
+		directional_sample = directional_apply_stable_history(directional_sample, direction_texel, synthetic_self_hit);
 		if ((params.flags & SCREEN_PROBE_FLAG_GUIDED_SAMPLING) != 0u) {
 			imageStore(directional_trace_count_output, atlas_position, uvec4(1u));
 		}
@@ -3398,6 +3435,9 @@ void directional_trace_main() {
 	if (lighting_sum > 1e-6 && !isnan(lighting_sum) && !isinf(lighting_sum)) {
 		float normalized_lighting = lighting * float(SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT) / lighting_sum;
 		float guide_strength = 0.5 * smoothstep(2.0, 6.0, float(directional_history_age));
+		// Valid moving history still guides sampling. Keep exploration dominant
+		// while the reprojected lighting is changing, without dropping the guide.
+		guide_strength *= mix(1.0, 0.25, directional_lighting_response);
 		combined_pdf *= mix(1.0, normalized_lighting, guide_strength);
 	}
 	if (isnan(combined_pdf) || isinf(combined_pdf)) {
@@ -3465,8 +3505,9 @@ void directional_trace_main() {
 	}
 
 	vec4 directional_sample = vec4(directional_clamp_radiance(scattered_radiance), scattered_hit_distance);
+	directional_update_lighting_response(probe_position, direction_texel, normalize(mat3(scene_data.cam_transform) * origin_normal), directional_sample, scattered_synthetic_self_hit || ray_count == 0u, scattered_rigid_changed);
 	if (scattered_trace_count > 0u) {
-		directional_sample = directional_apply_stable_history(directional_sample, direction_texel, scattered_synthetic_self_hit, scattered_rigid_changed);
+		directional_sample = directional_apply_stable_history(directional_sample, direction_texel, scattered_synthetic_self_hit);
 	}
 	imageStore(directional_trace_count_output, atlas_position, uvec4(scattered_trace_count));
 	imageStore(raw_radiance_output, atlas_position, directional_sanitize_fp16(directional_sample));
@@ -3957,47 +3998,33 @@ void directional_filter_main() {
 	ivec2 jitter_key = adaptive_center ? center_screen_position : probe_position;
 	vec3 direction_world = directional_jittered_bucket_to_world(jitter_key, direction_texel);
 	vec3 direction_view = normalize(transpose(mat3(scene_data.cam_transform)) * direction_world);
+	float lighting_response = texelFetch(sampler2D(directional_filter_lighting_response_input, directional_filter_nearest_sampler), probe_position, 0).r;
 
 	vec3 radiance_sum = vec3(0.0);
 	float radiance_weight_sum = 0.0;
 	float hit_distance_sum = 0.0;
 	float hit_distance_weight_sum = 0.0;
-	// Packed adaptive probes borrow the owner base probe and its cardinal neighbors.
-	for (int tap = 0; tap < 6; tap++) {
-		if (!adaptive_center && tap == 5) {
-			continue;
-		}
+	// Compensate for shorter temporal filtering only where lighting changed.
+	const ivec2 offsets[13] = ivec2[13](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1),
+			ivec2(-1, -1), ivec2(1, -1), ivec2(-1, 1), ivec2(1, 1),
+			ivec2(-2, 0), ivec2(2, 0), ivec2(0, -2), ivec2(0, 2), ivec2(0));
+	int neighbor_count = lighting_response > 0.01 ? 12 : 4;
+	int tap_count = 1 + neighbor_count + (adaptive_center ? 1 : 0);
+	for (int tap = 0; tap < tap_count; tap++) {
 		ivec2 neighbor_probe = probe_position;
 		float kernel_weight = 1.0;
 		bool neighbor_is_center = tap == 0;
+		bool extended_neighbor = tap > 4 && tap <= neighbor_count;
 		if (!neighbor_is_center) {
-			ivec2 offset;
-			if (adaptive_center) {
-				if (tap == 1) {
-					offset = ivec2(0);
-				} else if (tap == 2) {
-					offset = ivec2(-1, 0);
-				} else if (tap == 3) {
-					offset = ivec2(1, 0);
-				} else if (tap == 4) {
-					offset = ivec2(0, -1);
-				} else {
-					offset = ivec2(0, 1);
-				}
-			} else if (tap == 1) {
-				offset = ivec2(-1, 0);
-			} else if (tap == 2) {
-				offset = ivec2(1, 0);
-			} else if (tap == 3) {
-				offset = ivec2(0, -1);
-			} else {
-				offset = ivec2(0, 1);
-			}
+			ivec2 offset = offsets[tap <= neighbor_count ? tap - 1 : 12];
 			neighbor_probe = owner_probe + offset;
 			if (any(lessThan(neighbor_probe, ivec2(0))) || any(greaterThanEqual(neighbor_probe, base_probe_count))) {
 				continue;
 			}
 			kernel_weight = exp(-0.5 * float(dot(offset, offset)));
+			if (extended_neighbor) {
+				kernel_weight *= lighting_response;
+			}
 		}
 
 		ivec2 neighbor_screen_position;
@@ -4011,6 +4038,10 @@ void directional_filter_main() {
 		}
 
 		vec3 receiver_delta = neighbor_view_position - center_view_position;
+		bool compatible_normal = dot(center_normal, neighbor_normal) >= 0.85;
+		if (extended_neighbor && !compatible_normal) {
+			continue;
+		}
 		float receiver_separation = length(receiver_delta);
 		float receiver_plane_distance = abs(dot(receiver_delta, center_normal));
 		float receiver_tolerance = max(params.history_depth_tolerance + params.spatial_depth_tolerance_scale * receiver_separation, 1e-4);
@@ -4040,7 +4071,7 @@ void directional_filter_main() {
 			} else {
 				float direction_cosine = clamp(dot(to_neighbor_hit, direction_view) * inversesqrt(to_neighbor_hit_length_squared), -1.0, 1.0);
 				float endpoint_angle = acos(direction_cosine);
-				const float maximum_endpoint_angle = TAU / 36.0;
+				float maximum_endpoint_angle = mix(TAU / 36.0, TAU / 18.0, compatible_normal ? lighting_response : 0.0);
 				endpoint_angle_weight = 1.0 - clamp(endpoint_angle / maximum_endpoint_angle, 0.0, 1.0);
 			}
 		}
@@ -4230,7 +4261,7 @@ vec4 pack_svgf_normal_roughness(vec3 world_normal, float roughness) {
 	return vec4(world_normal * 0.5 + 0.5, roughness);
 }
 
-void store_svgf_prepare_outputs(ivec2 resolve_position, ivec2 screen_position, bool valid_surface, bool dynamic_surface, float linear_depth, vec3 view_normal, float roughness, vec4 raw_signal) {
+void store_svgf_prepare_outputs(ivec2 resolve_position, ivec2 screen_position, bool valid_surface, bool dynamic_surface, float linear_depth, vec3 view_normal, float roughness, vec4 raw_signal, float lighting_response) {
 	valid_surface = valid_surface && svgf_prepare_finite(linear_depth) && abs(linear_depth) <= params.denoising_range;
 	float view_z = valid_surface ? abs(linear_depth) : params.denoising_range + 1.0;
 
@@ -4242,6 +4273,11 @@ void store_svgf_prepare_outputs(ivec2 resolve_position, ivec2 screen_position, b
 		world_normal = vec3(0.0, 1.0, 0.0);
 	}
 	roughness = valid_surface ? roughness : 1.0;
+#ifdef MODE_DIRECTIONAL_RESOLVE
+	// Diffuse SVGF does not use roughness. Carry the probe response in its
+	// existing input alpha; history alpha remains the accumulated frame count.
+	roughness = valid_surface ? lighting_response : 0.0;
+#endif
 
 	vec2 velocity = valid_surface ? texelFetch(sampler2D(velocity_buffer, nearest_sampler), screen_position, 0).xy : vec2(0.0);
 	if (any(isnan(velocity)) || any(isinf(velocity))) {
@@ -4397,7 +4433,7 @@ void screen_probe_resolve_main() {
 #endif
 		imageStore(resolved_radiance_output, resolve_position, fallback_signal);
 #ifdef MODE_SVGF_PREPARE
-		store_svgf_prepare_outputs(resolve_position, screen_position, false, false, 0.0, vec3(0.0, 0.0, 1.0), 1.0, fallback_signal);
+		store_svgf_prepare_outputs(resolve_position, screen_position, false, false, 0.0, vec3(0.0, 0.0, 1.0), 1.0, fallback_signal, 0.0);
 #endif
 		return;
 	}
@@ -4411,7 +4447,7 @@ void screen_probe_resolve_main() {
 #endif
 		imageStore(resolved_radiance_output, resolve_position, fallback_signal);
 #ifdef MODE_SVGF_PREPARE
-		store_svgf_prepare_outputs(resolve_position, screen_position, false, false, 0.0, pixel_normal, pixel_roughness, fallback_signal);
+		store_svgf_prepare_outputs(resolve_position, screen_position, false, false, 0.0, pixel_normal, pixel_roughness, fallback_signal, 0.0);
 #endif
 		return;
 	}
@@ -4423,7 +4459,7 @@ void screen_probe_resolve_main() {
 		vec4 fallback_signal = vec4(directional_base_ambient(resolve_position, resolve_size), 0.0);
 		imageStore(resolved_radiance_output, resolve_position, fallback_signal);
 #ifdef MODE_SVGF_PREPARE
-		store_svgf_prepare_outputs(resolve_position, screen_position, false, false, pixel_linear_depth, pixel_normal, pixel_roughness, fallback_signal);
+		store_svgf_prepare_outputs(resolve_position, screen_position, false, false, pixel_linear_depth, pixel_normal, pixel_roughness, fallback_signal, 0.0);
 #endif
 		return;
 	}
@@ -4436,6 +4472,7 @@ void screen_probe_resolve_main() {
 	float hit_distance_sum = 0.0;
 	float hit_distance_weight_sum = 0.0;
 	float bilinear_weight_sum = 0.0;
+	float lighting_response_sum = 0.0;
 #else
 	ivec2 gi_position = clamp(resolve_position * params.gi_size / resolve_size, ivec2(0), params.gi_size - ivec2(1));
 	ivec2 probe_base = gi_position / max(params.probe_size, 1);
@@ -4493,6 +4530,7 @@ void screen_probe_resolve_main() {
 			}
 			vec4 raw_radiance = directional_resolve_probe(selected_probe, directional_lookup);
 			radiance_sum += raw_radiance.rgb * weight;
+			lighting_response_sum += texelFetch(sampler2D(directional_resolve_lighting_response_input, nearest_sampler), selected_probe, 0).r * weight;
 			if (raw_radiance.a < SCREEN_PROBE_DIRECTIONAL_FP16_MAX) {
 				hit_distance_sum += raw_radiance.a * weight;
 				hit_distance_weight_sum += weight;
@@ -4556,7 +4594,11 @@ void screen_probe_resolve_main() {
 #endif
 	imageStore(resolved_radiance_output, resolve_position, resolved);
 #ifdef MODE_SVGF_PREPARE
-	store_svgf_prepare_outputs(resolve_position, screen_position, true, pixel_dynamic, pixel_linear_depth, pixel_normal, pixel_roughness, resolved);
+	float lighting_response = 0.0;
+#ifdef MODE_DIRECTIONAL_RESOLVE
+	lighting_response = lighting_response_sum / max(weight_sum, 1e-6) * coverage;
+#endif
+	store_svgf_prepare_outputs(resolve_position, screen_position, true, pixel_dynamic, pixel_linear_depth, pixel_normal, pixel_roughness, resolved, lighting_response);
 #endif
 }
 
