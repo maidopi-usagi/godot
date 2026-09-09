@@ -466,7 +466,7 @@ void svgf_temporal_main() {
 	bool diffuse_lighting_response = (params.control.x & 16u) != 0u;
 	bool lighting_changed = (params.control.x & 8u) != 0u;
 	bool pixel_in_bounds = all(lessThan(pixel, size));
-	if (specular_mode || lighting_changed) {
+	if (specular_mode || lighting_changed || diffuse_lighting_response) {
 		ivec2 shared_origin = ivec2(gl_WorkGroupID.xy) * ivec2(gl_WorkGroupSize.xy) - ivec2(SPECULAR_NEIGHBORHOOD_RADIUS);
 		for (uint shared_index = gl_LocalInvocationIndex; shared_index < uint(SPECULAR_NEIGHBORHOOD_SHARED_COUNT); shared_index += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
 			ivec2 shared_position = ivec2(int(shared_index) % SPECULAR_NEIGHBORHOOD_SHARED_SIZE, int(shared_index) / SPECULAR_NEIGHBORHOOD_SHARED_SIZE);
@@ -596,17 +596,27 @@ void svgf_temporal_main() {
 		float previous_screen_confidence = accumulated_history_screen_confidence / history_weight_sum;
 		float reprojection_quality = specular_mode && !current_dynamic ? 1.0 : sqrt(clamp(history_weight_sum, 0.0, 1.0));
 		float maximum_history_length = params.atrous.w;
+		// Interpolated, weak probe responses are still useful for probe filtering,
+		// but must not disturb a mature pixel history in otherwise stable lighting.
+		float probe_lighting_response = diffuse_lighting_response ? smoothstep(0.1, 0.6, current_encoded_normal.a) : 0.0;
+		float original_history_luminance = svgf_luminance(history_signal);
+		float maximum_lighting_alpha = 0.25;
 		if (diffuse_lighting_response) {
 			// The probe stage already rejects incoherent directional noise and
 			// strengthens spatial filtering for this local fast-update amount.
-			maximum_history_length = mix(maximum_history_length, 4.0, clamp(current_encoded_normal.a, 0.0, 1.0));
+			// Blend update rates, as the probe history does. Interpolating frame
+			// counts leaves moderate lighting changes almost as slow as full history.
+			// Keep fading illumination continuous across probes that detect the
+			// change at different times, while retaining the faster brightening rate.
+			float illumination_ratio = svgf_luminance(current_signal.rgb) / max(original_history_luminance, 1e-6);
+			maximum_lighting_alpha = mix(0.125, 0.25, smoothstep(0.9, 1.0, illumination_ratio));
+			maximum_history_length = 1.0 / mix(1.0 / maximum_history_length, maximum_lighting_alpha, probe_lighting_response);
 		}
 		float history_confidence = 1.0;
-		float original_history_luminance = svgf_luminance(history_signal);
 		float lighting_response = 0.0;
 		vec3 neighborhood_center;
 		vec3 neighborhood_extent;
-		bool neighborhood_valid = (specular_mode || lighting_changed) && svgf_temporal_neighborhood(current_signal.rgb, neighborhood_center, neighborhood_extent);
+		bool neighborhood_valid = (specular_mode || lighting_changed || diffuse_lighting_response) && svgf_temporal_neighborhood(current_signal.rgb, neighborhood_center, neighborhood_extent);
 		if (specular_mode) {
 			float broad_history_response = smoothstep(0.05, 0.12, current_roughness);
 			float stationary_history_length = mix(12.0, params.atrous.w, broad_history_response);
@@ -626,7 +636,19 @@ void svgf_temporal_main() {
 				history_signal = svgf_specular_project_denoiser_space(svgf_ycocg_to_rgb(clamped_history_ycocg));
 			}
 		}
-		if (lighting_changed && neighborhood_valid) {
+		bool probe_lighting_changed = probe_lighting_response > 0.0;
+		if (probe_lighting_changed && neighborhood_valid) {
+			// A validated probe change must also retire stale pixel lighting. The
+			// probe can finish adapting before a 30-frame pixel history catches up.
+			vec3 history_ycocg = svgf_rgb_to_ycocg(history_signal);
+			vec3 clamped_history = clamp(history_ycocg, neighborhood_center - neighborhood_extent, neighborhood_center + neighborhood_extent);
+			// Dimming needs a continuous decay. Clipping bright history to the
+			// dark neighborhood stamps the varying probe confidence into dark spots.
+			float neighborhood_luminance = max(svgf_luminance(svgf_ycocg_to_rgb(neighborhood_center)), 0.0);
+			float clamp_response = probe_lighting_response * smoothstep(0.9, 1.0, neighborhood_luminance / max(original_history_luminance, 1e-6));
+			history_signal = max(svgf_ycocg_to_rgb(mix(history_ycocg, clamped_history, clamp_response)), vec3(0.0));
+		}
+		if ((lighting_changed || probe_lighting_changed) && neighborhood_valid) {
 			// A receiver can stay still while a door changes its illumination.
 			// Require a luminance change beyond spatial and temporal noise; near-zero
 			// chroma is not evidence of a lighting change. Never reset history age.
@@ -635,7 +657,7 @@ void svgf_temporal_main() {
 			float moment_scale = specular_mode ? SPECULAR_MOMENT_LUMINANCE_SCALE : MOMENT_LUMINANCE_SCALE;
 			// The spatial filter's variance floor is much larger than dark diffuse
 			// signals in scene / 512 units. It must not suppress lighting changes.
-			bool local_lighting_change = diffuse_lighting_response && (current_dynamic || current_encoded_normal.a > 0.0);
+			bool local_lighting_change = diffuse_lighting_response && (current_dynamic || probe_lighting_changed);
 			float noise_floor = local_lighting_change ? 0.0 : params.atrous.z;
 			float temporal_noise = sqrt(max(previous_moments.y - previous_moments.x * previous_moments.x, noise_floor)) / moment_scale;
 			if (local_lighting_change) {
@@ -645,7 +667,12 @@ void svgf_temporal_main() {
 			}
 			float luminance_threshold = max(3.0 * max(spatial_noise, temporal_noise), max(neighborhood_luminance, original_history_luminance) * 0.15 + 1e-6);
 			float disagreement = abs(neighborhood_luminance - original_history_luminance) / luminance_threshold;
-			lighting_response = 0.25 * smoothstep(1.0, 2.0, disagreement);
+			lighting_response = maximum_lighting_alpha * smoothstep(1.0, 2.0, disagreement);
+			if (local_lighting_change && !current_dynamic) {
+				// A weak probe response must not become a full pixel fast update,
+				// especially in dark static areas while an unrelated object moves.
+				lighting_response *= probe_lighting_response;
+			}
 			if (local_lighting_change) {
 				// Keep the shortened history after motion stops, then grow it back
 				// with successful reprojections instead of immediately returning to 30.

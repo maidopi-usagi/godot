@@ -81,6 +81,7 @@
 #define RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_RADIANCE SNAME("directional_radiance")
 #define RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_HISTORY_AGE SNAME("directional_history_age")
 #define RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_LIGHTING_RESPONSE SNAME("directional_lighting_response")
+#define RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_LIGHTING_STATISTICS SNAME("directional_lighting_statistics")
 #define RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_FILTER_SCRATCH SNAME("directional_filter_scratch")
 #define RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_IRRADIANCE SNAME("directional_irradiance")
 #define RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_TRACE_COUNT SNAME("directional_trace_count")
@@ -566,6 +567,7 @@ private:
 				FLAG_SPECULAR_SPATIAL_STRATIFICATION = FLAG_DIRECTIONAL_SCREEN_RADIANCE_VALID,
 				FLAG_DETAIL_TRACE_QUALITY_SHIFT = 7u,
 				FLAG_UNIFORM_PLACEMENT_JITTER = 1u << 9u,
+				FLAG_DIRECTIONAL_FILTER_FIRST_PASS = 1u << 10u,
 			};
 
 			int32_t gi_size[2];
@@ -898,6 +900,7 @@ public:
 		Size2i screen_probe_history_screen_size;
 		uint32_t screen_probe_history_view_count = 0;
 		uint32_t screen_probe_history_configuration = 0;
+		uint32_t screen_probe_lighting_configuration = 0;
 		uint32_t screen_probe_history_slot = 0;
 		uint32_t screen_probe_history_sequence = 0;
 		RSE::EnvironmentHDDAGIScreenProbeMode screen_probe_requested_mode = RSE::ENV_HDDAGI_SCREEN_PROBE_MODE_STOCHASTIC_INTEGRATED;

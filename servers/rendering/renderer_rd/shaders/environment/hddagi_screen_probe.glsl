@@ -33,6 +33,7 @@ const uint SCREEN_PROBE_FLAG_SPECULAR_SPATIAL_STRATIFICATION = 1u << 6u;
 const uint SCREEN_PROBE_DETAIL_TRACE_QUALITY_SHIFT = 7u;
 const uint SCREEN_PROBE_DETAIL_TRACE_QUALITY_MASK = 3u << SCREEN_PROBE_DETAIL_TRACE_QUALITY_SHIFT;
 const uint SCREEN_PROBE_FLAG_UNIFORM_PLACEMENT_JITTER = 1u << 9u;
+const uint SCREEN_PROBE_FLAG_DIRECTIONAL_FILTER_FIRST_PASS = 1u << 10u;
 const uint SCREEN_PROBE_SKY_COLOR = 1u;
 const uint SCREEN_PROBE_SKY_TEXTURE = 2u;
 const uint SCREEN_PROBE_DEBUG_VALID = 1u << 0u;
@@ -241,6 +242,8 @@ layout(set = 0, binding = 21) uniform texture2D directional_screen_radiance_buff
 layout(set = 0, binding = 22) uniform texture2D directional_previous_depth_buffer;
 layout(set = 0, binding = 23) uniform texture2D directional_previous_lighting_response_input;
 layout(r8, set = 0, binding = 24) uniform restrict writeonly image2D directional_lighting_response_output;
+layout(set = 0, binding = 25) uniform texture2D directional_previous_lighting_statistics_input;
+layout(rgba16f, set = 0, binding = 26) uniform restrict writeonly image2D directional_lighting_statistics_output;
 #endif
 #ifdef MODE_SPECULAR_TRACE
 layout(set = 0, binding = 12) uniform texture2D specular_depth_buffer;
@@ -287,6 +290,7 @@ layout(set = 0, binding = 4, std140) uniform DirectionalFilterSceneDataBuffer {
 };
 layout(r8ui, set = 0, binding = 5) uniform restrict readonly uimage2D directional_filter_trace_count_input;
 layout(set = 0, binding = 6) uniform texture2D directional_filter_lighting_response_input;
+layout(r8ui, set = 0, binding = 7) uniform restrict readonly uimage2D directional_filter_history_age_input;
 
 #endif
 
@@ -2800,10 +2804,9 @@ vec3 sample_guided_direction(GuidedSamplingDistribution distribution, vec2 rando
 shared ivec2 directional_history_probe;
 shared uint directional_history_age;
 shared uint directional_history_valid;
-shared uint directional_history_dynamic;
 shared float directional_lighting_response;
-shared vec4 directional_lighting_changes[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
-shared vec3 directional_probe_world;
+shared vec4 directional_lighting_current[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
+shared vec4 directional_lighting_previous[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
 shared vec4 directional_importance_footprint_normals[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
 shared float directional_importance_pdf[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
 shared float directional_importance_lighting[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
@@ -3156,7 +3159,7 @@ vec3 directional_importance_ray_to_world(ivec2 jitter_key, uvec2 bucket, uint sa
 	return directional_square_to_sphere((vec2(bucket) + bin_uv) / float(SCREEN_PROBE_DIRECTIONAL_TILE_SIZE));
 }
 
-vec4 directional_trace_world_direction(ivec2 origin_position, float origin_depth, vec3 origin_normal, vec3 ray_direction_world, out bool r_synthetic_self_hit, out bool r_rigid_changed) {
+vec4 directional_trace_world_direction(ivec2 origin_position, float origin_depth, vec3 origin_normal, vec3 ray_direction_world, out bool r_synthetic_self_hit) {
 	vec3 ray_direction_view = normalize(transpose(mat3(scene_data.cam_transform)) * ray_direction_world);
 	vec3 incident_radiance;
 	float hit_distance;
@@ -3169,29 +3172,15 @@ vec4 directional_trace_world_direction(ivec2 origin_position, float origin_depth
 		hit_distance = SCREEN_PROBE_DIRECTIONAL_FP16_MAX;
 		r_synthetic_self_hit = true;
 	}
-	// A conservative bin cone is useful for coverage, but cannot invalidate a
-	// radiance estimate. Test the visible segment during the pending lighting update.
-	r_rigid_changed = false;
-	if ((hddagi_rigid_instances.header.w & 1u) != 0u) {
-		r_rigid_changed = hddagi_rigid_dirty_segment(directional_probe_world, directional_probe_world + ray_direction_world * hit_distance);
-	}
 	vec3 scene_radiance = directional_clamp_radiance(incident_radiance * (screen_radiance_used ? 1.0 : hddagi.energy));
 	return directional_sanitize_fp16(vec4(scene_radiance, hit_distance));
 }
 
-vec4 directional_apply_stable_history(vec4 current_sample, ivec2 direction_texel, bool bypass_history) {
-	if (!bypass_history && directional_history_valid != 0u) {
-		ivec2 previous_atlas_position = directional_history_probe * SCREEN_PROBE_DIRECTIONAL_TILE_SIZE + direction_texel;
-		ivec2 previous_atlas_size = textureSize(sampler2D(directional_previous_radiance_input, linear_sampler), 0);
-		if (all(greaterThanEqual(previous_atlas_position, ivec2(0))) && all(lessThan(previous_atlas_position, previous_atlas_size))) {
-			vec4 previous_sample = texelFetch(sampler2D(directional_previous_radiance_input, linear_sampler), previous_atlas_position, 0);
-			if (directional_finite(previous_sample)) {
-				previous_sample = clamp(previous_sample, vec4(0.0), vec4(SCREEN_PROBE_DIRECTIONAL_FP16_MAX));
-				float history_weight = 1.0 / float(directional_history_age + 1u);
-				float current_weight = mix(history_weight, max(history_weight, 0.5), directional_lighting_response);
-				current_sample.rgb = mix(previous_sample.rgb, current_sample.rgb, current_weight);
-			}
-		}
+vec4 directional_apply_stable_history(vec4 current_sample, vec4 previous_sample, bool sample_history_valid) {
+	if (sample_history_valid) {
+		float history_weight = 1.0 / float(directional_history_age + 1u);
+		float current_weight = mix(history_weight, max(history_weight, 0.5), directional_lighting_response);
+		current_sample.rgb = mix(previous_sample.rgb, current_sample.rgb, current_weight);
 	}
 	return directional_sanitize_fp16(current_sample);
 }
@@ -3215,36 +3204,49 @@ bool directional_load_previous_radiance(ivec2 direction_texel, out vec4 r_previo
 	return true;
 }
 
-void directional_update_lighting_response(ivec2 probe_position, ivec2 direction_texel, vec3 normal_world, vec4 current_sample, bool bypass_history, bool rigid_changed) {
-	// Motion only identifies candidates. Compare the hemispherical signal, so
-	// a single noisy direction cannot put the whole receiver into fast update.
-	if (directional_history_valid != 0u && (directional_history_dynamic != 0u || (hddagi_rigid_instances.header.w & 1u) != 0u)) {
-		vec4 previous_sample;
-		vec4 change = vec4(0.0);
-		if (!bypass_history && (rigid_changed || directional_history_dynamic != 0u) && directional_load_previous_radiance(direction_texel, previous_sample)) {
-			float cosine_weight = max(dot(normal_world, directional_bucket_to_world(direction_texel)), 0.0);
-			float current_luminance = dot(current_sample.rgb, vec3(0.2126, 0.7152, 0.0722)) * cosine_weight;
-			float previous_luminance = dot(previous_sample.rgb, vec3(0.2126, 0.7152, 0.0722)) * cosine_weight;
-			float difference = current_luminance - previous_luminance;
-			change = vec4(current_luminance, previous_luminance, difference * difference, cosine_weight);
+void directional_update_lighting_response(ivec2 probe_position, ivec2 direction_texel, vec3 normal_world, vec4 current_sample, vec4 previous_sample, bool current_sample_valid, bool sample_history_valid) {
+	float cosine_weight = max(dot(normal_world, directional_bucket_to_world(direction_texel)), 0.0);
+	directional_lighting_current[gl_LocalInvocationIndex] = current_sample_valid ? vec4(current_sample.rgb, 1.0) * cosine_weight : vec4(0.0);
+	directional_lighting_previous[gl_LocalInvocationIndex] = sample_history_valid ? vec4(previous_sample.rgb, 1.0) * cosine_weight : vec4(0.0);
+	barrier();
+	if (gl_LocalInvocationIndex == 0u) {
+		vec4 current_sum = vec4(0.0);
+		vec4 previous_sum = vec4(0.0);
+		vec3 directional_variance = vec3(0.0);
+		for (uint lane = 0u; lane < uint(SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT); lane++) {
+			current_sum += directional_lighting_current[lane];
+			previous_sum += directional_lighting_previous[lane];
+			vec3 difference = directional_lighting_current[lane].rgb - directional_lighting_previous[lane].rgb;
+			directional_variance += difference * difference;
 		}
-		directional_lighting_changes[gl_LocalInvocationIndex] = change;
-		barrier();
-		if (gl_LocalInvocationIndex == 0u) {
-			vec4 sum = vec4(0.0);
-			for (uint lane = 0u; lane < uint(SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT); lane++) {
-				sum += directional_lighting_changes[lane];
-			}
-			float noise_threshold = 2.0 * sqrt(sum.z);
-			float signal_threshold = 0.15 * max(sum.x, sum.y) + 1e-4 * sum.w;
-			float disagreement = abs(sum.x - sum.y) / max(max(noise_threshold, signal_threshold), 1e-6);
+		vec3 current_mean = current_sum.rgb / max(current_sum.w, 1e-6);
+		vec4 statistics = vec4(current_mean, 0.0);
+		if (directional_history_valid != 0u && current_sum.w > 0.0 && previous_sum.w > 0.0) {
+			vec4 previous_statistics = texelFetch(sampler2D(directional_previous_lighting_statistics_input, linear_sampler), directional_history_probe, 0);
+			vec3 previous_mean = previous_sum.rgb / previous_sum.w;
+			// A short hemispherical estimate tracks lighting, while the existing
+			// directional history remains the stable estimate. Measure noise over
+			// time, not across directions with inherently different illumination.
+			statistics.rgb = mix(previous_statistics.rgb, current_mean, 0.5);
+			vec3 variance_sample = (current_mean - previous_statistics.rgb) * (current_mean - statistics.rgb);
+			statistics.a = mix(previous_statistics.a, max(variance_sample.r, max(variance_sample.g, variance_sample.b)), 0.5);
+			vec3 signal_scale = max(statistics.rgb, previous_mean);
+			float relative_threshold = 0.05 * max(signal_scale.r, max(signal_scale.g, signal_scale.b)) + 1e-4;
+			// EMA weights 1/2 and 1/8 correspond to 3 and 15 independent samples.
+			float noise_threshold = 2.5 * sqrt(max(statistics.a, 0.0) * (1.0 / 3.0 + 1.0 / 15.0));
+			// A few lucky hits on a small emitter can outlive their short variance.
+			// Retain the directional noise bound, reduced for the filtered means.
+			directional_variance /= current_sum.w * current_sum.w;
+			float sample_variance = max(directional_variance.r, max(directional_variance.g, directional_variance.b));
+			noise_threshold = max(noise_threshold, 2.0 * sqrt(sample_variance * (1.0 / 3.0 + 1.0 / 15.0)));
+			vec3 difference = abs(statistics.rgb - previous_mean);
+			float disagreement = max(difference.r, max(difference.g, difference.b)) / max(noise_threshold, relative_threshold);
 			directional_lighting_response = max(directional_lighting_response, smoothstep(1.0, 2.0, disagreement));
 		}
-		barrier();
-	}
-	if (gl_LocalInvocationIndex == 0u) {
+		imageStore(directional_lighting_statistics_output, probe_position, directional_sanitize_fp16(statistics));
 		imageStore(directional_lighting_response_output, probe_position, vec4(directional_lighting_response));
 	}
+	barrier();
 }
 
 vec4 directional_importance_load_footprint_normal(ivec2 origin_position, float origin_depth, vec3 origin_normal, ivec2 footprint_texel) {
@@ -3352,6 +3354,7 @@ void directional_trace_main() {
 		if (gl_LocalInvocationIndex == 0u) {
 			imageStore(directional_history_age_output, probe_position, uvec4(0u));
 			imageStore(directional_lighting_response_output, probe_position, vec4(0.0));
+			imageStore(directional_lighting_statistics_output, probe_position, vec4(0.0));
 		}
 		if ((params.flags & SCREEN_PROBE_FLAG_GUIDED_SAMPLING) != 0u) {
 			imageStore(directional_trace_count_output, atlas_position, uvec4(0u));
@@ -3366,7 +3369,6 @@ void directional_trace_main() {
 		directional_history_valid = 0u;
 		directional_lighting_response = 0.0;
 		uvec4 current_surface = imageLoad(screen_probe_surface_input, probe_position);
-		directional_history_dynamic = surface_is_dynamic(current_surface.w) ? 1u : 0u;
 		uint previous_age;
 		ivec2 previous_probe;
 		if (directional_select_history(probe_position, origin_position, origin_depth, origin_normal, surface_is_dynamic(current_surface.w), previous_probe, previous_age)) {
@@ -3375,10 +3377,6 @@ void directional_trace_main() {
 			directional_history_valid = 1u;
 			// Briefly carry fast update through stopping and indirect-light propagation.
 			directional_lighting_response = max(texelFetch(sampler2D(directional_previous_lighting_response_input, linear_sampler), previous_probe, 0).r * 0.75 - 1.0 / 255.0, 0.0);
-		}
-		if ((hddagi_rigid_instances.header.w & 1u) != 0u) {
-			vec2 origin_uv = (vec2(origin_position) + 0.5) / vec2(params.screen_size);
-			directional_probe_world = (scene_data.cam_transform * vec4(compute_view_position(vec3(origin_uv, origin_depth)), 1.0)).xyz;
 		}
 		uint current_age = directional_history_valid != 0u ? directional_history_age + 1u : 1u;
 		imageStore(directional_history_age_output, probe_position, uvec4(current_age, 0u, 0u, 0u));
@@ -3393,11 +3391,12 @@ void directional_trace_main() {
 	bool structured_importance = (params.flags & SCREEN_PROBE_FLAG_GUIDED_SAMPLING) != 0u && directional_history_valid != 0u;
 	if (!structured_importance) {
 		bool synthetic_self_hit;
-		bool rigid_changed;
 		vec3 ray_direction_world = directional_jittered_bucket_to_world(jitter_key, direction_texel);
-		vec4 directional_sample = directional_trace_world_direction(origin_position, origin_depth, origin_normal, ray_direction_world, synthetic_self_hit, rigid_changed);
-		directional_update_lighting_response(probe_position, direction_texel, normalize(mat3(scene_data.cam_transform) * origin_normal), directional_sample, synthetic_self_hit, rigid_changed);
-		directional_sample = directional_apply_stable_history(directional_sample, direction_texel, synthetic_self_hit);
+		vec4 directional_sample = directional_trace_world_direction(origin_position, origin_depth, origin_normal, ray_direction_world, synthetic_self_hit);
+		vec4 previous_sample = vec4(0.0);
+		bool sample_history_valid = !synthetic_self_hit && directional_load_previous_radiance(direction_texel, previous_sample);
+		directional_update_lighting_response(probe_position, direction_texel, normalize(mat3(scene_data.cam_transform) * origin_normal), directional_sample, previous_sample, !synthetic_self_hit, sample_history_valid);
+		directional_sample = directional_apply_stable_history(directional_sample, previous_sample, sample_history_valid);
 		if ((params.flags & SCREEN_PROBE_FLAG_GUIDED_SAMPLING) != 0u) {
 			imageStore(directional_trace_count_output, atlas_position, uvec4(1u));
 		}
@@ -3471,22 +3470,21 @@ void directional_trace_main() {
 	uint ray_bin = first_bin;
 	uvec2 ray_bucket = uvec2(ray_bin % uint(SCREEN_PROBE_DIRECTIONAL_TILE_SIZE), ray_bin / uint(SCREEN_PROBE_DIRECTIONAL_TILE_SIZE));
 	bool synthetic_self_hit;
-	bool rigid_changed;
 	vec3 ray_direction_world = directional_importance_ray_to_world(jitter_key, ray_bucket,
 			lane - directional_importance_ray_offsets[ray_bin], directional_importance_ray_counts[ray_bin]);
-	directional_importance_trace_samples[lane] = directional_trace_world_direction(origin_position, origin_depth, origin_normal, ray_direction_world, synthetic_self_hit, rigid_changed);
-	directional_importance_trace_flags[lane] = (synthetic_self_hit ? 1u : 0u) | (rigid_changed ? 2u : 0u);
+	directional_importance_trace_samples[lane] = directional_trace_world_direction(origin_position, origin_depth, origin_normal, ray_direction_world, synthetic_self_hit);
+	directional_importance_trace_flags[lane] = synthetic_self_hit ? 1u : 0u;
 	barrier();
 
 	vec3 scattered_radiance = vec3(0.0);
 	float scattered_hit_distance = SCREEN_PROBE_DIRECTIONAL_FP16_MAX;
 	uint scattered_trace_count = 0u;
 	bool scattered_synthetic_self_hit = false;
-	bool scattered_rigid_changed = false;
+	vec4 previous_sample;
+	bool sample_history_valid = directional_load_previous_radiance(direction_texel, previous_sample);
 	uint ray_count = directional_importance_ray_counts[lane];
 	if (ray_count == 0u) {
-		vec4 previous_sample;
-		if (directional_load_previous_radiance(direction_texel, previous_sample)) {
+		if (sample_history_valid) {
 			scattered_radiance = previous_sample.rgb;
 			scattered_hit_distance = previous_sample.a;
 			scattered_trace_count = 1u;
@@ -3499,15 +3497,15 @@ void directional_trace_main() {
 			scattered_radiance += trace_sample.rgb * sample_weight;
 			scattered_hit_distance = min(scattered_hit_distance, trace_sample.a);
 			scattered_synthetic_self_hit = scattered_synthetic_self_hit || (directional_importance_trace_flags[trace_lane] & 1u) != 0u;
-			scattered_rigid_changed = scattered_rigid_changed || (directional_importance_trace_flags[trace_lane] & 2u) != 0u;
 		}
 		scattered_trace_count = ray_count;
 	}
 
 	vec4 directional_sample = vec4(directional_clamp_radiance(scattered_radiance), scattered_hit_distance);
-	directional_update_lighting_response(probe_position, direction_texel, normalize(mat3(scene_data.cam_transform) * origin_normal), directional_sample, scattered_synthetic_self_hit || ray_count == 0u, scattered_rigid_changed);
+	sample_history_valid = sample_history_valid && !scattered_synthetic_self_hit;
+	directional_update_lighting_response(probe_position, direction_texel, normalize(mat3(scene_data.cam_transform) * origin_normal), directional_sample, previous_sample, !scattered_synthetic_self_hit && ray_count > 0u, sample_history_valid && ray_count > 0u);
 	if (scattered_trace_count > 0u) {
-		directional_sample = directional_apply_stable_history(directional_sample, direction_texel, scattered_synthetic_self_hit);
+		directional_sample = directional_apply_stable_history(directional_sample, previous_sample, sample_history_valid);
 	}
 	imageStore(directional_trace_count_output, atlas_position, uvec4(scattered_trace_count));
 	imageStore(raw_radiance_output, atlas_position, directional_sanitize_fp16(directional_sample));
@@ -3999,16 +3997,22 @@ void directional_filter_main() {
 	vec3 direction_world = directional_jittered_bucket_to_world(jitter_key, direction_texel);
 	vec3 direction_view = normalize(transpose(mat3(scene_data.cam_transform)) * direction_world);
 	float lighting_response = texelFetch(sampler2D(directional_filter_lighting_response_input, directional_filter_nearest_sampler), probe_position, 0).r;
+	uint history_age = imageLoad(directional_filter_history_age_input, probe_position).r;
+	float history_reconstruction = 1.0 - smoothstep(1.0, 4.0, float(history_age));
+	float angle_relaxation = max(lighting_response, history_reconstruction);
+	// Bootstrap young history in the first pass; avoid expanding all three
+	// neighborhoods on a camera cut. This does not shorten valid temporal history.
+	float extended_filter = max(lighting_response, (params.flags & SCREEN_PROBE_FLAG_DIRECTIONAL_FILTER_FIRST_PASS) != 0u ? history_reconstruction : 0.0);
 
 	vec3 radiance_sum = vec3(0.0);
 	float radiance_weight_sum = 0.0;
 	float hit_distance_sum = 0.0;
 	float hit_distance_weight_sum = 0.0;
-	// Compensate for shorter temporal filtering only where lighting changed.
+	// Compensate for changed lighting and missing temporal samples locally.
 	const ivec2 offsets[13] = ivec2[13](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1),
 			ivec2(-1, -1), ivec2(1, -1), ivec2(-1, 1), ivec2(1, 1),
 			ivec2(-2, 0), ivec2(2, 0), ivec2(0, -2), ivec2(0, 2), ivec2(0));
-	int neighbor_count = lighting_response > 0.01 ? 12 : 4;
+	int neighbor_count = extended_filter > 0.01 ? 12 : 4;
 	int tap_count = 1 + neighbor_count + (adaptive_center ? 1 : 0);
 	for (int tap = 0; tap < tap_count; tap++) {
 		ivec2 neighbor_probe = probe_position;
@@ -4023,7 +4027,7 @@ void directional_filter_main() {
 			}
 			kernel_weight = exp(-0.5 * float(dot(offset, offset)));
 			if (extended_neighbor) {
-				kernel_weight *= lighting_response;
+				kernel_weight *= extended_filter;
 			}
 		}
 
@@ -4071,7 +4075,7 @@ void directional_filter_main() {
 			} else {
 				float direction_cosine = clamp(dot(to_neighbor_hit, direction_view) * inversesqrt(to_neighbor_hit_length_squared), -1.0, 1.0);
 				float endpoint_angle = acos(direction_cosine);
-				float maximum_endpoint_angle = mix(TAU / 36.0, TAU / 18.0, compatible_normal ? lighting_response : 0.0);
+				float maximum_endpoint_angle = mix(TAU / 36.0, TAU / 18.0, compatible_normal ? angle_relaxation : 0.0);
 				endpoint_angle_weight = 1.0 - clamp(endpoint_angle / maximum_endpoint_angle, 0.0, 1.0);
 			}
 		}

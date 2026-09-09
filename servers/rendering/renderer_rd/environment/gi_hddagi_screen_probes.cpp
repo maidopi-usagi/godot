@@ -107,6 +107,7 @@ void GI::disable_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	hddagi->screen_probe_history_screen_size = Size2i();
 	hddagi->screen_probe_history_view_count = 0;
 	hddagi->screen_probe_history_configuration = 0;
+	hddagi->screen_probe_lighting_configuration = 0;
 	hddagi->screen_probe_history_slot = 0;
 	hddagi->screen_probe_history_sequence = 0;
 	hddagi->screen_probe_directional_allocation_failed = false;
@@ -264,8 +265,10 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 
 	uint32_t transport_configuration = hash_murmur3_one_64(p_environment.get_id());
 	transport_configuration = hash_murmur3_one_32(hddagi->reads_sky ? 1u : 0u, transport_configuration);
-	transport_configuration = hash_murmur3_one_float(hddagi->energy, transport_configuration);
+	uint32_t lighting_configuration = hash_murmur3_one_float(hddagi->energy);
 	transport_configuration = hash_murmur3_one_float(hddagi->y_mult, transport_configuration);
+	// Exposure normalization changes stored radiance units. Keep that distinct
+	// from lighting changes, which can retain geometrically valid history.
 	transport_configuration = hash_murmur3_one_float(p_exposure_normalization, transport_configuration);
 	transport_configuration = hash_murmur3_one_float(p_ibl_exposure_normalization, transport_configuration);
 	transport_configuration = hash_murmur3_one_32(hddagi->cascades.size(), transport_configuration);
@@ -276,20 +279,20 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	if (p_environment.is_valid()) {
 		const RSE::EnvironmentBG background = scene_render->environment_get_background(p_environment);
 		transport_configuration = hash_murmur3_one_32(uint32_t(background), transport_configuration);
-		transport_configuration = hash_murmur3_one_float(scene_render->environment_get_bg_energy_multiplier(p_environment), transport_configuration);
-		transport_configuration = hash_murmur3_one_float(scene_render->environment_get_bg_intensity(p_environment), transport_configuration);
+		lighting_configuration = hash_murmur3_one_float(scene_render->environment_get_bg_energy_multiplier(p_environment), lighting_configuration);
+		lighting_configuration = hash_murmur3_one_float(scene_render->environment_get_bg_intensity(p_environment), lighting_configuration);
 		const Basis sky_orientation = scene_render->environment_get_sky_orientation(p_environment);
 		for (int row = 0; row < 3; row++) {
 			for (int column = 0; column < 3; column++) {
-				transport_configuration = hash_murmur3_one_float(sky_orientation[row][column], transport_configuration);
+				lighting_configuration = hash_murmur3_one_float(sky_orientation[row][column], lighting_configuration);
 			}
 		}
 		if (background == RSE::ENV_BG_CLEAR_COLOR || background == RSE::ENV_BG_COLOR) {
 			const Color color = background == RSE::ENV_BG_CLEAR_COLOR ? RSG::texture_storage->get_default_clear_color() : scene_render->environment_get_bg_color(p_environment);
-			transport_configuration = hash_murmur3_one_float(color.r, transport_configuration);
-			transport_configuration = hash_murmur3_one_float(color.g, transport_configuration);
-			transport_configuration = hash_murmur3_one_float(color.b, transport_configuration);
-			transport_configuration = hash_murmur3_one_float(color.a, transport_configuration);
+			lighting_configuration = hash_murmur3_one_float(color.r, lighting_configuration);
+			lighting_configuration = hash_murmur3_one_float(color.g, lighting_configuration);
+			lighting_configuration = hash_murmur3_one_float(color.b, lighting_configuration);
+			lighting_configuration = hash_murmur3_one_float(color.a, lighting_configuration);
 		} else if (background == RSE::ENV_BG_SKY && sky) {
 			const RID sky_rid = scene_render->environment_get_sky(p_environment);
 			transport_configuration = hash_murmur3_one_64(sky_rid.get_id(), transport_configuration);
@@ -300,6 +303,8 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		}
 	}
 	transport_configuration = hash_fmix32(transport_configuration);
+	lighting_configuration = hash_fmix32(lighting_configuration);
+	const bool environment_lighting_changed = hddagi->screen_probe_history_initialized && hddagi->screen_probe_lighting_configuration != lighting_configuration;
 
 	Projection raster_correction;
 	raster_correction.set_depth_correction(true);
@@ -405,6 +410,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			clear_irradiance_cache("the required compute resources could not be created");
 		} else {
 			uint32_t irradiance_cache_history_key = hash_murmur3_one_32(transport_configuration);
+			irradiance_cache_history_key = hash_murmur3_one_32(lighting_configuration, irradiance_cache_history_key);
 			irradiance_cache_history_key = hash_murmur3_one_32(0x49430101u, irradiance_cache_history_key);
 			irradiance_cache_history_key = hash_murmur3_one_32(irradiance_cache_multibounce ? 1u : 0u, irradiance_cache_history_key);
 			irradiance_cache_history_key = hash_murmur3_one_float(irradiance_cache_minimum_cell_size, irradiance_cache_history_key);
@@ -492,6 +498,10 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	configuration = hash_murmur3_one_32(detail_trace ? 1u : 0u, configuration);
 	configuration = hash_murmur3_one_32(detail_trace_quality, configuration);
 	configuration = hash_murmur3_one_32(transport_configuration, configuration);
+	if (!directional_gather) {
+		// The stochastic path has no probe-level lighting response yet.
+		configuration = hash_murmur3_one_32(lighting_configuration, configuration);
+	}
 	configuration = hash_murmur3_one_32(irradiance_cache_active ? 1u : 0u, configuration);
 	if (irradiance_cache_active) {
 		configuration = hash_murmur3_one_32(irradiance_cache_multibounce ? 1u : 0u, configuration);
@@ -514,6 +524,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	const bool has_directional_resources = p_render_buffers->has_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_RADIANCE) ||
 			p_render_buffers->has_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_HISTORY_AGE) ||
 			p_render_buffers->has_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_LIGHTING_RESPONSE) ||
+			p_render_buffers->has_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_LIGHTING_STATISTICS) ||
 			p_render_buffers->has_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_FILTER_SCRATCH) ||
 			p_render_buffers->has_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_IRRADIANCE) ||
 			p_render_buffers->has_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_TRACE_COUNT) ||
@@ -526,6 +537,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		return texture_matches(RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_RADIANCE, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, directional_atlas_size, directional_history_layers) &&
 				texture_matches(RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_HISTORY_AGE, RD::DATA_FORMAT_R8_UINT, directional_probe_atlas_size, directional_history_layers) &&
 				texture_matches(RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_LIGHTING_RESPONSE, RD::DATA_FORMAT_R8_UNORM, directional_probe_atlas_size, directional_history_layers) &&
+				texture_matches(RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_LIGHTING_STATISTICS, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, directional_probe_atlas_size, directional_history_layers) &&
 				texture_matches(RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_FILTER_SCRATCH, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, directional_atlas_size, directional_history_layers) &&
 				texture_matches(RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_IRRADIANCE, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, directional_atlas_size, p_view_count) &&
 				texture_matches(RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_TRACE_COUNT, RD::DATA_FORMAT_R8_UINT, directional_atlas_size, p_view_count) &&
@@ -550,6 +562,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_RADIANCE, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, texture_usage, RD::TEXTURE_SAMPLES_1, directional_atlas_size, directional_history_layers);
 			p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_HISTORY_AGE, RD::DATA_FORMAT_R8_UINT, texture_usage, RD::TEXTURE_SAMPLES_1, directional_probe_atlas_size, directional_history_layers);
 			p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_LIGHTING_RESPONSE, RD::DATA_FORMAT_R8_UNORM, texture_usage, RD::TEXTURE_SAMPLES_1, directional_probe_atlas_size, directional_history_layers);
+			p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_LIGHTING_STATISTICS, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, texture_usage, RD::TEXTURE_SAMPLES_1, directional_probe_atlas_size, directional_history_layers);
 			p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_FILTER_SCRATCH, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, texture_usage, RD::TEXTURE_SAMPLES_1, directional_atlas_size, directional_history_layers);
 			p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_IRRADIANCE, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, texture_usage, RD::TEXTURE_SAMPLES_1, directional_atlas_size, p_view_count);
 			p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_TRACE_COUNT, RD::DATA_FORMAT_R8_UINT, texture_usage, RD::TEXTURE_SAMPLES_1, directional_atlas_size, p_view_count);
@@ -956,6 +969,8 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			const RID previous_directional_history_age = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_HISTORY_AGE, previous_directional_layer, 0);
 			directional_lighting_response = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_LIGHTING_RESPONSE, current_directional_layer, 0);
 			const RID previous_directional_lighting_response = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_LIGHTING_RESPONSE, previous_directional_layer, 0);
+			const RID directional_lighting_statistics = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_LIGHTING_STATISTICS, current_directional_layer, 0);
+			const RID previous_directional_lighting_statistics = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_LIGHTING_STATISTICS, previous_directional_layer, 0);
 			RID directional_filter_scratch[2] = {
 				p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_FILTER_SCRATCH, current_directional_layer, 0),
 				p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_FILTER_SCRATCH, previous_directional_layer, 0),
@@ -968,6 +983,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			const RID directional_adaptive_counter = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SCREEN_PROBES, RB_TEX_HDDAGI_SCREEN_PROBE_DIRECTIONAL_ADAPTIVE_COUNTER, v, 0);
 			if (!directional_radiance.is_valid() || !previous_directional_radiance.is_valid() || !directional_history_age.is_valid() || !previous_directional_history_age.is_valid() ||
 					!directional_lighting_response.is_valid() || !previous_directional_lighting_response.is_valid() ||
+					!directional_lighting_statistics.is_valid() || !previous_directional_lighting_statistics.is_valid() ||
 					!directional_filter_scratch[0].is_valid() || !directional_filter_scratch[1].is_valid() || !directional_irradiance.is_valid() || !directional_trace_count.is_valid() ||
 					!directional_adaptive_mark.is_valid() || !directional_adaptive_tile_data.is_valid() || !previous_directional_adaptive_tile_data.is_valid() || !directional_adaptive_counter.is_valid()) {
 				disable_hddagi_screen_probes(p_render_buffers);
@@ -1022,7 +1038,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 21, directional_screen_radiance),
 				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 22, directional_previous_depth),
 				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 23, previous_directional_lighting_response),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 24, directional_lighting_response)
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 24, directional_lighting_response),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 25, previous_directional_lighting_statistics),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 26, directional_lighting_statistics)
 			};
 			hddagi->rigid.append_uniforms(directional_trace_uniforms);
 			directional_trace_sets[v] = UniformSetCacheRD::get_singleton()->get_cache_vec(hddagi_shader.screen_probe_shader_version[directional_trace_mode], 0, directional_trace_uniforms);
@@ -1044,7 +1062,8 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 						RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 3, nearest_sampler),
 						RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 4, rbgi->screen_probe_scene_data_ubo),
 						RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, directional_trace_count),
-						RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 6, directional_lighting_response));
+						RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 6, directional_lighting_response),
+						RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 7, directional_history_age));
 				directional_filter_source = directional_filter_destination;
 			}
 			directional_irradiance_sets[v] = UniformSetCacheRD::get_singleton()->get_cache(
@@ -1328,6 +1347,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			directional_filter_push_constant.spatial_depth_tolerance_scale = 0.02f;
 			directional_filter_push_constant.history_normal_threshold = 0.35f;
 			for (uint32_t pass = 0; pass < SCREEN_PROBE_DIRECTIONAL_FILTER_PASS_COUNT; pass++) {
+				directional_filter_push_constant.flags = push_constant.flags | (pass == 0 ? uint32_t(HDDAGIShader::ScreenProbePushConstant::FLAG_DIRECTIONAL_FILTER_FIRST_PASS) : 0u);
 				RENDER_TIMESTAMP("HDDAGI Directional Screen Probe Filter");
 				RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, hddagi_shader.screen_probe_pipeline[HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_FILTER]);
 				RD::get_singleton()->compute_list_bind_uniform_set(compute_list, directional_filter_sets[v][pass], 0);
@@ -1418,7 +1438,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			svgf_frame.denoising_range = SCREEN_PROBE_SVGF_DENOISING_RANGE;
 			svgf_frame.quality = svgf_quality;
 			svgf_frame.history_valid = svgf_history_valid;
-			svgf_frame.lighting_changed = hddagi->rigid.has_pending_changes();
+			svgf_frame.lighting_changed = environment_lighting_changed || hddagi->rigid.has_pending_changes();
 			svgf_frame.diffuse_lighting_response = directional_gather;
 			svgf_frame.diffuse_temporal_only = directional_gather && diffuse_temporal_only_setting;
 
@@ -1474,7 +1494,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				frame.denoising_range = SCREEN_PROBE_SPECULAR_DENOISING_RANGE;
 				frame.quality = svgf_quality;
 				frame.history_valid = specular_history_valid;
-				frame.lighting_changed = hddagi->rigid.has_pending_changes();
+				frame.lighting_changed = environment_lighting_changed || hddagi->rigid.has_pending_changes();
 				frame.specular = true;
 				frame.specular_full_resolution = p_gi_size == internal_size;
 
@@ -1529,6 +1549,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	hddagi->screen_probe_history_screen_size = internal_size;
 	hddagi->screen_probe_history_view_count = p_view_count;
 	hddagi->screen_probe_history_configuration = configuration;
+	hddagi->screen_probe_lighting_configuration = lighting_configuration;
 	hddagi->screen_probe_history_slot = current_history_slot;
 	hddagi->screen_probe_history_sequence = history_sequence;
 	for (uint32_t v = 0; v < p_view_count; v++) {
