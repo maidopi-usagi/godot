@@ -34,6 +34,7 @@
 #include "core/templates/rid_owner.h"
 #include "servers/rendering/environment/renderer_gi.h"
 #include "servers/rendering/renderer_compositor.h"
+#include "servers/rendering/renderer_rd/environment/hddagi_hwrt.h"
 #include "servers/rendering/renderer_rd/environment/hddagi_rigid.h"
 #include "servers/rendering/renderer_rd/environment/hddagi_screen_probe_irradiance_cache.h"
 #include "servers/rendering/renderer_rd/environment/hddagi_screen_probe_svgf.h"
@@ -535,6 +536,12 @@ private:
 			SCREEN_PROBE_MODE_TRACE_IRRADIANCE_CACHE_DEBUG,
 			SCREEN_PROBE_MODE_APPLY_SHORT_RANGE_GI,
 			SCREEN_PROBE_MODE_APPLY_SVGF_SHORT_RANGE_GI,
+			SCREEN_PROBE_MODE_TRACE_HWRT,
+			SCREEN_PROBE_MODE_TRACE_IRRADIANCE_CACHE_HWRT,
+			SCREEN_PROBE_MODE_DIRECTIONAL_TRACE_HWRT,
+			SCREEN_PROBE_MODE_SPECULAR_TRACE_HWRT,
+			SCREEN_PROBE_MODE_TRACE_DEBUG_HWRT,
+			SCREEN_PROBE_MODE_TRACE_IRRADIANCE_CACHE_DEBUG_HWRT,
 			SCREEN_PROBE_MODE_MAX,
 		};
 
@@ -568,6 +575,7 @@ private:
 				FLAG_DETAIL_TRACE_QUALITY_SHIFT = 7u,
 				FLAG_UNIFORM_PLACEMENT_JITTER = 1u << 9u,
 				FLAG_DIRECTIONAL_FILTER_FIRST_PASS = 1u << 10u,
+				FLAG_HWRT = 1u << 11u,
 			};
 
 			int32_t gi_size[2];
@@ -619,6 +627,9 @@ private:
 		RID screen_probe_shader_version[SCREEN_PROBE_MODE_MAX];
 		RID screen_probe_pipeline[SCREEN_PROBE_MODE_MAX];
 		bool screen_probe_available = false;
+		bool screen_probe_hwrt_initialized = false;
+		bool screen_probe_hwrt_available = false;
+		bool initialize_screen_probe_hwrt();
 
 		HddagiScreenProbeIrradianceCacheShaderRD screen_probe_irradiance_cache;
 		RID screen_probe_irradiance_cache_shader;
@@ -873,6 +884,8 @@ public:
 
 		RID cascades_ubo;
 		HDDAGIRigid rigid;
+		HDDAGIHwrt hwrt;
+		bool hwrt_enabled = false;
 		RID rigid_lights_buffer;
 		bool rigid_static_recapture_pending = false;
 		uint64_t rigid_membership_version = UINT64_MAX;
@@ -922,7 +935,7 @@ public:
 		virtual void free_data() override;
 		~HDDAGI();
 
-		void create(RID p_env, const Vector3 &p_world_anchor, const Vector3 &p_planar_world_forward, float p_cascade_forward_offset, uint32_t p_requested_history_size, GI *p_gi);
+		void create(RID p_env, const Vector3 &p_world_anchor, const Vector3 &p_planar_world_forward, float p_cascade_forward_offset, uint32_t p_requested_history_size, GI *p_gi, bool p_use_hwrt);
 		void update(RID p_env, const Vector3 &p_world_anchor, const Vector3 &p_planar_world_forward, float p_cascade_forward_offset);
 		void update_light();
 		void update_rigid_objects(RenderDataRD *p_render_data);
@@ -1126,7 +1139,7 @@ public:
 	void free();
 	bool is_using_half_resolution() const { return half_resolution; }
 
-	Ref<HDDAGI> create_hddagi(RID p_env, const Vector3 &p_world_anchor, const Vector3 &p_planar_world_forward, float p_cascade_forward_offset, uint32_t p_requested_history_size);
+	Ref<HDDAGI> create_hddagi(RID p_env, const Vector3 &p_world_anchor, const Vector3 &p_planar_world_forward, float p_cascade_forward_offset, uint32_t p_requested_history_size, bool p_use_hwrt);
 
 	void setup_voxel_gi_instances(RenderDataRD *p_render_data, Ref<RenderSceneBuffersRD> p_render_buffers, const Transform3D &p_transform, const PagedArray<RID> &p_voxel_gi_instances, uint32_t &r_voxel_gi_instances_used);
 	void process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, bool p_use_hddagi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer, uint32_t p_view_count, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_cam_transform, const PagedArray<RID> &p_voxel_gi_instances);

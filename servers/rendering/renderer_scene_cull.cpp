@@ -2980,10 +2980,16 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 		bool mesh_visible = false;
 
 		InstanceData &idata = cull_data.scenario->instance_data[i];
+		if (cull_data.cull->hddagi.collect_hwrt && ((1 << (idata.flags & InstanceData::FLAG_BASE_TYPE_MASK)) & RSE::INSTANCE_GEOMETRY_MASK) &&
+				(idata.instance->baked_light || idata.instance->dynamic_gi) &&
+				(cull_data.visible_layers & idata.layer_mask)) {
+			// Include off-screen contributors, just like the voxel/rigid GI scene.
+			cull_result.hddagi_hwrt_geometry_instances.push_back(idata.instance_geometry);
+		}
 		const bool is_hddagi_rigid = (idata.flags & InstanceData::FLAG_USES_RIGID_GI) &&
 				(idata.flags & InstanceData::FLAG_BASE_TYPE_MASK) == RSE::INSTANCE_MESH &&
 				!(idata.flags & InstanceData::FLAG_USES_MESH_INSTANCE) && idata.instance->skeleton.is_null();
-		if (cull_data.cull->hddagi.collect_rigid && is_hddagi_rigid &&
+		if (cull_data.cull->hddagi.collect_rigid && !cull_data.cull->hddagi.collect_hwrt && is_hddagi_rigid &&
 				(idata.instance->baked_light || idata.instance->dynamic_gi) && (cull_data.visible_layers & idata.layer_mask)) {
 			// GI contributors may be outside the camera frustum or hidden by occlusion culling.
 			cull_result.hddagi_rigid_geometry_instances.push_back(idata.instance_geometry);
@@ -3471,6 +3477,10 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	{ //hddagi
 		cull.hddagi.region_count = 0;
 		cull.hddagi.collect_rigid = p_reflection_probe.is_null() && p_environment.is_valid() && scene_render->environment_get_hddagi_enabled(p_environment);
+		const bool screen_probe_debug = scene_render->get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBES ||
+				scene_render->get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_HDDAGI_SCREEN_PROBE_REFLECTIONS;
+		cull.hddagi.collect_hwrt = cull.hddagi.collect_rigid && (scene_render->environment_get_hddagi_screen_probes_enabled(p_environment) || screen_probe_debug) &&
+				GLOBAL_GET_CACHED(int, "rendering/global_illumination/hddagi/screen_probe_trace_backend") == 1;
 
 		if (p_reflection_probe.is_null()) {
 			cull.hddagi.cascade_light_count = 0;
@@ -3732,6 +3742,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 		hddagi_update_data.update_static = false;
 		hddagi_update_data.rigid_geometry_instances = cull.hddagi.collect_rigid ? &scene_cull_result.hddagi_rigid_geometry_instances : nullptr;
+		hddagi_update_data.hwrt_geometry_instances = cull.hddagi.collect_hwrt ? &scene_cull_result.hddagi_hwrt_geometry_instances : nullptr;
 		hddagi_update_data.rigid_static_lights = cull.hddagi.collect_rigid ? &scene_cull_result.hddagi_static_lights : nullptr;
 		hddagi_update_data.rigid_membership_version = scenario->hddagi_rigid_membership_version;
 

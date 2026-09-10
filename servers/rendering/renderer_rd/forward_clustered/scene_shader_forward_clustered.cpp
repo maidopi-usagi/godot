@@ -81,6 +81,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	uses_time = false;
 	writes_modelview_or_projection = false;
 	uses_world_coordinates = false;
+	uses_hwrt_uncaptured_attributes = false;
 	uses_particle_trails = false;
 	uses_z_clip_scale = false;
 
@@ -133,6 +134,9 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	actions.usage_flag_pointers["SSS_TRANSMITTANCE_DEPTH"] = &uses_transmittance;
 
 	actions.usage_flag_pointers["DISCARD"] = &uses_discard;
+	for (const char *attribute : { "UV2", "CUSTOM0", "CUSTOM1", "CUSTOM2", "CUSTOM3", "BONE_INDICES", "BONE_WEIGHTS", "VERTEX", "VIEW", "FRAGCOORD", "SCREEN_UV", "FRONT_FACING", "VIEWPORT_SIZE", "EYE_OFFSET", "VIEW_INDEX", "IS_MULTIVIEW", "INSTANCE_ID", "INSTANCE_CUSTOM", "MODEL_MATRIX", "MODEL_NORMAL_MATRIX", "MODELVIEW_MATRIX", "MODELVIEW_NORMAL_MATRIX", "NODE_POSITION_WORLD", "NODE_POSITION_VIEW", "CAMERA_POSITION_WORLD", "CAMERA_DIRECTION_WORLD", "CAMERA_VISIBLE_LAYERS", "VIEW_MATRIX", "INV_VIEW_MATRIX", "MAIN_CAM_INV_VIEW_MATRIX", "PROJECTION_MATRIX", "INV_PROJECTION_MATRIX" }) {
+		actions.usage_flag_pointers[attribute] = &uses_hwrt_uncaptured_attributes;
+	}
 	actions.usage_flag_pointers["TIME"] = &uses_time;
 	actions.usage_flag_pointers["ROUGHNESS"] = &uses_roughness;
 	actions.usage_flag_pointers["NORMAL"] = &uses_normal;
@@ -187,6 +191,13 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 
 	if (version.is_null()) {
 		version = SceneShaderForwardClustered::singleton->shader.version_create(false);
+	}
+	for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &uniform : uniforms) {
+		if (uniform.value.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_GLOBAL) {
+			// Global values can change without invalidating an instance's material capture.
+			uses_hwrt_uncaptured_attributes = true;
+			break;
+		}
 	}
 
 	depth_draw = DepthDraw(depth_drawi);

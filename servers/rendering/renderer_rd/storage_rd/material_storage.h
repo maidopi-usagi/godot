@@ -81,6 +81,8 @@ public:
 		virtual void set_code(const String &p_Code) = 0;
 		virtual bool is_animated() const = 0;
 		virtual bool casts_shadows() const = 0;
+		// The first HWRT GI backend uses undeformed, opaque mesh triangles.
+		virtual bool supports_hddagi_hwrt() const { return false; }
 		virtual RenderingServerTypes::ShaderNativeSourceCode get_native_source_code() const = 0;
 		virtual Pair<ShaderRD *, RID> get_native_shader_and_version() const = 0;
 

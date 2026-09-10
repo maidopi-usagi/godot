@@ -169,6 +169,7 @@ public:
 	bool has_pending_changes() const { return dirty_frames > 0; }
 	uint32_t get_revision() const { return scene_data.lighting_revision; }
 	uint32_t get_instance_count() const { return instance_data.size(); }
+	uint64_t get_instance_id(uint32_t p_index) const { return active_instances[p_index]; }
 	uint32_t get_capture_count() const { return capture_count; }
 	const InstanceData &get_instance_data(uint32_t p_index) const { return instance_data[p_index]; }
 	bool is_light_dirty(uint32_t p_index) const { return instances[active_instances[p_index]].light_dirty; }

@@ -41,6 +41,11 @@
 using namespace RendererRD;
 
 void GI::HDDAGI::update_rigid_objects(RenderDataRD *p_render_data) {
+	if (hwrt_enabled) {
+		DEV_ASSERT(cascades.is_empty() && voxel_bits_tex.is_null() && voxel_light_tex.is_null() && !rigid.is_active());
+		hwrt.update(p_render_data->hddagi_update_data->hwrt_geometry_instances, p_render_data->scene_data->cam_transform.origin);
+		return;
+	}
 	uint64_t membership_version = p_render_data->hddagi_update_data->rigid_membership_version;
 	if (rigid_membership_version != UINT64_MAX && rigid_membership_version != membership_version) {
 		// Cull already prepared this frame's static regions. Re-cull once next
@@ -86,7 +91,7 @@ void GI::HDDAGI::refresh_rigid_static_lights(RenderDataRD *p_render_data) {
 }
 
 void GI::HDDAGI::update_rigid_lighting(RenderDataRD *p_render_data) {
-	if (!rigid.is_active()) {
+	if (!hwrt_enabled && !rigid.is_active()) {
 		return;
 	}
 	RD *rd = RD::get_singleton();
@@ -96,7 +101,7 @@ void GI::HDDAGI::update_rigid_lighting(RenderDataRD *p_render_data) {
 	HDDAGIShader::Light lights[MAX_DYNAMIC_LIGHTS] = {};
 	uint32_t light_count = 0;
 	HashSet<RID> used_lights;
-	AABB object_bounds;
+	AABB object_bounds = hwrt_enabled ? hwrt.get_bounds() : AABB();
 	for (uint32_t i = 0; i < rigid.get_instance_count(); i++) {
 		const HDDAGIRigid::InstanceData &instance = rigid.get_instance_data(i);
 		Vector3 from(instance.bounds_min[0], instance.bounds_min[1], instance.bounds_min[2]);
@@ -196,6 +201,11 @@ void GI::HDDAGI::update_rigid_lighting(RenderDataRD *p_render_data) {
 	}
 	if (light_count) {
 		rd->buffer_update(rigid_lights_buffer, 0, light_count * sizeof(HDDAGIShader::Light), lights);
+	}
+	if (hwrt_enabled) {
+		const float exposure = p_render_data->camera_attributes.is_valid() ? RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes) : 1.0f;
+		hwrt.update_lights(rigid_lights_buffer, light_count, exposure, bounce_feedback);
+		return;
 	}
 
 	const int mode = HDDAGIShader::DIRECT_LIGHT_MODE_RIGID;

@@ -58,6 +58,7 @@ class RendererSceneRenderRD : public RendererSceneRender, public RenderingShader
 	friend RendererRD::SkyRD;
 	friend RendererRD::GI;
 	friend RendererRD::HDDAGIRigid;
+	friend RendererRD::HDDAGIHwrt;
 
 protected:
 	RendererRD::ForwardIDStorage *forward_id_storage = nullptr;
@@ -344,7 +345,7 @@ public:
 	virtual void update() override;
 
 	virtual void set_debug_draw_mode(RSE::ViewportDebugDraw p_debug_draw) override;
-	_FORCE_INLINE_ RSE::ViewportDebugDraw get_debug_draw_mode() const {
+	_FORCE_INLINE_ virtual RSE::ViewportDebugDraw get_debug_draw_mode() const override {
 		return debug_draw;
 	}
 

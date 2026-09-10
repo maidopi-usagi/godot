@@ -1380,6 +1380,9 @@ void RenderForwardClustered::_update_hddagi(RenderDataRD *p_render_data) {
 			exposure_normalization = RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes);
 		}
 		hddagi->update_rigid_objects(p_render_data);
+		if (hddagi->hwrt_enabled) {
+			return;
+		}
 		for (int i = 0; i < p_render_data->render_hddagi_region_count; i++) {
 			hddagi->render_region(rb, p_render_data->render_hddagi_regions[i].region, p_render_data->render_hddagi_regions[i].instances, exposure_normalization);
 		}
@@ -1723,8 +1726,9 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 	Size2i depth_pyramid_size;
 	uint32_t depth_pyramid_mip_count = 0;
 	bool depth_pyramid_is_built = false;
-	const bool screen_probe_detail_trace_requested = GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_detail_trace");
-	const bool screen_probe_specular_requested = p_use_hddagi_screen_probes &&
+	const bool screen_probe_software_trace = GLOBAL_GET_CACHED(int, "rendering/global_illumination/hddagi/screen_probe_trace_backend") == 0;
+	const bool screen_probe_detail_trace_requested = screen_probe_software_trace && GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_detail_trace");
+	const bool screen_probe_specular_requested = screen_probe_software_trace && p_use_hddagi_screen_probes &&
 			(GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_specular_reflections") || is_hddagi_screen_probe_reflection_debug_draw(get_debug_draw_mode()));
 	const bool screen_probe_directional_screen_radiance_requested = p_use_hddagi_screen_probes && screen_probe_detail_trace_requested &&
 			GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_directional_screen_radiance") &&
@@ -2121,9 +2125,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			}
 		}
 		using_hddagi_screen_probes = using_hddagi && (environment_get_hddagi_screen_probes_enabled(p_render_data->environment) || is_hddagi_screen_probe_debug_draw(get_debug_draw_mode()));
-		const bool using_hddagi_specular_screen_radiance = using_hddagi_screen_probes &&
+		const bool screen_probe_software_trace = GLOBAL_GET_CACHED(int, "rendering/global_illumination/hddagi/screen_probe_trace_backend") == 0;
+		const bool using_hddagi_specular_screen_radiance = screen_probe_software_trace && using_hddagi_screen_probes &&
 				(GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_specular_reflections") || is_hddagi_screen_probe_reflection_debug_draw(get_debug_draw_mode()));
-		const bool using_hddagi_directional_screen_radiance = using_hddagi_screen_probes &&
+		const bool using_hddagi_directional_screen_radiance = screen_probe_software_trace && using_hddagi_screen_probes &&
 				GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_detail_trace") &&
 				GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_directional_screen_radiance") &&
 				environment_get_hddagi_screen_probe_mode(p_render_data->environment) == RSE::ENV_HDDAGI_SCREEN_PROBE_MODE_DIRECTIONAL_GATHER;
@@ -4212,7 +4217,7 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 		if (rb.is_valid() && rb->has_custom_data(RB_SCOPE_HDDAGI)) {
 			Ref<RendererRD::GI::HDDAGI> hddagi = rb->get_custom_data(RB_SCOPE_HDDAGI);
 			const Vector<RID> &occlusion_textures = hddagi->get_lightprobe_occlusion_textures();
-			if (occlusion_textures.size() >= 2) {
+			if (!hddagi->hwrt_enabled && occlusion_textures.size() >= 2) {
 				u.append_id(occlusion_textures[0]);
 				u.append_id(occlusion_textures[1]);
 			}
@@ -4319,7 +4324,7 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 
 	if (rb.is_valid() && rb->has_custom_data(RB_SCOPE_HDDAGI)) {
 		Ref<RendererRD::GI::HDDAGI> hddagi = rb->get_custom_data(RB_SCOPE_HDDAGI);
-		hddagi->rigid.append_uniforms(uniforms);
+		(hddagi->hwrt_enabled ? gi.default_rigid : hddagi->rigid).append_uniforms(uniforms);
 	} else {
 		gi.default_rigid.append_uniforms(uniforms);
 	}
@@ -4601,7 +4606,9 @@ void RenderForwardClustered::hddagi_update(const Ref<RenderSceneBuffers> &p_rend
 	}
 
 	bool needs_hddagi = p_environment.is_valid() && environment_get_hddagi_enabled(p_environment);
-	bool needs_reset = hddagi.is_valid() ? hddagi->version != gi.hddagi_current_version : false;
+	const bool needs_hwrt = needs_hddagi && (environment_get_hddagi_screen_probes_enabled(p_environment) || is_hddagi_screen_probe_debug_draw(get_debug_draw_mode())) &&
+			GLOBAL_GET_CACHED(int, "rendering/global_illumination/hddagi/screen_probe_trace_backend") == 1;
+	bool needs_reset = hddagi.is_valid() ? hddagi->version != gi.hddagi_current_version || hddagi->hwrt_enabled != needs_hwrt : false;
 
 	if (!needs_hddagi || needs_reset) {
 		if (hddagi.is_valid()) {
@@ -4622,7 +4629,7 @@ void RenderForwardClustered::hddagi_update(const Ref<RenderSceneBuffers> &p_rend
 	static const uint32_t history_frames_to_converge[RSE::ENV_HDDAGI_CONVERGE_MAX] = { 6, 12, 18, 24, 32 };
 	uint32_t requested_history_size = history_frames_to_converge[gi.hddagi_frames_to_converge];
 
-	if (hddagi.is_valid() && (hddagi->num_cascades != environment_get_hddagi_cascades(p_environment) || hddagi->min_cell_size != environment_get_hddagi_min_cell_size(p_environment) || requested_history_size != hddagi->frames_to_converge || hddagi->uses_occlusion != environment_get_hddagi_use_occlusion(p_environment) || hddagi->cascade_format != environment_get_hddagi_cascade_format(p_environment))) {
+	if (hddagi.is_valid() && !needs_hwrt && (hddagi->num_cascades != environment_get_hddagi_cascades(p_environment) || hddagi->min_cell_size != environment_get_hddagi_min_cell_size(p_environment) || requested_history_size != hddagi->frames_to_converge || hddagi->uses_occlusion != environment_get_hddagi_use_occlusion(p_environment) || hddagi->cascade_format != environment_get_hddagi_cascade_format(p_environment))) {
 		//configuration changed, erase
 		hddagi.unref();
 		rb->set_custom_data(RB_SCOPE_HDDAGI, hddagi);
@@ -4641,7 +4648,7 @@ void RenderForwardClustered::hddagi_update(const Ref<RenderSceneBuffers> &p_rend
 
 	if (hddagi.is_null()) {
 		// re-create
-		hddagi = gi.create_hddagi(p_environment, world_anchor, planar_world_forward, cascade_forward_offset, requested_history_size);
+		hddagi = gi.create_hddagi(p_environment, world_anchor, planar_world_forward, cascade_forward_offset, requested_history_size, needs_hwrt);
 		rb->set_custom_data(RB_SCOPE_HDDAGI, hddagi);
 	} else {
 		//check for updates

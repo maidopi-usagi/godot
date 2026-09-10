@@ -893,6 +893,7 @@ public:
 	struct InstanceCullResult {
 		PagedArray<RenderGeometryInstance *> geometry_instances;
 		PagedArray<RenderGeometryInstance *> hddagi_rigid_geometry_instances;
+		PagedArray<RenderGeometryInstance *> hddagi_hwrt_geometry_instances;
 		PagedArray<RID> hddagi_static_lights;
 		PagedArray<Instance *> lights;
 		PagedArray<RID> light_instances;
@@ -913,6 +914,7 @@ public:
 		void clear() {
 			geometry_instances.clear();
 			hddagi_rigid_geometry_instances.clear();
+			hddagi_hwrt_geometry_instances.clear();
 			hddagi_static_lights.clear();
 			lights.clear();
 			light_instances.clear();
@@ -940,6 +942,7 @@ public:
 		void reset() {
 			geometry_instances.reset();
 			hddagi_rigid_geometry_instances.reset();
+			hddagi_hwrt_geometry_instances.reset();
 			hddagi_static_lights.reset();
 			lights.reset();
 			light_instances.reset();
@@ -967,6 +970,7 @@ public:
 		void append_from(InstanceCullResult &p_cull_result) {
 			geometry_instances.merge_unordered(p_cull_result.geometry_instances);
 			hddagi_rigid_geometry_instances.merge_unordered(p_cull_result.hddagi_rigid_geometry_instances);
+			hddagi_hwrt_geometry_instances.merge_unordered(p_cull_result.hddagi_hwrt_geometry_instances);
 			hddagi_static_lights.merge_unordered(p_cull_result.hddagi_static_lights);
 			lights.merge_unordered(p_cull_result.lights);
 			light_instances.merge_unordered(p_cull_result.light_instances);
@@ -995,6 +999,7 @@ public:
 		void init(PagedArrayPool<RID> *p_rid_pool, PagedArrayPool<RenderGeometryInstance *> *p_geometry_instance_pool, PagedArrayPool<Instance *> *p_instance_pool) {
 			geometry_instances.set_page_pool(p_geometry_instance_pool);
 			hddagi_rigid_geometry_instances.set_page_pool(p_geometry_instance_pool);
+			hddagi_hwrt_geometry_instances.set_page_pool(p_geometry_instance_pool);
 			hddagi_static_lights.set_page_pool(p_rid_pool);
 			light_instances.set_page_pool(p_rid_pool);
 			lights.set_page_pool(p_instance_pool);
@@ -1129,6 +1134,7 @@ public:
 
 		struct HDDAGI {
 			bool collect_rigid = false;
+			bool collect_hwrt = false;
 			//have arrays here because HDDAGI functions expects this, plus regions can have areas
 			AABB region_aabb[HDDAGI_MAX_CASCADES * HDDAGI_MAX_REGIONS_PER_CASCADE]; //max 3 regions per cascade
 			uint32_t region_cascade[HDDAGI_MAX_CASCADES * HDDAGI_MAX_REGIONS_PER_CASCADE]; //max 3 regions per cascade

@@ -1,8 +1,12 @@
 #[compute]
 
-#version 450
+#version 460
 
 #VERSION_DEFINES
+
+#ifdef USE_HWRT
+#extension GL_EXT_ray_query : require
+#endif
 
 #if defined(MODE_IRRADIANCE_CACHE_QUERY) || defined(MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE)
 #define HDDAGI_IRRADIANCE_CACHE_SET 2
@@ -34,6 +38,7 @@ const uint SCREEN_PROBE_DETAIL_TRACE_QUALITY_SHIFT = 7u;
 const uint SCREEN_PROBE_DETAIL_TRACE_QUALITY_MASK = 3u << SCREEN_PROBE_DETAIL_TRACE_QUALITY_SHIFT;
 const uint SCREEN_PROBE_FLAG_UNIFORM_PLACEMENT_JITTER = 1u << 9u;
 const uint SCREEN_PROBE_FLAG_DIRECTIONAL_FILTER_FIRST_PASS = 1u << 10u;
+const uint SCREEN_PROBE_FLAG_HWRT = 1u << 11u;
 const uint SCREEN_PROBE_SKY_COLOR = 1u;
 const uint SCREEN_PROBE_SKY_TEXTURE = 2u;
 const uint SCREEN_PROBE_DEBUG_VALID = 1u << 0u;
@@ -47,7 +52,8 @@ const uint SCREEN_PROBE_DEBUG_SCREEN_RADIANCE_FALLBACK = 1u << 7u;
 const uint SCREEN_PROBE_DEBUG_INVALID_OR_NONFINITE = 1u << 8u;
 const uint SCREEN_PROBE_DEBUG_SCREEN_IRRADIANCE_CACHE = 1u << 9u;
 const uint SCREEN_PROBE_DEBUG_HDDA_IRRADIANCE_CACHE = 1u << 10u;
-const uint SCREEN_PROBE_DEBUG_SOURCE_MASK = SCREEN_PROBE_DEBUG_SCREEN_HDDAGI | SCREEN_PROBE_DEBUG_HDDA_VOXEL | SCREEN_PROBE_DEBUG_SKY | SCREEN_PROBE_DEBUG_SCREEN_IRRADIANCE_CACHE | SCREEN_PROBE_DEBUG_HDDA_IRRADIANCE_CACHE;
+const uint SCREEN_PROBE_DEBUG_HWRT = 1u << 11u;
+const uint SCREEN_PROBE_DEBUG_SOURCE_MASK = SCREEN_PROBE_DEBUG_SCREEN_HDDAGI | SCREEN_PROBE_DEBUG_HDDA_VOXEL | SCREEN_PROBE_DEBUG_SKY | SCREEN_PROBE_DEBUG_SCREEN_IRRADIANCE_CACHE | SCREEN_PROBE_DEBUG_HDDA_IRRADIANCE_CACHE | SCREEN_PROBE_DEBUG_HWRT;
 const uint SCREEN_PROBE_DEBUG_SOURCE_STATE_MASK = SCREEN_PROBE_DEBUG_SOURCE_MASK | SCREEN_PROBE_DEBUG_SCREEN_RADIANCE_FALLBACK;
 const float SCREEN_PROBE_DETAIL_TRACE_MAX_DISTANCE = 2.0;
 const float SCREEN_PROBE_SPECULAR_DETAIL_TRACE_MAX_DISTANCE = 50.0;
@@ -56,6 +62,7 @@ const int HDDAGI_TRACE_SCREEN_ENDPOINT = -2;
 const int HDDAGI_TRACE_SCREEN_ENDPOINT_SKY_FALLBACK = -3;
 const int HDDAGI_TRACE_SCREEN_RADIANCE = -4;
 const int HDDAGI_TRACE_RIGID_ENDPOINT = -5;
+const int HDDAGI_TRACE_HWRT_ENDPOINT = -6;
 
 const int HDDAGI_REGION_SIZE = 8;
 const int HDDAGI_HDDA_FP_BITS = 10;
@@ -346,6 +353,10 @@ layout(set = 0, binding = 7) uniform texture2D short_range_previous_color;
 layout(set = 0, binding = 8) uniform texture2D short_range_previous_depth;
 #endif
 
+#endif
+
+#if defined(MODE_APPLY) || defined(MODE_SPECULAR_APPLY)
+layout(rg8, set = 0, binding = 9) uniform restrict image2D ambient_reflection_blend_output;
 #endif
 
 uint hash_uvec3(uvec3 value) {
@@ -2402,6 +2413,10 @@ bool directional_sample_screen_radiance(vec3 endpoint_world, out vec3 r_radiance
 
 #endif
 
+#ifdef USE_HWRT
+#include "hddagi_screen_probe_hwrt_inc.glsl"
+#endif
+
 bool trace_hddagi_sample(ivec2 origin_position, float origin_depth, vec3 origin_normal, vec3 ray_direction_view, float detail_distance_limit, out vec3 r_radiance, out int r_hit_cascade, out vec3 r_endpoint_world, out vec3 r_endpoint_normal_world) {
 	r_radiance = vec3(0.0);
 	r_hit_cascade = -1;
@@ -2419,6 +2434,10 @@ bool trace_hddagi_sample(ivec2 origin_position, float origin_depth, vec3 origin_
 	vec3 trace_origin_world = ray_position + scene_data.cam_transform[3].xyz;
 	vec3 trace_direction_world = normalize(camera_basis * ray_direction_view);
 	vec3 trace_normal_world = normalize(camera_basis * origin_normal);
+
+#ifdef USE_HWRT
+	return trace_screen_probe_hwrt(trace_origin_world, trace_direction_world, trace_normal_world, r_radiance, r_hit_cascade, r_endpoint_world, r_endpoint_normal_world);
+#else
 
 	if (trace_screen_detail(origin_view, ray_direction_view, detail_distance_limit, r_endpoint_world, r_endpoint_normal_world)) {
 		r_hit_cascade = HDDAGI_TRACE_SCREEN_ENDPOINT;
@@ -2628,6 +2647,7 @@ bool trace_hddagi_sample(ivec2 origin_position, float origin_depth, vec3 origin_
 		screen_probe_debug_mark(SCREEN_PROBE_DEBUG_INVALID_OR_NONFINITE);
 	}
 	return radiance_valid;
+#endif // USE_HWRT
 }
 
 bool trace_hddagi_radiance(ivec2 origin_position, float origin_depth, vec3 origin_normal, vec3 ray_direction_view, out vec3 r_radiance, out float r_hit_distance, out bool r_screen_radiance_used) {
@@ -2684,6 +2704,9 @@ GuidedLightingContext build_guided_lighting_context(ivec2 origin_position, float
 	context.atlas_base = vec2(0.0);
 	context.inverse_atlas_size = vec2(0.0);
 	context.cascade = -1;
+#ifdef USE_HWRT
+	return context; // Hardware tracing never reads world-probe importance data.
+#endif
 
 	vec2 origin_uv = (vec2(origin_position) + 0.5) / vec2(params.screen_size);
 	vec3 receiver_position = mat3(scene_data.cam_transform) * compute_view_position(vec3(origin_uv, origin_depth));
@@ -3825,6 +3848,7 @@ void specular_trace_main() {
 	float hit_distance = 0.0;
 	vec3 endpoint_world = vec3(0.0);
 	bool screen_radiance_used = false;
+#ifndef USE_HWRT
 	if ((params.flags & SCREEN_PROBE_FLAG_DETAIL_TRACE) != 0u &&
 			(params.flags & SCREEN_PROBE_FLAG_SPECULAR_SCREEN_RADIANCE_VALID) != 0u) {
 		vec3 endpoint_normal_world;
@@ -3837,12 +3861,13 @@ void specular_trace_main() {
 			}
 		}
 	}
+#endif
 	if (!screen_radiance_used) {
 		int hit_cascade;
 		vec3 endpoint_normal_world;
 		bool trace_hit = trace_hddagi_sample(screen_position, origin_depth, origin_normal, ray_direction, 0.0,
 				sample_radiance, hit_cascade, endpoint_world, endpoint_normal_world);
-		if (trace_hit && (hit_cascade >= 0 || hit_cascade == HDDAGI_TRACE_RIGID_ENDPOINT) && !any(isnan(endpoint_world)) && !any(isinf(endpoint_world))) {
+		if (trace_hit && (hit_cascade >= 0 || hit_cascade == HDDAGI_TRACE_RIGID_ENDPOINT || hit_cascade == HDDAGI_TRACE_HWRT_ENDPOINT) && !any(isnan(endpoint_world)) && !any(isinf(endpoint_world))) {
 			vec3 receiver_world = (scene_data.cam_transform * vec4(view_position, 1.0)).xyz;
 			hit_distance = clamp(length(endpoint_world - receiver_world), 0.0, 65504.0);
 		}
@@ -4621,6 +4646,13 @@ void screen_probe_apply_main() {
 	if (any(greaterThanEqual(output_position, output_size))) {
 		return;
 	}
+	if ((params.flags & SCREEN_PROBE_FLAG_HWRT) != 0u && all(lessThan(output_position, imageSize(ambient_reflection_blend_output)))) {
+		// HWRT has no voxel pass to establish GI coverage. Directional output
+		// may be larger than this shared texture; let only one thread own each texel.
+		vec4 blend = imageLoad(ambient_reflection_blend_output, output_position);
+		blend.r = 1.0;
+		imageStore(ambient_reflection_blend_output, output_position, blend);
+	}
 	ivec2 radiance_size = textureSize(sampler2D(resolved_radiance_input, nearest_sampler), 0);
 	ivec2 radiance_position = clamp(output_position * radiance_size / output_size, ivec2(0), radiance_size - ivec2(1));
 	vec4 resolved_radiance = texelFetch(sampler2D(resolved_radiance_input, nearest_sampler), radiance_position, 0);
@@ -4681,7 +4713,15 @@ void specular_apply_main() {
 		return;
 	}
 	vec3 fallback_radiance = rgbe_decode(imageLoad(reflection_output, output_position).r);
-	imageStore(reflection_output, output_position, uvec4(rgbe_encode(mix(fallback_radiance, max(traced_radiance, vec3(0.0)), authority))));
+	float coverage = 1.0;
+	if ((params.flags & SCREEN_PROBE_FLAG_HWRT) != 0u) {
+		vec4 blend = imageLoad(ambient_reflection_blend_output, output_position);
+		fallback_radiance *= blend.g;
+		blend.g = mix(blend.g, 1.0, authority);
+		coverage = blend.g;
+		imageStore(ambient_reflection_blend_output, output_position, blend);
+	}
+	imageStore(reflection_output, output_position, uvec4(rgbe_encode(mix(fallback_radiance, max(traced_radiance, vec3(0.0)), authority) / max(coverage, 0.000001))));
 }
 
 #endif

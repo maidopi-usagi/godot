@@ -277,6 +277,7 @@ public:
 		bool uses_fragment_time = false;
 		bool writes_modelview_or_projection = false;
 		bool uses_world_coordinates = false;
+		bool uses_hwrt_uncaptured_attributes = false;
 		bool uses_screen_texture_mipmaps = false;
 		bool uses_z_clip_scale = false;
 		RSE::CullMode cull_mode = RSE::CULL_MODE_DISABLED;
@@ -303,6 +304,12 @@ public:
 			bool no_depth_draw = depth_draw == DEPTH_DRAW_DISABLED;
 			bool no_depth_test = depth_test != DEPTH_TEST_ENABLED;
 			return (uses_depth_prepass_alpha || uses_alpha_antialiasing) && !(no_depth_draw || no_depth_test);
+		}
+
+		virtual bool supports_hddagi_hwrt() const override {
+			return is_valid() && !uses_alpha_pass() && !uses_alpha_clip && !uses_discard && !uses_vertex &&
+					!uses_position && !writes_modelview_or_projection && !uses_particle_trails && !wireframe &&
+					!uses_world_coordinates && !uses_hwrt_uncaptured_attributes && !unshaded;
 		}
 
 		_FORCE_INLINE_ bool uses_shared_shadow_material() const {

@@ -307,6 +307,7 @@ public:
 
 	struct RenderHDDAGIUpdateData {
 		const PagedArray<RenderGeometryInstance *> *rigid_geometry_instances = nullptr;
+		const PagedArray<RenderGeometryInstance *> *hwrt_geometry_instances = nullptr;
 		const PagedArray<RID> *rigid_static_lights = nullptr;
 		uint64_t rigid_membership_version = 0;
 		bool update_static = false;
@@ -347,6 +348,7 @@ public:
 	virtual void set_scene_pass(uint64_t p_pass) = 0;
 	virtual void set_time(double p_time, double p_step) = 0;
 	virtual void set_debug_draw_mode(RSE::ViewportDebugDraw p_debug_draw) = 0;
+	virtual RSE::ViewportDebugDraw get_debug_draw_mode() const { return RSE::VIEWPORT_DEBUG_DRAW_DISABLED; }
 
 	virtual Ref<RenderSceneBuffers> render_buffers_create() = 0;
 	virtual void gi_set_use_half_resolution(bool p_enable) = 0;
