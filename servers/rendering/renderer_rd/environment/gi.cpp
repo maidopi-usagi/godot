@@ -3392,6 +3392,11 @@ void GI::init(SkyRD *p_sky) {
 		screen_probe_modes.push_back("\n#define MODE_TRACE\n#define MODE_IRRADIANCE_CACHE_QUERY\n#define MODE_DEBUG_MONTAGE\n#define USE_HWRT\n");
 		screen_probe_modes.push_back("\n#define MODE_RESOLVE\n#define MODE_DIRECTIONAL_RESOLVE\n#define USE_HWRT\n");
 		screen_probe_modes.push_back("\n#define MODE_RESOLVE\n#define MODE_DIRECTIONAL_RESOLVE\n#define MODE_SVGF_PREPARE\n#define USE_HWRT\n");
+		screen_probe_modes.push_back("\n#define MODE_TRACE\n#define MODE_DIRECTIONAL_TRACE\n#define MODE_IRRADIANCE_CACHE_QUERY\n#define USE_HWRT\n");
+		screen_probe_modes.push_back("\n#define MODE_RESOLVE\n#define MODE_DIRECTIONAL_RESOLVE\n#define MODE_IRRADIANCE_CACHE_QUERY\n#define USE_HWRT\n");
+		screen_probe_modes.push_back("\n#define MODE_RESOLVE\n#define MODE_DIRECTIONAL_RESOLVE\n#define MODE_SVGF_PREPARE\n#define MODE_IRRADIANCE_CACHE_QUERY\n#define USE_HWRT\n");
+		screen_probe_modes.push_back("\n#define MODE_TRACE\n#define MODE_SPECULAR_TRACE\n#define MODE_IRRADIANCE_CACHE_QUERY\n#define USE_HWRT\n");
+		screen_probe_modes.push_back("\n#define MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE\n#define USE_HWRT\n");
 		DEV_ASSERT(screen_probe_modes.size() == HDDAGIShader::SCREEN_PROBE_MODE_MAX);
 
 		String screen_probe_defines;
@@ -3413,16 +3418,23 @@ void GI::init(SkyRD *p_sky) {
 			}
 		}
 		const bool irradiance_cache_supported = HDDAGIScreenProbeIrradianceCache::is_supported();
-		if (!irradiance_cache_supported) {
+		if (!irradiance_cache_supported || !HDDAGIScreenProbeIrradianceCache::is_supported(true)) {
 			const HDDAGIShader::ScreenProbeMode irradiance_cache_modes[] = {
 				HDDAGIShader::SCREEN_PROBE_MODE_TRACE_IRRADIANCE_CACHE,
 				HDDAGIShader::SCREEN_PROBE_MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE,
 				HDDAGIShader::SCREEN_PROBE_MODE_TRACE_IRRADIANCE_CACHE_DEBUG,
 				HDDAGIShader::SCREEN_PROBE_MODE_TRACE_IRRADIANCE_CACHE_HWRT,
 				HDDAGIShader::SCREEN_PROBE_MODE_TRACE_IRRADIANCE_CACHE_DEBUG_HWRT,
+				HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_TRACE_IRRADIANCE_CACHE_HWRT,
+				HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_RESOLVE_IRRADIANCE_CACHE_HWRT,
+				HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_RESOLVE_SVGF_IRRADIANCE_CACHE_HWRT,
+				HDDAGIShader::SCREEN_PROBE_MODE_SPECULAR_TRACE_IRRADIANCE_CACHE_HWRT,
+				HDDAGIShader::SCREEN_PROBE_MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE_HWRT,
 			};
 			for (HDDAGIShader::ScreenProbeMode mode : irradiance_cache_modes) {
-				hddagi_shader.screen_probe.set_variant_enabled(mode, false);
+				if (!irradiance_cache_supported || mode >= HDDAGIShader::SCREEN_PROBE_MODE_TRACE_HWRT) {
+					hddagi_shader.screen_probe.set_variant_enabled(mode, false);
+				}
 			}
 		}
 		if (!HDDAGIScreenProbeSVGF::is_supported()) {

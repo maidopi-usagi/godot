@@ -740,6 +740,9 @@ void HDDAGIHwrt::_evict_unused() {
 		}
 	}
 	for (uint64_t id : removed_instances) {
+		if (cached_instances[id].instance.id != 0) {
+			free_metadata_indices.push_back(cached_instances[id].instance.metadata_index);
+		}
 		_free_deformed_meshes(cached_instances[id]);
 		cached_instances.erase(id);
 	}
@@ -802,7 +805,11 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 		if (cached.material.values.is_empty() || cached.mesh.mesh != mesh_rid || cached.mesh.deformed != geometry->mesh_instance.is_valid() || cached.material.values[1] != version ||
 				cached.capture_version != geometry->get_hddagi_capture_version() || !_material_is_current(cached.material)) {
 			cached.mesh = _mesh_key(geometry);
-			cached.material = _material_key(geometry);
+			MaterialKey material_key = _material_key(geometry);
+			if (cached.instance.id != 0 && cached.material.values != material_key.values) {
+				lighting_version++;
+			}
+			cached.material = material_key;
 			cached.capture_version = geometry->get_hddagi_capture_version();
 		}
 		cached.last_seen = frame;
@@ -828,6 +835,7 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 		}
 		Instance instance;
 		instance.id = id;
+		instance.mesh_version = version;
 		instance.blas = mesh.blas;
 		instance.transform = geometry->transform;
 		instance.normal_offset = mesh.normals.offset;
@@ -851,9 +859,22 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 				continue;
 			}
 			instance.blas = deformed.blas;
+			instance.deformation_version = deformed.version;
 			instance.normal_offset = deformed.normals.offset;
 		}
 		instance.material_offset = material->samples.offset;
+		if (cached.instance.id != 0) {
+			instance.metadata_index = cached.instance.metadata_index;
+		} else if (!free_metadata_indices.is_empty()) {
+			instance.metadata_index = free_metadata_indices[free_metadata_indices.size() - 1];
+			free_metadata_indices.resize(free_metadata_indices.size() - 1);
+		} else {
+			instance.metadata_index = metadata_count++;
+		}
+		// Stable metadata slots keep unrelated cache surfaces valid when TLAS
+		// membership changes. Material changes do not alter incident irradiance.
+		instance.surface_version = cached.instance.same_geometry(instance) ? cached.instance.surface_version : ++surface_version;
+		cached.instance = instance;
 		next_instances.push_back(instance);
 	}
 	_evict_unused();
@@ -866,6 +887,7 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 		geometry_changed = geometry_changed || !instances[i].same_geometry(next_instances[i]);
 		metadata_changed = metadata_changed || instances[i].normal_offset != next_instances[i].normal_offset || instances[i].material_offset != next_instances[i].material_offset;
 	}
+	metadata_changed = metadata_changed || geometry_changed;
 	if (!geometry_changed && !metadata_changed && !materials_changed) {
 		return;
 	}
@@ -879,7 +901,7 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 	normal_pool.reserve(1);
 	material_pool.reserve(1);
 	// RD needs nonzero allocation capacity even when building zero instances.
-	const uint32_t required_capacity = MAX(1u, next_instances.size());
+	const uint32_t required_capacity = MAX(1u, metadata_count);
 	if (required_capacity > instance_capacity) {
 		if (tlas.is_valid()) {
 			rd->free_rid(tlas);
@@ -891,19 +913,22 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 		tlas = rd->tlas_create(instance_capacity, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
 		instance_buffer = rd->storage_buffer_create(instance_capacity * 4 * sizeof(uint32_t));
 	}
-	if (tlas.is_null() || normal_pool.buffer.is_null() || instance_buffer.is_null() || material_pool.buffer.is_null() || scene_buffer.is_null() || next_instances.size() > 0x1000000u) {
+	if (tlas.is_null() || normal_pool.buffer.is_null() || instance_buffer.is_null() || material_pool.buffer.is_null() || scene_buffer.is_null() || metadata_count > 0x1000000u) {
 		WARN_PRINT_ONCE("HDDAGI HWRT scene allocation failed; screen-probe GI is unavailable.");
 		free();
 		return;
 	}
-	if (metadata_changed && !next_instances.is_empty()) {
+	if (metadata_changed) {
 		LocalVector<uint32_t> metadata;
-		metadata.resize(next_instances.size() * 4);
+		metadata.resize(instance_capacity * 4);
+		memset(metadata.ptr(), 0, metadata.size() * sizeof(uint32_t));
 		for (uint32_t i = 0; i < next_instances.size(); i++) {
-			metadata[i * 4] = next_instances[i].normal_offset;
-			metadata[i * 4 + 1] = next_instances[i].material_offset;
-			metadata[i * 4 + 2] = 0;
-			metadata[i * 4 + 3] = 0;
+			const Instance &instance = next_instances[i];
+			const uint32_t base = instance.metadata_index * 4;
+			metadata[base] = instance.normal_offset;
+			metadata[base + 1] = instance.material_offset;
+			metadata[base + 2] = uint32_t(instance.surface_version);
+			metadata[base + 3] = uint32_t(instance.surface_version >> 32);
 		}
 		rd->buffer_update(instance_buffer, 0, metadata.size() * sizeof(uint32_t), metadata.ptr());
 	}
@@ -913,7 +938,7 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 		for (uint32_t i = 0; i < next_instances.size(); i++) {
 			RD::AccelerationStructureInstance &build = build_instances[i];
 			build.transform = next_instances[i].transform;
-			build.id = i;
+			build.id = next_instances[i].metadata_index;
 			build.blas = next_instances[i].blas;
 			build.flags = RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT;
 		}
@@ -934,7 +959,11 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 	ready = true;
 }
 
-void HDDAGIHwrt::update_lights(RID p_lights_buffer, uint32_t p_light_count, float p_exposure, float p_bounce_feedback) {
+void HDDAGIHwrt::update_lights(RID p_lights_buffer, uint32_t p_light_count, float p_exposure, float p_bounce_feedback, uint32_t p_lighting_signature) {
+	if (lighting_signature != p_lighting_signature) {
+		lighting_signature = p_lighting_signature;
+		lighting_version++;
+	}
 	lights_buffer = p_lights_buffer;
 	scene_data.light_count = p_light_count;
 	scene_data.exposure = p_exposure;
@@ -976,6 +1005,8 @@ void HDDAGIHwrt::free() {
 		_free_deformed_meshes(entry.value);
 	}
 	cached_instances.clear();
+	metadata_count = 0;
+	free_metadata_indices.clear();
 	instances.clear();
 	next_instances.clear();
 	normal_pool.free();

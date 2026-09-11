@@ -15,6 +15,7 @@
 #define HDDAGI_IRRADIANCE_CACHE_ENTRY_CAPACITY 16384
 #define HDDAGI_IRRADIANCE_CACHE_REQUEST_CAPACITY 65536
 #define HDDAGI_IRRADIANCE_CACHE_ACCUM_STRIDE 16
+#define HDDAGI_IRRADIANCE_CACHE_SPATIAL_STRIDE 3u
 #define HDDAGI_IRRADIANCE_CACHE_MAX_SAMPLES_PER_ENTRY_PER_FRAME 4096
 
 const uint HDDAGI_IRRADIANCE_CACHE_EMPTY = 0xfffffffeu;
@@ -32,6 +33,7 @@ const float HDDAGI_IRRADIANCE_CACHE_RADIANCE_CLAMP = 2047.0;
 // following every individual refresh sample.
 const uint HDDAGI_IRRADIANCE_CACHE_HISTORY_SAMPLE_CAP = 16u;
 const uint HDDAGI_IRRADIANCE_CACHE_MULTIBOUNCE_HISTORY_SAMPLE_CAP = 8u;
+const uint HDDAGI_IRRADIANCE_CACHE_HWRT_HISTORY_SAMPLE_CAP = 32u;
 
 layout(set = HDDAGI_IRRADIANCE_CACHE_SET, binding = 0, std430) coherent restrict buffer HDDAGIIrradianceCacheMetaBuffer {
 	uint hddagi_irradiance_cache_meta[4];
@@ -53,19 +55,21 @@ layout(set = HDDAGI_IRRADIANCE_CACHE_SET, binding = 3, std430) coherent restrict
 };
 
 // Three radiance moments and one normalization moment per entry. All four use
-// the first-order basis [1, normal].
+// the first-order basis [1, normal]. HWRT stores incident irradiance / PI;
+// software retains its outgoing endpoint-radiance convention.
 layout(set = HDDAGI_IRRADIANCE_CACHE_SET, binding = 4, std430) coherent restrict buffer HDDAGIIrradianceCacheSHBuffer {
 	vec4 hddagi_irradiance_cache_sh[4 * HDDAGI_IRRADIANCE_CACHE_ENTRY_CAPACITY];
 };
 
-// Per entry: position/generation marker, then normal/cell size.
+// Per entry: position/generation, normal/cell size, then the HWRT instance
+// slot/surface version (low/high) and last lighting update frame, as uint bits.
 layout(set = HDDAGI_IRRADIANCE_CACHE_SET, binding = 5, std430) coherent restrict buffer HDDAGIIrradianceCacheSpatialBuffer {
-	vec4 hddagi_irradiance_cache_spatial[2 * HDDAGI_IRRADIANCE_CACHE_ENTRY_CAPACITY];
+	vec4 hddagi_irradiance_cache_spatial[HDDAGI_IRRADIANCE_CACHE_SPATIAL_STRIDE * HDDAGI_IRRADIANCE_CACHE_ENTRY_CAPACITY];
 };
 
 // Same layout as spatial. AGE publishes the selected proposal into spatial.
 layout(set = HDDAGI_IRRADIANCE_CACHE_SET, binding = 6, std430) coherent restrict buffer HDDAGIIrradianceCacheProposalBuffer {
-	vec4 hddagi_irradiance_cache_proposals[2 * HDDAGI_IRRADIANCE_CACHE_ENTRY_CAPACITY];
+	vec4 hddagi_irradiance_cache_proposals[HDDAGI_IRRADIANCE_CACHE_SPATIAL_STRIDE * HDDAGI_IRRADIANCE_CACHE_ENTRY_CAPACITY];
 };
 
 layout(set = HDDAGI_IRRADIANCE_CACHE_SET, binding = 7, std430) coherent restrict buffer HDDAGIIrradianceCacheVoteCountBuffer {
@@ -77,6 +81,7 @@ layout(set = HDDAGI_IRRADIANCE_CACHE_SET, binding = 8, std430) coherent restrict
 };
 
 // Per request: position.xyz/entry bits, normal.xyz/generation bits, radiance.rgb.
+// HWRT radiance.w packs the 24-bit instance slot and 8-bit (sample weight - 1).
 layout(set = HDDAGI_IRRADIANCE_CACHE_SET, binding = 9, std430) coherent restrict buffer HDDAGIIrradianceCacheRequestBuffer {
 	vec4 hddagi_irradiance_cache_requests[3 * HDDAGI_IRRADIANCE_CACHE_REQUEST_CAPACITY];
 };
@@ -90,13 +95,19 @@ layout(set = HDDAGI_IRRADIANCE_CACHE_SET, binding = 10, std430) coherent restric
 layout(set = HDDAGI_IRRADIANCE_CACHE_SET, binding = 11, std140) uniform HDDAGIIrradianceCacheParameters {
 	vec4 camera_min_cell;
 	uvec4 control; // frame, capacity, max requests, grid count.
-	uvec4 training; // flags, representative-update stride, sky mode, reserved.
+	uvec4 training; // flags, representative-update stride, sky mode, fast lighting refresh.
 	// Constant color.rgb or texture border in x; w is sky energy.
 	vec4 sky_color_or_border_energy;
 }
 hddagi_irradiance_cache_params;
 
+// Stable slots shared with the HWRT TLAS. Software binds an unused zero entry.
+layout(set = HDDAGI_IRRADIANCE_CACHE_SET, binding = 12, std430) restrict readonly buffer HDDAGIIrradianceCacheGeometryBuffer {
+	uvec4 hddagi_irradiance_cache_geometry[];
+};
+
 const uint HDDAGI_IRRADIANCE_CACHE_TRAINING_MULTIBOUNCE = 1u << 0u;
+const uint HDDAGI_IRRADIANCE_CACHE_HWRT = 1u << 1u;
 
 struct HDDAGIIrradianceCacheLookup {
 	bool valid;
@@ -111,6 +122,7 @@ struct HDDAGIIrradianceCacheLookup {
 	vec3 radiance;
 	vec3 sample_position;
 	vec3 sample_normal;
+	uvec3 surface_key;
 };
 
 uint hddagi_irradiance_cache_hash(uint value) {
@@ -154,6 +166,23 @@ bool hddagi_irradiance_cache_multibounce_enabled() {
 	return (hddagi_irradiance_cache_params.training.x & HDDAGI_IRRADIANCE_CACHE_TRAINING_MULTIBOUNCE) != 0u;
 }
 
+bool hddagi_irradiance_cache_hwrt() {
+	return (hddagi_irradiance_cache_params.training.x & HDDAGI_IRRADIANCE_CACHE_HWRT) != 0u;
+}
+
+uvec3 hddagi_irradiance_cache_surface_key(uint entry_index) {
+	return floatBitsToUint(hddagi_irradiance_cache_spatial[entry_index * HDDAGI_IRRADIANCE_CACHE_SPATIAL_STRIDE + 2u].xyz);
+}
+
+bool hddagi_irradiance_cache_geometry_current(uint entry_index) {
+	if (!hddagi_irradiance_cache_hwrt()) {
+		return true;
+	}
+	uvec3 key = hddagi_irradiance_cache_surface_key(entry_index);
+	return key.x < uint(hddagi_irradiance_cache_geometry.length()) && any(notEqual(key.yz, uvec2(0u))) &&
+			all(equal(key.yz, hddagi_irradiance_cache_geometry[key.x].zw));
+}
+
 uint hddagi_irradiance_cache_training_stride() {
 	return max(hddagi_irradiance_cache_params.training.y, 1u);
 }
@@ -172,6 +201,7 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_empty_lookup() {
 	result.radiance = vec3(0.0);
 	result.sample_position = vec3(0.0);
 	result.sample_normal = vec3(0.0, 1.0, 0.0);
+	result.surface_key = uvec3(0u);
 	return result;
 }
 
@@ -206,6 +236,18 @@ uint hddagi_irradiance_cache_next_generation() {
 
 bool hddagi_irradiance_cache_pop_free(out uint entry_index) {
 	entry_index = HDDAGI_IRRADIANCE_CACHE_LOCKED;
+	if (hddagi_irradiance_cache_hwrt()) {
+		// AGE is the only producer and never overlaps queries. Failed pops may
+		// temporarily underflow the unsigned count; restore them without ever
+		// indexing the pool. All successful reservations are unique.
+		uint count = atomicAdd(hddagi_irradiance_cache_meta[0], 0xffffffffu);
+		if (count == 0u || count > hddagi_irradiance_cache_capacity()) {
+			atomicAdd(hddagi_irradiance_cache_meta[0], 1u);
+			return false;
+		}
+		entry_index = hddagi_irradiance_cache_free_pool[count - 1u];
+		return entry_index < hddagi_irradiance_cache_capacity();
+	}
 	uint count = hddagi_irradiance_cache_meta[0];
 	for (uint attempt = 0u; attempt < 32u; attempt++) {
 		if (count == 0u) {
@@ -244,11 +286,13 @@ void hddagi_irradiance_cache_clear_entry_payload(uint entry_index) {
 	hddagi_irradiance_cache_sh[sh_base + 2u] = vec4(0.0);
 	hddagi_irradiance_cache_sh[sh_base + 3u] = vec4(0.0);
 
-	uint spatial_base = entry_index * 2u;
+	uint spatial_base = entry_index * HDDAGI_IRRADIANCE_CACHE_SPATIAL_STRIDE;
 	hddagi_irradiance_cache_spatial[spatial_base + 0u] = vec4(0.0);
 	hddagi_irradiance_cache_spatial[spatial_base + 1u] = vec4(0.0);
+	hddagi_irradiance_cache_spatial[spatial_base + 2u] = vec4(0.0);
 	hddagi_irradiance_cache_proposals[spatial_base + 0u] = vec4(0.0);
 	hddagi_irradiance_cache_proposals[spatial_base + 1u] = vec4(0.0);
+	hddagi_irradiance_cache_proposals[spatial_base + 2u] = vec4(0.0);
 	hddagi_irradiance_cache_vote_count[entry_index] = 0u;
 
 	uint accumulation_base = entry_index * uint(HDDAGI_IRRADIANCE_CACHE_ACCUM_STRIDE);
@@ -278,10 +322,10 @@ bool hddagi_irradiance_cache_evaluate(uint entry_index, vec3 normal, out vec3 r_
 }
 
 bool hddagi_irradiance_cache_load_representative(uint entry_index, uint generation, out vec3 r_position, out vec3 r_normal, out float r_cell_size) {
-	uint spatial_base = entry_index * 2u;
+	uint spatial_base = entry_index * HDDAGI_IRRADIANCE_CACHE_SPATIAL_STRIDE;
 	vec4 spatial_position = hddagi_irradiance_cache_spatial[spatial_base + 0u];
 	vec4 spatial_normal = hddagi_irradiance_cache_spatial[spatial_base + 1u];
-	if (floatBitsToUint(spatial_position.w) != generation ||
+	if (floatBitsToUint(spatial_position.w) != generation || !hddagi_irradiance_cache_geometry_current(entry_index) ||
 			!hddagi_irradiance_cache_is_finite(spatial_position.xyz) ||
 			!hddagi_irradiance_cache_is_finite(spatial_normal.xyz) || !(spatial_normal.w > 0.0)) {
 		return false;
@@ -300,11 +344,18 @@ bool hddagi_irradiance_cache_representative_compatible(uint entry_index, uint ge
 		return false;
 	}
 	float compatibility_cell_size = max(cell_size, representative_cell_size);
+	if (hddagi_irradiance_cache_hwrt()) {
+		vec3 delta = position - representative_position;
+		float position_precision = max(0.0001, max(abs(position.x), max(abs(position.y), abs(position.z))) * 4e-7);
+		float plane_tolerance = max(compatibility_cell_size * 0.05, position_precision);
+		return length(delta) <= compatibility_cell_size * 1.5 && dot(normal, representative_normal) >= 0.95 &&
+				max(abs(dot(delta, normal)), abs(dot(delta, representative_normal))) <= plane_tolerance;
+	}
 	return distance(position, representative_position) <= HDDAGI_IRRADIANCE_CACHE_REPRESENTATIVE_DISTANCE_SCALE * compatibility_cell_size &&
 			dot(normal, representative_normal) >= HDDAGI_IRRADIANCE_CACHE_REPRESENTATIVE_NORMAL_THRESHOLD;
 }
 
-void hddagi_irradiance_cache_vote_position(uint entry_index, uint generation, float cell_size, vec3 position, vec3 normal, vec3 query_origin) {
+void hddagi_irradiance_cache_vote_position(uint entry_index, uint generation, float cell_size, vec3 position, vec3 normal, vec3 query_origin, uvec3 surface_key) {
 	// Select one representative from the allocation frame's complete candidate
 	// cohort, then keep that physical surface point stable for the entry's
 	// lifetime. Re-running the reservoir every frame made recursive ray origins
@@ -323,7 +374,7 @@ void hddagi_irradiance_cache_vote_position(uint entry_index, uint generation, fl
 	// Multi-bounce training needs the physical surface point. The one-bounce
 	// endpoint cache may keep its historical free-space pull, which reduces
 	// self-intersection risk for a value that is never used as a ray origin.
-	if (!hddagi_irradiance_cache_multibounce_enabled()) {
+	if (!hddagi_irradiance_cache_multibounce_enabled() && !hddagi_irradiance_cache_hwrt()) {
 		vec3 to_origin = query_origin - position;
 		float distance_to_origin = length(to_origin);
 		if (distance_to_origin > 1e-6 && !isinf(distance_to_origin) && !isnan(distance_to_origin)) {
@@ -332,7 +383,7 @@ void hddagi_irradiance_cache_vote_position(uint entry_index, uint generation, fl
 		}
 	}
 
-	// Serialize the two-vec4 payload with the high count bit. The bounded retry
+	// Serialize the representative payload with the high count bit. The bounded retry
 	// can drop a vote under extreme contention, but it cannot tear the reservoir.
 	uint vote_state = hddagi_irradiance_cache_vote_count[entry_index];
 	for (uint attempt = 0u; attempt < 32u; attempt++) {
@@ -358,8 +409,9 @@ void hddagi_irradiance_cache_vote_position(uint entry_index, uint generation, fl
 		seed = hddagi_irradiance_cache_hash_combine(seed, floatBitsToUint(position.y));
 		seed = hddagi_irradiance_cache_hash_combine(seed, floatBitsToUint(position.z));
 		if ((seed % candidate_count) == 0u) {
-			uint proposal_base = entry_index * 2u;
+			uint proposal_base = entry_index * HDDAGI_IRRADIANCE_CACHE_SPATIAL_STRIDE;
 			hddagi_irradiance_cache_proposals[proposal_base + 1u] = vec4(normal, cell_size);
+			hddagi_irradiance_cache_proposals[proposal_base + 2u] = vec4(uintBitsToFloat(surface_key), 0.0);
 			memoryBarrierBuffer();
 			hddagi_irradiance_cache_proposals[proposal_base + 0u] = vec4(proposal_position, uintBitsToFloat(generation));
 		}
@@ -369,7 +421,7 @@ void hddagi_irradiance_cache_vote_position(uint entry_index, uint generation, fl
 	}
 }
 
-HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_finish_lookup(uint entry_index, uint generation, uint cascade, float cell_size, vec3 position, vec3 normal, vec3 query_origin, bool allow_update) {
+HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_finish_lookup(uint entry_index, uint generation, uint cascade, float cell_size, vec3 position, vec3 normal, vec3 query_origin, bool allow_update, uvec3 surface_key) {
 	HDDAGIIrradianceCacheLookup result = hddagi_irradiance_cache_empty_lookup();
 	uvec4 state = hddagi_irradiance_cache_entry_state[entry_index];
 	if (generation == 0u || state.y != generation) {
@@ -384,13 +436,16 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_finish_lookup(uint entry_ind
 	result.cell_size = cell_size;
 	result.sample_position = position;
 	result.sample_normal = normal;
+	result.surface_key = surface_key;
 
 	float representative_cell_size;
 	if (hddagi_irradiance_cache_load_representative(entry_index, generation, result.sample_position, result.sample_normal, representative_cell_size)) {
 		result.representative_valid = true;
 	}
 	bool representative_compatible = result.representative_valid &&
-			hddagi_irradiance_cache_representative_compatible(entry_index, generation, cell_size, position, normal);
+			hddagi_irradiance_cache_representative_compatible(entry_index, generation, cell_size, position, normal) &&
+			(!hddagi_irradiance_cache_hwrt() || all(equal(surface_key, hddagi_irradiance_cache_surface_key(entry_index))));
+	result.valid = !hddagi_irradiance_cache_hwrt() || !result.representative_valid || representative_compatible;
 	// An incompatible surface may share this coarse spatial cell, but it must not
 	// keep the old surface alive forever. Once compatible queries disappear, TTL
 	// eviction lets the cell train a new representative.
@@ -399,7 +454,7 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_finish_lookup(uint entry_ind
 		atomicMax(hddagi_irradiance_cache_entry_state[entry_index].x, hddagi_irradiance_cache_params.control.x);
 		atomicMin(hddagi_irradiance_cache_entry_state[entry_index].w, rank);
 		if (!result.representative_valid) {
-			hddagi_irradiance_cache_vote_position(entry_index, generation, cell_size, position, normal, query_origin);
+			hddagi_irradiance_cache_vote_position(entry_index, generation, cell_size, position, normal, query_origin, surface_key);
 		}
 	}
 	bool radiance_valid = false;
@@ -417,7 +472,7 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_finish_lookup(uint entry_ind
 // Finds or creates the toroidal clipmap entry containing position. query_origin
 // is the point toward which the position-reservoir proposal is pulled.
 // Read-only queries never allocate, vote, touch TTL, or wait on a writer.
-HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 normal, vec3 query_origin, bool allow_update) {
+HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 normal, vec3 query_origin, bool allow_update, uvec3 surface_key) {
 	HDDAGIIrradianceCacheLookup result = hddagi_irradiance_cache_empty_lookup();
 	if (!hddagi_irradiance_cache_is_finite(position) || !hddagi_irradiance_cache_is_finite(normal) || !(dot(normal, normal) > 1e-12)) {
 		return result;
@@ -454,7 +509,7 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 n
 	for (uint attempt = 0u; attempt < 32u; attempt++) {
 		uvec2 grid_value = hddagi_irradiance_cache_grid[slot];
 		if (grid_value.x == HDDAGI_IRRADIANCE_CACHE_LOCKED) {
-			if (!allow_update) {
+			if (!allow_update || hddagi_irradiance_cache_hwrt()) {
 				return result;
 			}
 			continue;
@@ -465,10 +520,12 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 n
 			ivec4 entry_cell = hddagi_irradiance_cache_entry_cells[entry_index];
 			uvec4 entry_state = hddagi_irradiance_cache_entry_state[entry_index];
 			if (grid_value.y != 0u && entry_state.y == grid_value.y && all(equal(entry_cell.xyz, world_cell)) && entry_cell.w == int(slot)) {
-				return hddagi_irradiance_cache_finish_lookup(entry_index, grid_value.y, cascade, cell_size, position, normal, query_origin, allow_update);
+				return hddagi_irradiance_cache_finish_lookup(entry_index, grid_value.y, cascade, cell_size, position, normal, query_origin, allow_update, surface_key);
 			}
 		}
-		if (!allow_update) {
+		// HWRT training reads the published solution while discovering secondary
+		// surfaces. Recycle occupied slots only in AGE, never under those readers.
+		if (!allow_update || (hddagi_irradiance_cache_hwrt() && grid_value.x < capacity)) {
 			return result;
 		}
 
@@ -478,6 +535,9 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 n
 		}
 		uint previous = atomicCompSwap(hddagi_irradiance_cache_grid[slot].x, expected, HDDAGI_IRRADIANCE_CACHE_LOCKED);
 		if (previous != expected) {
+			if (hddagi_irradiance_cache_hwrt()) {
+				return result;
+			}
 			continue;
 		}
 
@@ -499,10 +559,14 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 n
 		hddagi_irradiance_cache_grid[slot].y = generation;
 		memoryBarrierBuffer();
 		atomicExchange(hddagi_irradiance_cache_grid[slot].x, entry_index);
-		return hddagi_irradiance_cache_finish_lookup(entry_index, generation, cascade, cell_size, position, normal, query_origin, allow_update);
+		return hddagi_irradiance_cache_finish_lookup(entry_index, generation, cascade, cell_size, position, normal, query_origin, allow_update, surface_key);
 	}
 
 	return result;
+}
+
+HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 normal, vec3 query_origin, bool allow_update) {
+	return hddagi_irradiance_cache_lookup(position, normal, query_origin, allow_update, uvec3(0u));
 }
 
 HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 normal, vec3 query_origin) {
@@ -533,6 +597,7 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_load_entry(uint entry_index)
 	result.generation = state.y;
 	result.sample_count = state.z;
 	result.cell_size = representative_cell_size;
+	result.surface_key = hddagi_irradiance_cache_surface_key(entry_index);
 	if (result.sample_count >= 4u) {
 		result.has_radiance = hddagi_irradiance_cache_evaluate(entry_index, result.sample_normal, result.radiance);
 	}
@@ -540,16 +605,15 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_load_entry(uint entry_index)
 	return result;
 }
 
-// In recursive mode direct endpoint samples are only bootstrap data. Once an
-// entry has enough history for the representative trainer, mixing later direct
-// refreshes with total outgoing-radiance iterates would attenuate every bounce.
+// Endpoint estimates only bootstrap the representative trainer. Mixing shorter
+// paths into its steady-state iterates would attenuate recursive illumination.
 bool hddagi_irradiance_cache_should_submit_endpoint_sample(HDDAGIIrradianceCacheLookup lookup) {
-	return !hddagi_irradiance_cache_multibounce_enabled() || (!lookup.has_radiance && lookup.sample_count < 4u);
+	return (!hddagi_irradiance_cache_multibounce_enabled() && !hddagi_irradiance_cache_hwrt()) || (!lookup.has_radiance && lookup.sample_count < 4u);
 }
 
-// Appends an update only while request_count is below both the host limit and
-// the fixed allocation. PROCESS revalidates the generation before accumulating.
-bool hddagi_irradiance_cache_submit(HDDAGIIrradianceCacheLookup lookup, vec3 position, vec3 normal, vec3 radiance) {
+// Requests beyond the host limit are discarded. PROCESS revalidates the
+// generation before accumulating and clamps the count to the allocation.
+bool hddagi_irradiance_cache_submit(HDDAGIIrradianceCacheLookup lookup, vec3 position, vec3 normal, vec3 radiance, uint sample_weight) {
 	uint capacity = hddagi_irradiance_cache_capacity();
 	if (!lookup.valid || lookup.entry_index >= capacity || lookup.generation == 0u ||
 			hddagi_irradiance_cache_entry_state[lookup.entry_index].y != lookup.generation ||
@@ -566,23 +630,35 @@ bool hddagi_irradiance_cache_submit(HDDAGIIrradianceCacheLookup lookup, vec3 pos
 		return false;
 	}
 	uint request_limit = hddagi_irradiance_cache_request_limit();
-	uint request_count = hddagi_irradiance_cache_meta[1];
-	for (uint attempt = 0u; attempt < 32u; attempt++) {
-		if (request_count >= request_limit) {
-			return false;
+	uint request_index = request_limit;
+	if (hddagi_irradiance_cache_hwrt()) {
+		// HWRT has bounded training and sparse endpoint writers. A single atomic
+		// reservation avoids starving whole waves in a contended CAS retry loop.
+		request_index = atomicAdd(hddagi_irradiance_cache_meta[1], 1u);
+	} else {
+		uint request_count = hddagi_irradiance_cache_meta[1];
+		for (uint attempt = 0u; attempt < 32u && request_count < request_limit; attempt++) {
+			uint previous = atomicCompSwap(hddagi_irradiance_cache_meta[1], request_count, request_count + 1u);
+			if (previous == request_count) {
+				request_index = request_count;
+				break;
+			}
+			request_count = previous;
 		}
-		uint previous = atomicCompSwap(hddagi_irradiance_cache_meta[1], request_count, request_count + 1u);
-		if (previous == request_count) {
-			uint request_base = request_count * 3u;
-			hddagi_irradiance_cache_requests[request_base + 0u] = vec4(position, uintBitsToFloat(lookup.entry_index));
-			hddagi_irradiance_cache_requests[request_base + 1u] = vec4(normal, uintBitsToFloat(lookup.generation));
-			hddagi_irradiance_cache_requests[request_base + 2u] = vec4(radiance, 0.0);
-			memoryBarrierBuffer();
-			return true;
-		}
-		request_count = previous;
 	}
-	return false;
+	if (request_index >= request_limit) {
+		return false;
+	}
+	uint request_base = request_index * 3u;
+	hddagi_irradiance_cache_requests[request_base + 0u] = vec4(position, uintBitsToFloat(lookup.entry_index));
+	hddagi_irradiance_cache_requests[request_base + 1u] = vec4(normal, uintBitsToFloat(lookup.generation));
+	hddagi_irradiance_cache_requests[request_base + 2u] = vec4(radiance, uintBitsToFloat(lookup.surface_key.x | ((clamp(sample_weight, 1u, 256u) - 1u) << 24u)));
+	memoryBarrierBuffer();
+	return true;
+}
+
+bool hddagi_irradiance_cache_submit(HDDAGIIrradianceCacheLookup lookup, vec3 position, vec3 normal, vec3 radiance) {
+	return hddagi_irradiance_cache_submit(lookup, position, normal, radiance, 1u);
 }
 
 #endif // HDDAGI_SCREEN_PROBE_IRRADIANCE_CACHE_INC_GLSL

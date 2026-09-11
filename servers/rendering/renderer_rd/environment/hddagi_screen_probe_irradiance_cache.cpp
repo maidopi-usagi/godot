@@ -41,36 +41,36 @@ static constexpr uint32_t GRID_BUFFER_SIZE = sizeof(uint32_t) * 2u * HDDAGIScree
 static constexpr uint32_t ENTRY_CELLS_BUFFER_SIZE = VEC4_SIZE_BYTES * HDDAGIScreenProbeIrradianceCache::CAPACITY;
 static constexpr uint32_t ENTRY_STATE_BUFFER_SIZE = VEC4_SIZE_BYTES * HDDAGIScreenProbeIrradianceCache::CAPACITY;
 static constexpr uint32_t SH_BUFFER_SIZE = VEC4_SIZE_BYTES * HDDAGIScreenProbeIrradianceCache::SH_STRIDE * HDDAGIScreenProbeIrradianceCache::CAPACITY;
-static constexpr uint32_t SPATIAL_BUFFER_SIZE = VEC4_SIZE_BYTES * 2u * HDDAGIScreenProbeIrradianceCache::CAPACITY;
-static constexpr uint32_t PROPOSALS_BUFFER_SIZE = VEC4_SIZE_BYTES * 2u * HDDAGIScreenProbeIrradianceCache::CAPACITY;
+static constexpr uint32_t SPATIAL_BUFFER_SIZE = VEC4_SIZE_BYTES * HDDAGIScreenProbeIrradianceCache::SPATIAL_STRIDE * HDDAGIScreenProbeIrradianceCache::CAPACITY;
+static constexpr uint32_t PROPOSALS_BUFFER_SIZE = SPATIAL_BUFFER_SIZE;
 static constexpr uint32_t VOTE_COUNT_BUFFER_SIZE = sizeof(uint32_t) * HDDAGIScreenProbeIrradianceCache::CAPACITY;
 static constexpr uint32_t FREE_POOL_BUFFER_SIZE = sizeof(uint32_t) * HDDAGIScreenProbeIrradianceCache::CAPACITY;
 static constexpr uint32_t REQUESTS_BUFFER_SIZE = VEC4_SIZE_BYTES * HDDAGIScreenProbeIrradianceCache::REQUEST_STRIDE * HDDAGIScreenProbeIrradianceCache::MAX_REQUESTS;
 static constexpr uint32_t ACCUMULATION_BUFFER_SIZE = sizeof(int32_t) * HDDAGIScreenProbeIrradianceCache::ACCUMULATION_STRIDE * HDDAGIScreenProbeIrradianceCache::CAPACITY;
-static constexpr uint32_t STORAGE_BUFFER_COUNT = 11u;
+static constexpr uint32_t STORAGE_BUFFER_COUNT = 12u;
 static constexpr uint32_t QUERY_STORAGE_BUFFER_COUNT = STORAGE_BUFFER_COUNT + 5u; // The trace set also binds the rigid object pools.
 static constexpr uint32_t QUERY_UNIFORM_BUFFER_COUNT = 3u;
 
 } // namespace
 
-bool HDDAGIScreenProbeIrradianceCache::is_supported() {
+bool HDDAGIScreenProbeIrradianceCache::is_supported(bool p_hwrt) {
 	RenderingDevice *rd = RenderingDevice::get_singleton();
 	if (rd == nullptr) {
 		return false;
 	}
 
 	return rd->limit_get(RenderingDevice::LIMIT_MAX_STORAGE_BUFFERS_PER_UNIFORM_SET) >= STORAGE_BUFFER_COUNT &&
-			rd->limit_get(RenderingDevice::LIMIT_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE) >= QUERY_STORAGE_BUFFER_COUNT &&
+			rd->limit_get(RenderingDevice::LIMIT_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE) >= QUERY_STORAGE_BUFFER_COUNT + (p_hwrt ? 4u : 0u) &&
 			rd->limit_get(RenderingDevice::LIMIT_MAX_BOUND_UNIFORM_SETS) >= 3u &&
 			rd->limit_get(RenderingDevice::LIMIT_MAX_UNIFORM_BUFFERS_PER_UNIFORM_SET) >= 1u &&
-			rd->limit_get(RenderingDevice::LIMIT_MAX_UNIFORM_BUFFERS_PER_SHADER_STAGE) >= QUERY_UNIFORM_BUFFER_COUNT &&
+			rd->limit_get(RenderingDevice::LIMIT_MAX_UNIFORM_BUFFERS_PER_SHADER_STAGE) >= QUERY_UNIFORM_BUFFER_COUNT + (p_hwrt ? 1u : 0u) &&
 			rd->limit_get(RenderingDevice::LIMIT_MAX_UNIFORM_BUFFER_SIZE) >= sizeof(Parameters);
 }
 
 Error HDDAGIScreenProbeIrradianceCache::prepare_frame(const FrameSettings &p_frame, DispatchInfo &r_dispatch_info) {
 	frame_prepared = false;
 	r_dispatch_info = DispatchInfo();
-	ERR_FAIL_COND_V_MSG(!is_supported(), ERR_UNAVAILABLE, "The RenderingDevice cannot bind the HDDAGI screen-probe irradiance cache resources.");
+	ERR_FAIL_COND_V_MSG(!is_supported(p_frame.hwrt_instances.is_valid()), ERR_UNAVAILABLE, "The RenderingDevice cannot bind the HDDAGI screen-probe irradiance cache resources.");
 
 	if (!resources.is_valid()) {
 		const Error allocation_error = _allocate_resources();
@@ -91,6 +91,11 @@ Error HDDAGIScreenProbeIrradianceCache::prepare_frame(const FrameSettings &p_fra
 		return parameter_error;
 	}
 
+	uint32_t next_refresh_frames = frame_clear_required ? 0u : lighting_refresh_frames;
+	if (history_key_valid && lighting_key != p_frame.lighting_key) {
+		next_refresh_frames = MIN(p_frame.multibounce_update_stride, CAPACITY) * 4u;
+	}
+	parameters.training[3] = next_refresh_frames > 0u ? 1u : 0u;
 	RenderingDevice *rd = RenderingDevice::get_singleton();
 	ERR_FAIL_NULL_V(rd, ERR_UNAVAILABLE);
 	const Error update_error = rd->buffer_update(resources.parameters, 0, sizeof(parameters), &parameters);
@@ -98,7 +103,10 @@ Error HDDAGIScreenProbeIrradianceCache::prepare_frame(const FrameSettings &p_fra
 		return update_error;
 	}
 
+	lighting_key = p_frame.lighting_key;
+	lighting_refresh_frames = next_refresh_frames > 0u ? next_refresh_frames - 1u : 0u;
 	history_key = p_frame.history_key;
+	hwrt_instances = p_frame.hwrt_instances;
 	frame_index = next_frame_index;
 	history_key_valid = true;
 	clear_required = frame_clear_required;
@@ -131,7 +139,8 @@ RID HDDAGIScreenProbeIrradianceCache::get_uniform_set(RID p_shader, uint32_t p_s
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, resources.free_pool),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 9, resources.requests),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 10, resources.accumulation),
-			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 11, resources.parameters));
+			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 11, resources.parameters),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 12, hwrt_instances.is_valid() ? hwrt_instances : resources.empty_geometry));
 }
 
 void HDDAGIScreenProbeIrradianceCache::mark_clear_recorded() {
@@ -140,7 +149,7 @@ void HDDAGIScreenProbeIrradianceCache::mark_clear_recorded() {
 }
 
 bool HDDAGIScreenProbeIrradianceCache::is_active() const {
-	return frame_prepared && resources.is_valid() && is_supported();
+	return frame_prepared && resources.is_valid() && is_supported(hwrt_instances.is_valid());
 }
 
 void HDDAGIScreenProbeIrradianceCache::clear() {
@@ -159,6 +168,7 @@ void HDDAGIScreenProbeIrradianceCache::clear() {
 			resources.requests,
 			resources.accumulation,
 			resources.parameters,
+			resources.empty_geometry,
 		};
 		for (const RID &rid : resource_rids) {
 			if (rid.is_valid()) {
@@ -168,7 +178,10 @@ void HDDAGIScreenProbeIrradianceCache::clear() {
 	}
 
 	resources = Resources();
+	hwrt_instances = RID();
 	history_key = 0;
+	lighting_key = 0;
+	lighting_refresh_frames = 0;
 	frame_index = 0;
 	history_key_valid = false;
 	clear_required = false;
@@ -200,6 +213,8 @@ Error HDDAGIScreenProbeIrradianceCache::_allocate_resources() {
 	resources.requests = create_storage_buffer(REQUESTS_BUFFER_SIZE, "HDDAGI Irradiance Cache Requests");
 	resources.accumulation = create_storage_buffer(ACCUMULATION_BUFFER_SIZE, "HDDAGI Irradiance Cache Accumulation");
 	resources.parameters = rd->uniform_buffer_create(sizeof(Parameters));
+	const uint32_t empty_geometry[4] = {};
+	resources.empty_geometry = rd->storage_buffer_create(sizeof(empty_geometry), Span((const uint8_t *)empty_geometry, sizeof(empty_geometry)));
 	if (resources.parameters.is_valid()) {
 		rd->set_resource_name(resources.parameters, "HDDAGI Irradiance Cache Parameters");
 	}
@@ -230,7 +245,7 @@ Error HDDAGIScreenProbeIrradianceCache::_build_parameters(const FrameSettings &p
 	r_parameters.control[1] = CAPACITY;
 	r_parameters.control[2] = MAX_REQUESTS;
 	r_parameters.control[3] = GRID_COUNT;
-	r_parameters.training[0] = p_frame.multibounce ? 1u : 0u;
+	r_parameters.training[0] = (p_frame.multibounce ? 1u : 0u) | (p_frame.hwrt_instances.is_valid() ? 2u : 0u);
 	r_parameters.training[1] = p_frame.multibounce_update_stride;
 	r_parameters.training[2] = p_frame.sky_mode;
 	if (p_frame.sky_mode == 2u) {

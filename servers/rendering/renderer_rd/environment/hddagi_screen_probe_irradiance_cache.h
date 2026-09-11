@@ -44,12 +44,15 @@ public:
 	static constexpr uint32_t MULTIBOUNCE_UPDATE_BUDGET = 4096u;
 	static constexpr uint32_t MULTIBOUNCE_UPDATE_STRIDE = (CAPACITY + MULTIBOUNCE_UPDATE_BUDGET - 1u) / MULTIBOUNCE_UPDATE_BUDGET;
 	static constexpr uint32_t SH_STRIDE = 4u;
+	static constexpr uint32_t SPATIAL_STRIDE = 3u;
 	static constexpr uint32_t REQUEST_STRIDE = 3u;
 	static constexpr uint32_t ACCUMULATION_STRIDE = 16u;
 	static_assert(GRID_COUNT >= CAPACITY && GRID_COUNT >= MAX_REQUESTS, "The clear dispatch must cover every fixed irradiance-cache allocation.");
 
 	struct FrameSettings {
 		Vector3 camera_position;
+		RID hwrt_instances;
+		uint64_t lighting_key = 0;
 		uint32_t history_key = 0;
 		float minimum_cell_size = 0.04f;
 		uint32_t multibounce_update_stride = MULTIBOUNCE_UPDATE_STRIDE;
@@ -67,7 +70,7 @@ public:
 		uint32_t max_requests = MAX_REQUESTS;
 	};
 
-	static bool is_supported();
+	static bool is_supported(bool p_hwrt = false);
 
 	Error prepare_frame(const FrameSettings &p_frame, DispatchInfo &r_dispatch_info);
 	DispatchInfo get_dispatch_info() const;
@@ -106,16 +109,20 @@ private:
 		RID requests;
 		RID accumulation;
 		RID parameters;
+		RID empty_geometry;
 
 		bool is_valid() const {
 			return meta.is_valid() && grid.is_valid() && entry_cells.is_valid() && entry_state.is_valid() &&
 					sh.is_valid() && spatial.is_valid() && proposals.is_valid() && vote_count.is_valid() &&
-					free_pool.is_valid() && requests.is_valid() && accumulation.is_valid() && parameters.is_valid();
+					free_pool.is_valid() && requests.is_valid() && accumulation.is_valid() && parameters.is_valid() && empty_geometry.is_valid();
 		}
 	};
 
 	Resources resources;
+	RID hwrt_instances;
 	uint32_t history_key = 0;
+	uint64_t lighting_key = 0;
+	uint32_t lighting_refresh_frames = 0;
 	uint32_t frame_index = 0;
 	bool history_key_valid = false;
 	bool clear_required = false;

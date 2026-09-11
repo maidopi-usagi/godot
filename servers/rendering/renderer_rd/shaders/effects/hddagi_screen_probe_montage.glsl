@@ -51,6 +51,7 @@ const uint TRACE_DEBUG_INVALID = 1u << 8u;
 const uint TRACE_DEBUG_SOURCE_SCREEN_IRRADIANCE_CACHE = 1u << 9u;
 const uint TRACE_DEBUG_SOURCE_HDDA_IRRADIANCE_CACHE = 1u << 10u;
 const uint TRACE_DEBUG_SOURCE_HWRT = 1u << 11u;
+const uint TRACE_DEBUG_SOURCE_HWRT_IRRADIANCE_CACHE = 1u << 12u;
 
 const float DIRECTIONAL_PROBE_TILE_SIZE = 8.0;
 
@@ -234,6 +235,10 @@ vec3 trace_debug_color(uint debug_word, vec2 pixel) {
 	}
 	if ((debug_word & TRACE_DEBUG_SOURCE_HWRT) != 0u) {
 		source += vec3(0.1, 1.0, 0.85);
+		source_count += 1.0;
+	}
+	if ((debug_word & TRACE_DEBUG_SOURCE_HWRT_IRRADIANCE_CACHE) != 0u) {
+		source += vec3(1.0, 0.8, 0.2);
 		source_count += 1.0;
 	}
 	vec3 color = source_count > 0.0 ? mix(outcome, source / source_count, 0.55) : outcome;

@@ -56,7 +56,8 @@ const uint SCREEN_PROBE_DEBUG_INVALID_OR_NONFINITE = 1u << 8u;
 const uint SCREEN_PROBE_DEBUG_SCREEN_IRRADIANCE_CACHE = 1u << 9u;
 const uint SCREEN_PROBE_DEBUG_HDDA_IRRADIANCE_CACHE = 1u << 10u;
 const uint SCREEN_PROBE_DEBUG_HWRT = 1u << 11u;
-const uint SCREEN_PROBE_DEBUG_SOURCE_MASK = SCREEN_PROBE_DEBUG_SCREEN_HDDAGI | SCREEN_PROBE_DEBUG_HDDA_VOXEL | SCREEN_PROBE_DEBUG_SKY | SCREEN_PROBE_DEBUG_SCREEN_IRRADIANCE_CACHE | SCREEN_PROBE_DEBUG_HDDA_IRRADIANCE_CACHE | SCREEN_PROBE_DEBUG_HWRT;
+const uint SCREEN_PROBE_DEBUG_HWRT_IRRADIANCE_CACHE = 1u << 12u;
+const uint SCREEN_PROBE_DEBUG_SOURCE_MASK = SCREEN_PROBE_DEBUG_SCREEN_HDDAGI | SCREEN_PROBE_DEBUG_HDDA_VOXEL | SCREEN_PROBE_DEBUG_SKY | SCREEN_PROBE_DEBUG_SCREEN_IRRADIANCE_CACHE | SCREEN_PROBE_DEBUG_HDDA_IRRADIANCE_CACHE | SCREEN_PROBE_DEBUG_HWRT | SCREEN_PROBE_DEBUG_HWRT_IRRADIANCE_CACHE;
 const uint SCREEN_PROBE_DEBUG_SOURCE_STATE_MASK = SCREEN_PROBE_DEBUG_SOURCE_MASK | SCREEN_PROBE_DEBUG_SCREEN_RADIANCE_FALLBACK;
 const float SCREEN_PROBE_DETAIL_TRACE_MAX_DISTANCE = 2.0;
 const float SCREEN_PROBE_SPECULAR_DETAIL_TRACE_MAX_DISTANCE = 50.0;
@@ -275,7 +276,7 @@ layout(set = 0, binding = 18) uniform texture2D specular_previous_depth_buffer;
 layout(rgba16f, set = 0, binding = 53) uniform restrict writeonly image2D specular_direct_output;
 #endif
 #endif
-#ifdef MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE
+#if defined(MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE) && !defined(USE_HWRT)
 layout(r16ui, set = 0, binding = 10) uniform restrict readonly uimage3D hddagi_albedo_cascades;
 #endif
 
@@ -1666,7 +1667,7 @@ bool trace_screen_detail(vec3 origin_view, vec3 ray_direction_view, float distan
 
 #endif
 
-#if defined(MODE_TRACE) || defined(MODE_SPECULAR_TRACE) || defined(MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE)
+#if defined(MODE_TRACE) || defined(MODE_SPECULAR_TRACE) || (defined(MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE) && !defined(USE_HWRT))
 
 #ifndef MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE
 uvec4 load_probe_surface_texel(ivec2 position) {
@@ -4858,7 +4859,11 @@ void main() {
 #elif defined(MODE_DIRECTIONAL_ADAPTIVE_SPAWN)
 	directional_adaptive_spawn_main();
 #elif defined(MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE)
+#ifdef USE_HWRT
+	irradiance_cache_update_multibounce_hwrt();
+#else
 	irradiance_cache_update_multibounce_main();
+#endif
 #elif defined(MODE_DIRECTIONAL_TRACE)
 	directional_trace_main();
 #elif defined(MODE_SPECULAR_TRACE)

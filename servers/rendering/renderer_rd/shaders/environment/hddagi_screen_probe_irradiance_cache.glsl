@@ -10,6 +10,9 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 uint hddagi_irradiance_cache_ttl(uint rank) {
+	if (hddagi_irradiance_cache_hwrt()) {
+		return rank == 0u ? 240u : (rank == 1u ? 120u : 60u);
+	}
 	return rank == 0u ? 12u : (rank == 1u ? 8u : 4u);
 }
 
@@ -45,7 +48,7 @@ void hddagi_irradiance_cache_flush_spatial(uint entry_index, uint generation) {
 		return;
 	}
 	memoryBarrierBuffer();
-	uint spatial_base = entry_index * 2u;
+	uint spatial_base = entry_index * HDDAGI_IRRADIANCE_CACHE_SPATIAL_STRIDE;
 	vec4 proposal_position = hddagi_irradiance_cache_proposals[spatial_base + 0u];
 	vec4 proposal_normal = hddagi_irradiance_cache_proposals[spatial_base + 1u];
 	if (floatBitsToUint(proposal_position.w) != generation ||
@@ -56,10 +59,12 @@ void hddagi_irradiance_cache_flush_spatial(uint entry_index, uint generation) {
 
 	// Publish the generation marker last, mirroring the proposal writer.
 	hddagi_irradiance_cache_spatial[spatial_base + 1u] = proposal_normal;
+	hddagi_irradiance_cache_spatial[spatial_base + 2u] = hddagi_irradiance_cache_proposals[spatial_base + 2u];
 	memoryBarrierBuffer();
 	hddagi_irradiance_cache_spatial[spatial_base + 0u] = proposal_position;
 	hddagi_irradiance_cache_proposals[spatial_base + 0u] = vec4(0.0);
 	hddagi_irradiance_cache_proposals[spatial_base + 1u] = vec4(0.0);
+	hddagi_irradiance_cache_proposals[spatial_base + 2u] = vec4(0.0);
 }
 
 void hddagi_irradiance_cache_age(uint entry_index) {
@@ -79,11 +84,17 @@ void hddagi_irradiance_cache_age(uint entry_index) {
 		return;
 	}
 	uint age = hddagi_irradiance_cache_params.control.x - state.x;
-	if (age <= hddagi_irradiance_cache_ttl(min(state.w, 2u))) {
+	ivec4 entry_cell = hddagi_irradiance_cache_entry_cells[entry_index];
+	bool in_clip = true;
+	if (hddagi_irradiance_cache_hwrt() && entry_cell.w >= 0) {
+		vec3 position = hddagi_irradiance_cache_spatial[entry_index * HDDAGI_IRRADIANCE_CACHE_SPATIAL_STRIDE].xyz;
+		uint cascade = uint(entry_cell.w) / uint(HDDAGI_IRRADIANCE_CACHE_GRID_CELL_COUNT);
+		in_clip = hddagi_irradiance_cache_select_cascade(position, max(hddagi_irradiance_cache_params.camera_min_cell.w, 1e-4), uint(HDDAGI_IRRADIANCE_CACHE_CASCADE_COUNT)) <= cascade;
+	}
+	if (age <= hddagi_irradiance_cache_ttl(min(state.w, 2u)) && in_clip && hddagi_irradiance_cache_geometry_current(entry_index)) {
 		return;
 	}
 
-	ivec4 entry_cell = hddagi_irradiance_cache_entry_cells[entry_index];
 	if (entry_cell.w < 0) {
 		return;
 	}
@@ -138,6 +149,11 @@ void hddagi_irradiance_cache_process(uint request_index) {
 	}
 
 	vec3 normal = hddagi_irradiance_cache_safe_normalize(request_normal.xyz);
+	uint packed_surface = floatBitsToUint(hddagi_irradiance_cache_requests[request_base + 2u].w);
+	int sample_weight = hddagi_irradiance_cache_hwrt() ? int(packed_surface >> 24u) + 1 : 1;
+	if (hddagi_irradiance_cache_hwrt() && (packed_surface & 0xffffffu) != hddagi_irradiance_cache_surface_key(entry_index).x) {
+		return;
+	}
 	radiance = max(radiance, vec3(0.0));
 	// AGE publishes the representative before PROCESS. Revalidate delayed
 	// requests against that surface so the first frame cannot mix walls or let a
@@ -146,9 +162,9 @@ void hddagi_irradiance_cache_process(uint request_index) {
 		return;
 	}
 	uint accumulation_base = entry_index * uint(HDDAGI_IRRADIANCE_CACHE_ACCUM_STRIDE);
-	int previous_count = atomicAdd(hddagi_irradiance_cache_accumulation[accumulation_base + 12u], 1);
-	if (previous_count >= HDDAGI_IRRADIANCE_CACHE_MAX_SAMPLES_PER_ENTRY_PER_FRAME) {
-		atomicAdd(hddagi_irradiance_cache_accumulation[accumulation_base + 12u], -1);
+	int previous_count = atomicAdd(hddagi_irradiance_cache_accumulation[accumulation_base + 12u], sample_weight);
+	if (previous_count + sample_weight > HDDAGI_IRRADIANCE_CACHE_MAX_SAMPLES_PER_ENTRY_PER_FRAME) {
+		atomicAdd(hddagi_irradiance_cache_accumulation[accumulation_base + 12u], -sample_weight);
 		return;
 	}
 	vec4 basis = vec4(1.0, normal);
@@ -157,12 +173,12 @@ void hddagi_irradiance_cache_process(uint request_index) {
 			// The per-entry request cap keeps 4096 contributions at this bound in
 			// signed 32-bit range, retaining HDR values up to roughly 2048.
 			float scaled = clamp(radiance[channel] * basis[coefficient] * HDDAGI_IRRADIANCE_CACHE_ACCUM_SCALE, -524287.0, 524287.0);
-			atomicAdd(hddagi_irradiance_cache_accumulation[accumulation_base + channel * 4u + coefficient], int(round(scaled)));
+			atomicAdd(hddagi_irradiance_cache_accumulation[accumulation_base + channel * 4u + coefficient], int(round(scaled)) * sample_weight);
 		}
 	}
-	atomicAdd(hddagi_irradiance_cache_accumulation[accumulation_base + 13u], int(round(normal.x * HDDAGI_IRRADIANCE_CACHE_ACCUM_SCALE)));
-	atomicAdd(hddagi_irradiance_cache_accumulation[accumulation_base + 14u], int(round(normal.y * HDDAGI_IRRADIANCE_CACHE_ACCUM_SCALE)));
-	atomicAdd(hddagi_irradiance_cache_accumulation[accumulation_base + 15u], int(round(normal.z * HDDAGI_IRRADIANCE_CACHE_ACCUM_SCALE)));
+	atomicAdd(hddagi_irradiance_cache_accumulation[accumulation_base + 13u], int(round(normal.x * HDDAGI_IRRADIANCE_CACHE_ACCUM_SCALE)) * sample_weight);
+	atomicAdd(hddagi_irradiance_cache_accumulation[accumulation_base + 14u], int(round(normal.y * HDDAGI_IRRADIANCE_CACHE_ACCUM_SCALE)) * sample_weight);
+	atomicAdd(hddagi_irradiance_cache_accumulation[accumulation_base + 15u], int(round(normal.z * HDDAGI_IRRADIANCE_CACHE_ACCUM_SCALE)) * sample_weight);
 }
 
 void hddagi_irradiance_cache_resolve(uint entry_index) {
@@ -178,7 +194,12 @@ void hddagi_irradiance_cache_resolve(uint entry_index) {
 		float inverse_weight = 1.0 / (HDDAGI_IRRADIANCE_CACHE_ACCUM_SCALE * float(signed_count));
 		// Moving rigid geometry changes lighting, not the cached surface identity.
 		// Keep the previous solution while budgeted updates replace its samples.
-		uint history_sample_cap = hddagi_irradiance_cache_multibounce_enabled() ? HDDAGI_IRRADIANCE_CACHE_MULTIBOUNCE_HISTORY_SAMPLE_CAP : HDDAGI_IRRADIANCE_CACHE_HISTORY_SAMPLE_CAP;
+		uint history_sample_cap = hddagi_irradiance_cache_hwrt() ? HDDAGI_IRRADIANCE_CACHE_HWRT_HISTORY_SAMPLE_CAP : hddagi_irradiance_cache_multibounce_enabled() ? HDDAGI_IRRADIANCE_CACHE_MULTIBOUNCE_HISTORY_SAMPLE_CAP : HDDAGI_IRRADIANCE_CACHE_HISTORY_SAMPLE_CAP;
+		// Keep geometry and published feedback when lights/materials change,
+		// but briefly replace lighting batches without temporal damping.
+		if (hddagi_irradiance_cache_hwrt() && hddagi_irradiance_cache_params.training.w != 0u) {
+			history_sample_cap = 0u;
+		}
 		float history_weight = float(min(state.z, history_sample_cap));
 		float update_weight = float(signed_count);
 		// A bounded sample-count blend damps sparse refreshes without making
@@ -202,6 +223,7 @@ void hddagi_irradiance_cache_resolve(uint entry_index) {
 		hddagi_irradiance_cache_sh[sh_base + 3u] = history_weight == 0.0 ? normalization_estimate : mix(hddagi_irradiance_cache_sh[sh_base + 3u], normalization_estimate, blend);
 		uint added_samples = uint(signed_count);
 		hddagi_irradiance_cache_entry_state[entry_index].z = state.z > 0xffffffffu - added_samples ? 0xffffffffu : state.z + added_samples;
+		hddagi_irradiance_cache_spatial[entry_index * HDDAGI_IRRADIANCE_CACHE_SPATIAL_STRIDE + 2u].w = uintBitsToFloat(hddagi_irradiance_cache_params.control.x);
 	}
 
 	// Make RESOLVE idempotent even if AGE is skipped for a frame. AGE also

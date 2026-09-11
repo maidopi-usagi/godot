@@ -181,7 +181,8 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		disable_hddagi_screen_probes(p_render_buffers);
 		return;
 	}
-	auto trace_backend_mode = [hwrt](HDDAGIShader::ScreenProbeMode p_mode) {
+	bool hwrt_cache_active = false;
+	auto trace_backend_mode = [hwrt, &hwrt_cache_active](HDDAGIShader::ScreenProbeMode p_mode) {
 		if (hwrt) {
 			switch (p_mode) {
 				case HDDAGIShader::SCREEN_PROBE_MODE_TRACE:
@@ -189,13 +190,13 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				case HDDAGIShader::SCREEN_PROBE_MODE_TRACE_IRRADIANCE_CACHE:
 					return HDDAGIShader::SCREEN_PROBE_MODE_TRACE_IRRADIANCE_CACHE_HWRT;
 				case HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_TRACE:
-					return HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_TRACE_HWRT;
+					return hwrt_cache_active ? HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_TRACE_IRRADIANCE_CACHE_HWRT : HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_TRACE_HWRT;
 				case HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_RESOLVE:
-					return HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_RESOLVE_HWRT;
+					return hwrt_cache_active ? HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_RESOLVE_IRRADIANCE_CACHE_HWRT : HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_RESOLVE_HWRT;
 				case HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_RESOLVE_SVGF:
-					return HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_RESOLVE_SVGF_HWRT;
+					return hwrt_cache_active ? HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_RESOLVE_SVGF_IRRADIANCE_CACHE_HWRT : HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_RESOLVE_SVGF_HWRT;
 				case HDDAGIShader::SCREEN_PROBE_MODE_SPECULAR_TRACE:
-					return HDDAGIShader::SCREEN_PROBE_MODE_SPECULAR_TRACE_HWRT;
+					return hwrt_cache_active ? HDDAGIShader::SCREEN_PROBE_MODE_SPECULAR_TRACE_IRRADIANCE_CACHE_HWRT : HDDAGIShader::SCREEN_PROBE_MODE_SPECULAR_TRACE_HWRT;
 				case HDDAGIShader::SCREEN_PROBE_MODE_TRACE_DEBUG:
 					return HDDAGIShader::SCREEN_PROBE_MODE_TRACE_DEBUG_HWRT;
 				case HDDAGIShader::SCREEN_PROBE_MODE_TRACE_IRRADIANCE_CACHE_DEBUG:
@@ -206,8 +207,8 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		}
 		return p_mode;
 	};
-	const HDDAGIShader::ScreenProbeMode directional_trace_mode = trace_backend_mode(HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_TRACE);
-	const HDDAGIShader::ScreenProbeMode specular_trace_mode = trace_backend_mode(HDDAGIShader::SCREEN_PROBE_MODE_SPECULAR_TRACE);
+	HDDAGIShader::ScreenProbeMode directional_trace_mode = trace_backend_mode(HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_TRACE);
+	HDDAGIShader::ScreenProbeMode specular_trace_mode = trace_backend_mode(HDDAGIShader::SCREEN_PROBE_MODE_SPECULAR_TRACE);
 	if (!p_render_buffers->has_texture(RB_SCOPE_GI, RB_TEX_AMBIENT_U32)) {
 		disable_hddagi_screen_probes(p_render_buffers);
 		return;
@@ -277,9 +278,10 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	const bool guided_sampling = (!hwrt || directional_gather) && GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_guided_sampling");
 	const uint32_t detail_trace_quality = uint32_t(CLAMP(GLOBAL_GET_CACHED(int, "rendering/global_illumination/hddagi/screen_probe_detail_trace_quality"), 0, 2));
 	const uint32_t detail_trace_quality_flags = detail_trace_quality << HDDAGIShader::ScreenProbePushConstant::FLAG_DETAIL_TRACE_QUALITY_SHIFT;
-	const int irradiance_cache_setting = directional_gather ? 0 : GLOBAL_GET_CACHED(int, "rendering/global_illumination/hddagi/screen_probe_radiance_cache");
+	const int irradiance_cache_setting = !hwrt && directional_gather ? 0 : GLOBAL_GET_CACHED(int, "rendering/global_illumination/hddagi/screen_probe_radiance_cache");
 	const float irradiance_cache_minimum_cell_size = MAX(GLOBAL_GET_CACHED(float, "rendering/global_illumination/hddagi/screen_probe_radiance_cache_minimum_cell_size"), SCREEN_PROBE_IRRADIANCE_CACHE_MINIMUM_CELL_SIZE);
-	const bool irradiance_cache_multibounce = !hwrt && !directional_gather && hddagi->screen_probe_radiance_cache_multibounce_active;
+	const bool irradiance_cache_multibounce = hwrt ? GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_radiance_cache_multibounce") : !directional_gather && hddagi->screen_probe_radiance_cache_multibounce_active;
+	const HDDAGIShader::ScreenProbeMode irradiance_cache_update_mode = hwrt ? HDDAGIShader::SCREEN_PROBE_MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE_HWRT : HDDAGIShader::SCREEN_PROBE_MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE;
 	const int denoiser_setting = GLOBAL_GET_CACHED(int, "rendering/global_illumination/hddagi/screen_probe_denoiser");
 	const bool diffuse_temporal_only_setting = GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_denoiser_temporal_only");
 	const HDDAGIScreenProbeSVGF::Quality svgf_quality = static_cast<HDDAGIScreenProbeSVGF::Quality>(CLAMP(GLOBAL_GET_CACHED(int, "rendering/global_illumination/hddagi/screen_probe_denoiser_quality"), 0, int(HDDAGIScreenProbeSVGF::QUALITY_MAX) - 1));
@@ -328,7 +330,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		transport_configuration = hash_murmur3_one_float(hddagi->hwrt.get_max_distance(), transport_configuration);
 		lighting_configuration = hash_murmur3_one_float(hddagi->bounce_feedback, lighting_configuration);
 	}
-	transport_configuration = hash_murmur3_one_float(hddagi->y_mult, transport_configuration);
+	if (!hwrt) {
+		transport_configuration = hash_murmur3_one_float(hddagi->y_mult, transport_configuration);
+	}
 	// Exposure normalization changes stored radiance units. Keep that distinct
 	// from lighting changes, which can retain geometrically valid history.
 	transport_configuration = hash_murmur3_one_float(p_exposure_normalization, transport_configuration);
@@ -448,6 +452,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	HDDAGIScreenProbeIrradianceCache::DispatchInfo irradiance_cache_dispatch_info;
 	RID irradiance_cache_maintenance_sets[HDDAGIShader::SCREEN_PROBE_IRRADIANCE_CACHE_MAX];
 	RID irradiance_cache_trace_set;
+	RID irradiance_cache_hwrt_sets[HDDAGIShader::SCREEN_PROBE_MODE_MAX];
 	RID irradiance_cache_multibounce_set;
 	RID irradiance_cache_multibounce_resources_set;
 	RID irradiance_cache_multibounce_sky_set;
@@ -459,23 +464,28 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		auto screen_probe_mode_is_ready = [&](HDDAGIShader::ScreenProbeMode p_screen_probe_mode) {
 			return hddagi_shader.screen_probe_shader_version[p_screen_probe_mode].is_valid() && hddagi_shader.screen_probe_pipeline[p_screen_probe_mode].is_valid();
 		};
-		bool modes_ready = HDDAGIScreenProbeIrradianceCache::is_supported();
+		bool modes_ready = HDDAGIScreenProbeIrradianceCache::is_supported(hwrt);
 		for (uint32_t mode = 0; mode < HDDAGIShader::SCREEN_PROBE_IRRADIANCE_CACHE_MAX; mode++) {
 			modes_ready = modes_ready && hddagi_shader.screen_probe_irradiance_cache_shader_version[mode].is_valid() && hddagi_shader.screen_probe_irradiance_cache_pipeline[mode].is_valid();
 		}
 		modes_ready = modes_ready && screen_probe_mode_is_ready(trace_backend_mode(HDDAGIShader::SCREEN_PROBE_MODE_TRACE_IRRADIANCE_CACHE));
-		if (irradiance_cache_multibounce) {
-			modes_ready = modes_ready && screen_probe_mode_is_ready(HDDAGIShader::SCREEN_PROBE_MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE) && hddagi->voxel_albedo_data.is_valid();
+		if (hwrt) {
+			for (int mode = HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_TRACE_IRRADIANCE_CACHE_HWRT; mode < HDDAGIShader::SCREEN_PROBE_MODE_MAX; mode++) {
+				modes_ready = modes_ready && screen_probe_mode_is_ready(HDDAGIShader::ScreenProbeMode(mode));
+			}
+		} else if (irradiance_cache_multibounce) {
+			modes_ready = modes_ready && screen_probe_mode_is_ready(irradiance_cache_update_mode) && hddagi->voxel_albedo_data.is_valid();
 		}
 
 		if (!modes_ready) {
 			clear_irradiance_cache("the required compute resources could not be created");
 		} else {
 			uint32_t irradiance_cache_history_key = hash_murmur3_one_32(transport_configuration);
-			if (hwrt) {
-				irradiance_cache_history_key = hash_murmur3_one_64(hddagi->hwrt.get_scene_version(), irradiance_cache_history_key);
+			// HWRT surface versions invalidate individual entries on the GPU.
+			// AS rebuilds and camera cuts do not erase the world-space lighting.
+			if (!hwrt) {
+				irradiance_cache_history_key = hash_murmur3_one_32(lighting_configuration, irradiance_cache_history_key);
 			}
-			irradiance_cache_history_key = hash_murmur3_one_32(lighting_configuration, irradiance_cache_history_key);
 			irradiance_cache_history_key = hash_murmur3_one_32(0x49430101u, irradiance_cache_history_key);
 			irradiance_cache_history_key = hash_murmur3_one_32(irradiance_cache_multibounce ? 1u : 0u, irradiance_cache_history_key);
 			irradiance_cache_history_key = hash_murmur3_one_float(irradiance_cache_minimum_cell_size, irradiance_cache_history_key);
@@ -483,6 +493,8 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 
 			HDDAGIScreenProbeIrradianceCache::FrameSettings cache_frame;
 			cache_frame.camera_position = p_cam_transform.origin;
+			cache_frame.hwrt_instances = hwrt ? hddagi->hwrt.get_instance_buffer() : RID();
+			cache_frame.lighting_key = hwrt ? (uint64_t(lighting_configuration) << 32) ^ hddagi->hwrt.get_lighting_version() : 0;
 			cache_frame.history_key = irradiance_cache_history_key;
 			cache_frame.minimum_cell_size = irradiance_cache_minimum_cell_size;
 			cache_frame.sky_mode = screen_probe_sky_mode;
@@ -490,7 +502,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			for (uint32_t i = 0; i < 4; i++) {
 				cache_frame.sky_color[i] = screen_probe_sky_color[i];
 			}
-			cache_frame.reset_history = camera_cut;
+			cache_frame.reset_history = !hwrt && camera_cut;
 			cache_frame.multibounce = irradiance_cache_multibounce;
 			const Error frame_error = rbgi->screen_probe_irradiance_cache.prepare_frame(cache_frame, irradiance_cache_dispatch_info);
 			if (frame_error != OK) {
@@ -506,9 +518,15 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				};
 				irradiance_cache_trace_set = get_query_set(trace_backend_mode(HDDAGIShader::SCREEN_PROBE_MODE_TRACE_IRRADIANCE_CACHE));
 				sets_valid = sets_valid && RD::get_singleton()->uniform_set_is_valid(irradiance_cache_trace_set);
-				if (irradiance_cache_multibounce) {
-					irradiance_cache_multibounce_set = get_query_set(HDDAGIShader::SCREEN_PROBE_MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE);
-					const HDDAGIShader::ScreenProbeMode update_mode = HDDAGIShader::SCREEN_PROBE_MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE;
+				if (hwrt) {
+					for (int mode = HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_TRACE_IRRADIANCE_CACHE_HWRT; mode < HDDAGIShader::SCREEN_PROBE_MODE_MAX; mode++) {
+						irradiance_cache_hwrt_sets[mode] = get_query_set(HDDAGIShader::ScreenProbeMode(mode));
+						sets_valid = sets_valid && RD::get_singleton()->uniform_set_is_valid(irradiance_cache_hwrt_sets[mode]);
+					}
+				}
+				if (hwrt || irradiance_cache_multibounce) {
+					irradiance_cache_multibounce_set = get_query_set(irradiance_cache_update_mode);
+					const HDDAGIShader::ScreenProbeMode update_mode = irradiance_cache_update_mode;
 					LocalVector<RD::Uniform> multibounce_uniforms = {
 						RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, hwrt ? default_hddagi_voxel_bits_texture : hddagi->voxel_bits_tex),
 						RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 3, hwrt ? default_hddagi_voxel_region_texture : hddagi->voxel_region_tex),
@@ -517,9 +535,13 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 						RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, hwrt ? default_hddagi_voxel_neighbours_texture : hddagi->voxel_light_neighbour_data),
 						RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 7, hddagi_ubo),
 						RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 8, hwrt ? default_hddagi_voxel_disocclusion_texture : hddagi->voxel_disocclusion_tex),
-						RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->screen_probe_scene_data_ubo),
-						RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 10, hddagi->voxel_albedo_data)
+						RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, rbgi->screen_probe_scene_data_ubo)
 					};
+					if (hwrt) {
+						hddagi->hwrt.append_uniforms(multibounce_uniforms);
+					} else {
+						multibounce_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 10, hddagi->voxel_albedo_data));
+					}
 					(hwrt ? default_rigid : hddagi->rigid).append_uniforms(multibounce_uniforms);
 					irradiance_cache_multibounce_resources_set = UniformSetCacheRD::get_singleton()->get_cache_vec(hddagi_shader.screen_probe_shader_version[update_mode], 0, multibounce_uniforms);
 					irradiance_cache_multibounce_sky_set = UniformSetCacheRD::get_singleton()->get_cache(
@@ -544,6 +566,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		}
 	}
 
+	hwrt_cache_active = hwrt && irradiance_cache_active;
+	directional_trace_mode = trace_backend_mode(HDDAGIShader::SCREEN_PROBE_MODE_DIRECTIONAL_TRACE);
+	specular_trace_mode = trace_backend_mode(HDDAGIShader::SCREEN_PROBE_MODE_SPECULAR_TRACE);
 	uint32_t configuration = hash_murmur3_one_32(directional_gather ? 0x44475202u : 0u);
 	if (directional_gather) {
 		configuration = hash_murmur3_one_32(directional_adaptive ? 1u : 0u, configuration);
@@ -1404,13 +1429,15 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			rbgi->screen_probe_irradiance_cache.mark_clear_recorded();
 		}
 		dispatch_irradiance_cache(HDDAGIShader::SCREEN_PROBE_IRRADIANCE_CACHE_AGE, irradiance_cache_dispatch_info.capacity);
-		if (irradiance_cache_multibounce) {
-			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, hddagi_shader.screen_probe_pipeline[HDDAGIShader::SCREEN_PROBE_MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE]);
+		if (hwrt || irradiance_cache_multibounce) {
+			RENDER_TIMESTAMP("HDDAGI Irradiance Cache Training");
+			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, hddagi_shader.screen_probe_pipeline[irradiance_cache_update_mode]);
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, irradiance_cache_multibounce_resources_set, 0);
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, irradiance_cache_multibounce_sky_set, 1);
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, irradiance_cache_multibounce_set, 2);
 			RD::get_singleton()->compute_list_dispatch_threads(compute_list, irradiance_cache_dispatch_info.capacity, 1, 1);
 			RD::get_singleton()->compute_list_add_barrier(compute_list);
+			RENDER_TIMESTAMP("HDDAGI Irradiance Cache Training End");
 			dispatch_irradiance_cache(HDDAGIShader::SCREEN_PROBE_IRRADIANCE_CACHE_AGE, irradiance_cache_dispatch_info.capacity);
 		}
 		dispatch_irradiance_cache(HDDAGIShader::SCREEN_PROBE_IRRADIANCE_CACHE_PROCESS, irradiance_cache_dispatch_info.max_requests);
@@ -1445,6 +1472,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, hddagi_shader.screen_probe_pipeline[directional_trace_mode]);
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, directional_trace_sets[v], 0);
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, directional_trace_sky_sets[v], 1);
+			if (hwrt_cache_active) {
+				RD::get_singleton()->compute_list_bind_uniform_set(compute_list, irradiance_cache_hwrt_sets[directional_trace_mode], 2);
+			}
 			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(push_constant));
 			RD::get_singleton()->compute_list_dispatch_threads(compute_list, directional_atlas_size.x, directional_atlas_size.y, 1);
 			RD::get_singleton()->compute_list_add_barrier(compute_list);
@@ -1491,6 +1521,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		if (hwrt && directional_gather) {
 			RENDER_TIMESTAMP("HDDAGI HWRT Directional Screen Probe Resolve");
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, resolve_sky_sets[v], 1);
+			if (hwrt_cache_active) {
+				RD::get_singleton()->compute_list_bind_uniform_set(compute_list, irradiance_cache_hwrt_sets[active_resolve_mode], 2);
+			}
 		}
 		HDDAGIShader::ScreenProbePushConstant resolve_push_constant = push_constant;
 		if (directional_gather) {
@@ -1529,6 +1562,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			RENDER_TIMESTAMP(hwrt ? "HDDAGI HWRT Screen Probe Specular Trace" : "HDDAGI Screen Probe Specular Trace");
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, specular_trace_sets[v], 0);
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, specular_trace_sky_sets[v], 1);
+			if (hwrt_cache_active) {
+				RD::get_singleton()->compute_list_bind_uniform_set(compute_list, irradiance_cache_hwrt_sets[specular_trace_mode], 2);
+			}
 			RD::get_singleton()->compute_list_set_push_constant(compute_list, &specular_push_constant, sizeof(specular_push_constant));
 			RD::get_singleton()->compute_list_dispatch_threads(compute_list, p_gi_size.x, p_gi_size.y, 1);
 			RD::get_singleton()->compute_list_add_barrier(compute_list);

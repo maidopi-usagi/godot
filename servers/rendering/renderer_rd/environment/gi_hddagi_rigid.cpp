@@ -206,7 +206,13 @@ void GI::HDDAGI::update_rigid_lighting(RenderDataRD *p_render_data) {
 	}
 	if (hwrt_enabled) {
 		const float exposure = p_render_data->camera_attributes.is_valid() ? RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes) : 1.0f;
-		hwrt.update_lights(rigid_lights_buffer, light_count, exposure, bounce_feedback);
+		// Ignore cull ordering; only actual light parameters should accelerate
+		// irradiance refresh. Camera motion and skeletal updates retain history.
+		uint32_t lighting_signature = hash_murmur3_one_32(light_count);
+		for (uint32_t i = 0; i < light_count; i++) {
+			lighting_signature += hash_murmur3_buffer((const uint8_t *)&lights[i], sizeof(HDDAGIShader::Light));
+		}
+		hwrt.update_lights(rigid_lights_buffer, light_count, exposure, bounce_feedback, lighting_signature);
 		return;
 	}
 

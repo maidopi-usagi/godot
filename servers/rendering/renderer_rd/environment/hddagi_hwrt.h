@@ -117,23 +117,28 @@ class HDDAGIHwrt {
 		uint64_t mesh_version = 0;
 		uint64_t last_seen = 0;
 	};
-	struct CachedInstance {
-		MeshKey mesh;
-		MaterialKey material;
-		HashMap<MeshKey, DeformedMesh, MeshKeyHasher> deformed_meshes;
-		uint64_t capture_version = 0;
-		uint64_t last_seen = 0;
-	};
 	struct Instance {
 		uint64_t id = 0;
 		RID blas;
 		Transform3D transform;
+		uint64_t mesh_version = 0;
+		uint64_t deformation_version = 0;
+		uint64_t surface_version = 0;
+		uint32_t metadata_index = 0;
 		uint32_t normal_offset = 0;
 		uint32_t material_offset = 0;
 		bool same_geometry(const Instance &p_other) const {
-			return id == p_other.id && blas == p_other.blas && transform == p_other.transform;
+			return id == p_other.id && blas == p_other.blas && transform == p_other.transform && mesh_version == p_other.mesh_version && deformation_version == p_other.deformation_version;
 		}
 		bool operator<(const Instance &p_other) const { return id < p_other.id; }
+	};
+	struct CachedInstance {
+		MeshKey mesh;
+		MaterialKey material;
+		HashMap<MeshKey, DeformedMesh, MeshKeyHasher> deformed_meshes;
+		Instance instance;
+		uint64_t capture_version = 0;
+		uint64_t last_seen = 0;
 	};
 	HashMap<MeshKey, Mesh, MeshKeyHasher> meshes;
 	HashMap<MaterialKey, Material, MaterialKeyHasher> materials;
@@ -162,6 +167,11 @@ class HDDAGIHwrt {
 		float bounce_feedback = 0.0f;
 	} scene_data;
 	uint64_t scene_version = 0;
+	uint64_t surface_version = 0;
+	uint64_t lighting_version = 0;
+	uint32_t lighting_signature = 0;
+	uint32_t metadata_count = 0;
+	LocalVector<uint32_t> free_metadata_indices;
 	uint32_t instance_capacity = 0;
 	uint64_t frame = 0;
 	bool mesh_timestamped = false;
@@ -185,11 +195,13 @@ class HDDAGIHwrt {
 public:
 	static bool is_supported();
 	void update(const PagedArray<RenderGeometryInstance *> *p_instances, const RenderSceneDataRD *p_scene_data);
-	void update_lights(RID p_lights_buffer, uint32_t p_light_count, float p_exposure, float p_bounce_feedback);
+	void update_lights(RID p_lights_buffer, uint32_t p_light_count, float p_exposure, float p_bounce_feedback, uint32_t p_lighting_signature);
 	void append_uniforms(LocalVector<RD::Uniform> &r_uniforms) const;
 	const AABB &get_bounds() const { return bounds; }
 	float get_max_distance() const { return scene_data.max_distance; }
 	uint64_t get_scene_version() const { return scene_version; }
+	RID get_instance_buffer() const { return instance_buffer; }
+	uint64_t get_lighting_version() const { return lighting_version; }
 	bool is_ready() const { return ready; }
 	void free();
 };
