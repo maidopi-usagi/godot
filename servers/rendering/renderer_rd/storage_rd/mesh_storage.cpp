@@ -1165,7 +1165,8 @@ void MeshStorage::_mesh_instance_remove_surface(MeshInstance *mi, int p_surface)
 void MeshStorage::mesh_instance_check_for_update(RID p_mesh_instance) {
 	MeshInstance *mi = mesh_instance_owner.get_or_null(p_mesh_instance);
 
-	bool needs_update = mi->dirty;
+	// Direct buffer writes change skinning inputs without rebuilding the instance.
+	bool needs_update = mi->dirty || mi->mesh_version != mi->mesh->data_version;
 
 	if (mi->weights_dirty && !mi->weight_update_list.in_list()) {
 		dirty_mesh_instance_weights.add(&mi->weight_update_list);
@@ -1191,6 +1192,20 @@ void MeshStorage::mesh_instance_check_for_update(RID p_mesh_instance) {
 void MeshStorage::mesh_instance_set_canvas_item_transform(RID p_mesh_instance, const Transform2D &p_transform) {
 	MeshInstance *mi = mesh_instance_owner.get_or_null(p_mesh_instance);
 	mi->canvas_item_transform_2d = p_transform;
+}
+
+uint64_t MeshStorage::mesh_instance_get_deformation_version(RID p_mesh_instance) const {
+	const MeshInstance *mi = mesh_instance_owner.get_or_null(p_mesh_instance);
+	ERR_FAIL_NULL_V(mi, 0);
+	return mi->deformation_version;
+}
+
+RID MeshStorage::mesh_instance_surface_get_deformed_vertex_buffer(RID p_mesh_instance, uint32_t p_surface) const {
+	const MeshInstance *mi = mesh_instance_owner.get_or_null(p_mesh_instance);
+	ERR_FAIL_NULL_V(mi, RID());
+	ERR_FAIL_UNSIGNED_INDEX_V(p_surface, mi->surfaces.size(), RID());
+	const MeshInstance::Surface &surface = mi->surfaces[p_surface];
+	return surface.vertex_buffer[surface.current_buffer];
 }
 
 void MeshStorage::update_mesh_instances() {
@@ -1299,6 +1314,8 @@ void MeshStorage::update_mesh_instances() {
 			RD::get_singleton()->compute_list_dispatch_threads(compute_list, push_constant.vertex_count, 1, 1);
 		}
 
+		mi->deformation_version++;
+		mi->mesh_version = mi->mesh->data_version;
 		mi->dirty = false;
 		if (sk) {
 			mi->skeleton_version = sk->version;

@@ -33,6 +33,7 @@
 #include "core/templates/hash_map.h"
 #include "core/templates/paged_array.h"
 #include "servers/rendering/renderer_geometry_instance.h"
+#include "servers/rendering/renderer_rd/shaders/environment/hddagi_hwrt_deform.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/hddagi_hwrt_material.glsl.gen.h"
 #include "servers/rendering/rendering_device.h"
 
@@ -64,7 +65,8 @@ class HDDAGIHwrt {
 	struct MeshKey {
 		RID mesh;
 		Vector<int> surfaces;
-		bool operator==(const MeshKey &p_other) const { return mesh == p_other.mesh && surfaces == p_other.surfaces; }
+		bool deformed = false;
+		bool operator==(const MeshKey &p_other) const { return mesh == p_other.mesh && surfaces == p_other.surfaces && deformed == p_other.deformed; }
 	};
 	struct MeshKeyHasher {
 		static uint32_t hash(const MeshKey &p_key);
@@ -73,6 +75,15 @@ class HDDAGIHwrt {
 		RID vertices;
 		RID blas;
 		RID material_mesh;
+		RID triangle_indices;
+		RID normal_template;
+		uint32_t triangle_count = 0;
+		struct DeformSurface {
+			uint32_t surface = 0;
+			uint32_t triangle_offset = 0;
+			uint32_t triangle_count = 0;
+		};
+		LocalVector<DeformSurface> deform_surfaces;
 		Size2i material_size;
 		Vector<int> material_surfaces;
 		Range normals; // One vec4 per triangle, in object space.
@@ -92,9 +103,17 @@ class HDDAGIHwrt {
 		uint64_t last_seen = 0;
 		bool valid = false;
 	};
+	struct DeformedMesh {
+		RID mesh_instance;
+		RID vertices;
+		RID blas;
+		Range normals;
+		uint64_t version = 0;
+	};
 	struct CachedInstance {
 		MeshKey mesh;
 		MaterialKey material;
+		DeformedMesh deformed;
 		uint64_t capture_version = 0;
 		uint64_t last_seen = 0;
 	};
@@ -122,6 +141,10 @@ class HDDAGIHwrt {
 	bool material_shader_initialized = false;
 	RID material_shader_version;
 	RID material_pipeline;
+	HddagiHwrtDeformShaderRD deform_shader;
+	bool deform_shader_initialized = false;
+	RID deform_shader_version;
+	RID deform_pipeline;
 	RID scene_buffer;
 	RID lights_buffer; // Owned by the GI context; packing is shared with software lighting.
 	AABB bounds;
@@ -136,14 +159,17 @@ class HDDAGIHwrt {
 	uint64_t frame = 0;
 	bool mesh_timestamped = false;
 	bool material_timestamped = false;
+	bool deform_timestamped = false;
 	bool ready = false;
 
 	bool _create_mesh(const MeshKey &p_key, Mesh &r_mesh);
+	bool _update_deformed(RID p_mesh_instance, const Mesh &p_mesh, DeformedMesh &r_deformed, bool &r_changed);
 	MaterialKey _material_key(RenderGeometryInstanceBase *p_instance) const;
 	bool _material_is_current(const MaterialKey &p_key) const;
 	bool _capture_material(RenderGeometryInstanceBase *p_instance, const Mesh &p_mesh, Material &r_material);
 	void _evict_unused();
 	void _free_mesh(Mesh &p_mesh);
+	void _free_deformed(DeformedMesh &p_mesh);
 	bool _supports_instance(RenderGeometryInstanceBase *p_instance) const;
 	MeshKey _mesh_key(RenderGeometryInstanceBase *p_instance) const;
 

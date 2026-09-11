@@ -202,6 +202,8 @@ private:
 		RID blend_weights_buffer;
 		List<MeshInstance *>::Element *I = nullptr; //used to erase itself
 		uint64_t skeleton_version = 0;
+		uint64_t deformation_version = 0;
+		uint64_t mesh_version = 0;
 		bool dirty = false;
 		bool weights_dirty = false;
 		SelfList<MeshInstance> weight_update_list;
@@ -656,6 +658,8 @@ public:
 	virtual void mesh_instance_check_for_update(RID p_mesh_instance) override;
 	virtual void mesh_instance_set_canvas_item_transform(RID p_mesh_instance, const Transform2D &p_transform) override;
 	virtual void update_mesh_instances() override;
+	uint64_t mesh_instance_get_deformation_version(RID p_mesh_instance) const;
+	RID mesh_instance_surface_get_deformed_vertex_buffer(RID p_mesh_instance, uint32_t p_surface) const;
 
 	/* MULTIMESH API */
 
