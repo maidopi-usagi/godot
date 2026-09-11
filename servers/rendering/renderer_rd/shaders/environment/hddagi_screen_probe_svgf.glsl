@@ -588,13 +588,15 @@ void svgf_temporal_main() {
 	vec2 output_moments = vec2(current_moment_luminance, current_moment_luminance * current_moment_luminance);
 	float history_length = current_surface_valid ? 1.0 : 0.0;
 	float output_screen_confidence = current_screen_confidence;
-	bool history_footprint_valid = history_weight_sum > 1e-5 && (!specular_mode || maximum_history_tap_weight > 0.01);
+	bool history_footprint_valid = history_weight_sum > 1e-5 && maximum_history_tap_weight > 0.01;
 	if (current_surface_valid && history_footprint_valid) {
 		vec3 history_signal = accumulated_history / history_weight_sum;
 		vec2 previous_moments = accumulated_moments / history_weight_sum;
 		float previous_history_length = accumulated_history_length / history_weight_sum;
 		float previous_screen_confidence = accumulated_history_screen_confidence / history_weight_sum;
-		float reprojection_quality = specular_mode && !current_dynamic ? 1.0 : sqrt(clamp(history_weight_sum, 0.0, 1.0));
+		// Surviving taps have already passed the surface tests and are normalized.
+		// Missing bilinear coverage must not keep a static silhouette perpetually young.
+		float reprojection_quality = !current_dynamic ? 1.0 : sqrt(clamp(history_weight_sum, 0.0, 1.0));
 		float maximum_history_length = params.atrous.w;
 		// Interpolated, weak probe responses are still useful for probe filtering,
 		// but must not disturb a mature pixel history in otherwise stable lighting.

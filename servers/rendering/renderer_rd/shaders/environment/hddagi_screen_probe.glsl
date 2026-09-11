@@ -648,6 +648,25 @@ vec3 compute_view_position(vec3 screen_position) {
 
 #endif
 
+#if defined(MODE_DIRECTIONAL_ADAPTIVE_MARK) || defined(MODE_DIRECTIONAL_ADAPTIVE_SPAWN) || defined(MODE_DIRECTIONAL_FILTER) || defined(MODE_DIRECTIONAL_RESOLVE)
+float directional_receiver_plane_tolerance(vec3 receiver_view, float receiver_separation, float base_tolerance, float separation_scale) {
+	if ((params.flags & SCREEN_PROBE_FLAG_HWRT) != 0u) {
+		// Match the raster footprint instead of merging all surfaces within 2 cm.
+		// Perspective depth and orthographic projection scale both track scene units.
+		float view_scale = abs(scene_data.projection[params.view_index][3][3]) > 0.5 ? 1.0 : abs(receiver_view.z);
+		float pixel_size = 2.0 * view_scale / max(abs(scene_data.projection[params.view_index][1][1]) * float(params.screen_size.y), 1e-6);
+		return max(0.5 * pixel_size + separation_scale * receiver_separation, 1e-5);
+	}
+	return max(base_tolerance + separation_scale * receiver_separation, 1e-4);
+}
+
+bool directional_receiver_normal_compatible(vec3 receiver_normal, vec3 probe_normal) {
+	// Hardware probes include real back-side/self occlusion. Those directions
+	// cannot provide irradiance for an opposite-facing receiver across a thin edge.
+	return (params.flags & SCREEN_PROBE_FLAG_HWRT) == 0u || dot(receiver_normal, probe_normal) > 0.0;
+}
+#endif
+
 bool decode_normal(vec3 encoded, out vec3 r_normal) {
 	r_normal = encoded * 2.0 - 1.0;
 	float length_squared = dot(r_normal, r_normal);
@@ -768,14 +787,14 @@ ivec2 directional_adaptive_candidate_position(ivec2 tile, uint candidate_index) 
 	return screen_begin + offset;
 }
 
-float directional_adaptive_receiver_weight_decoded(vec3 receiver_view, vec3 receiver_normal, bool receiver_dynamic, vec3 probe_view, bool probe_dynamic, float spatial_weight) {
-	if (probe_dynamic != receiver_dynamic) {
+float directional_adaptive_receiver_weight_decoded(vec3 receiver_view, vec3 receiver_normal, bool receiver_dynamic, vec3 probe_view, vec3 probe_normal, bool probe_dynamic, float spatial_weight) {
+	if (probe_dynamic != receiver_dynamic || !directional_receiver_normal_compatible(receiver_normal, probe_normal)) {
 		return 0.0;
 	}
 	vec3 receiver_delta = probe_view - receiver_view;
 	float receiver_separation = length(receiver_delta);
 	float receiver_plane_distance = abs(dot(receiver_delta, receiver_normal));
-	float receiver_tolerance = max(0.02 + 0.02 * receiver_separation, 1e-4);
+	float receiver_tolerance = directional_receiver_plane_tolerance(receiver_view, receiver_separation, 0.02, 0.02);
 	float plane_weight = 1.0 - smoothstep(receiver_tolerance, receiver_tolerance * 2.0, receiver_plane_distance);
 	return max(spatial_weight, 0.0) * plane_weight;
 }
@@ -787,7 +806,7 @@ float directional_adaptive_receiver_weight(vec3 receiver_view, vec3 receiver_nor
 	if (!directional_adaptive_decode_surface_without_normal(packed_probe, probe_screen_position, probe_view, probe_dynamic)) {
 		return 0.0;
 	}
-	return directional_adaptive_receiver_weight_decoded(receiver_view, receiver_normal, receiver_dynamic, probe_view, probe_dynamic, spatial_weight);
+	return directional_adaptive_receiver_weight_decoded(receiver_view, receiver_normal, receiver_dynamic, probe_view, unpack_surface_normal(packed_probe.w), probe_dynamic, spatial_weight);
 }
 
 float directional_adaptive_uniform_coverage(ivec2 screen_position, vec3 receiver_view, vec3 receiver_normal, bool receiver_dynamic) {
@@ -955,7 +974,7 @@ float directional_adaptive_retained_coverage(ivec2 screen_position, vec3 receive
 		}
 		vec2 axis_distance = abs(vec2(retained_screen_position - screen_position)) / probe_screen_extent;
 		float spatial_weight = 1.0 - clamp(max(axis_distance.x, axis_distance.y), 0.0, 1.0);
-		coverage = max(coverage, directional_adaptive_receiver_weight_decoded(receiver_view, receiver_normal, receiver_dynamic, retained_view, retained_dynamic, spatial_weight));
+		coverage = max(coverage, directional_adaptive_receiver_weight_decoded(receiver_view, receiver_normal, receiver_dynamic, retained_view, unpack_surface_normal(directional_adaptive_retained_surfaces[retained_index].w), retained_dynamic, spatial_weight));
 	}
 	return coverage;
 }
@@ -1076,7 +1095,7 @@ float directional_adaptive_prior_coverage(ivec2 tile, uint candidate_index, ivec
 				vec2 axis_distance = abs(vec2(prior_screen_position - screen_position)) / probe_screen_extent;
 				float spatial_weight = 1.0 - clamp(min(axis_distance.x, axis_distance.y), 0.0, 1.0);
 				int corner_index = y * 2 + x;
-				corner_coverage[corner_index] = max(corner_coverage[corner_index], directional_adaptive_receiver_weight_decoded(receiver_view, receiver_normal, receiver_dynamic, prior_view, prior_dynamic, spatial_weight));
+				corner_coverage[corner_index] = max(corner_coverage[corner_index], directional_adaptive_receiver_weight_decoded(receiver_view, receiver_normal, receiver_dynamic, prior_view, prior_normal, prior_dynamic, spatial_weight));
 			}
 		}
 	}
@@ -4076,12 +4095,12 @@ void directional_filter_main() {
 
 		vec3 receiver_delta = neighbor_view_position - center_view_position;
 		bool compatible_normal = dot(center_normal, neighbor_normal) >= 0.85;
-		if (extended_neighbor && !compatible_normal) {
+		if (!directional_receiver_normal_compatible(center_normal, neighbor_normal) || (extended_neighbor && !compatible_normal)) {
 			continue;
 		}
 		float receiver_separation = length(receiver_delta);
 		float receiver_plane_distance = abs(dot(receiver_delta, center_normal));
-		float receiver_tolerance = max(params.history_depth_tolerance + params.spatial_depth_tolerance_scale * receiver_separation, 1e-4);
+		float receiver_tolerance = directional_receiver_plane_tolerance(center_view_position, receiver_separation, params.history_depth_tolerance, params.spatial_depth_tolerance_scale);
 		float receiver_plane_weight = 1.0 - smoothstep(0.0, receiver_tolerance, receiver_plane_distance);
 		float weight = receiver_plane_weight * kernel_weight;
 		if (!(weight > 0.0) || isnan(weight) || isinf(weight)) {
@@ -4428,7 +4447,8 @@ float directional_receiver_weight(ivec2 probe_position, vec3 pixel_view_position
 	float probe_depth;
 	vec3 probe_normal;
 	bool probe_dynamic;
-	if (!load_resolve_probe_surface(probe_position, r_probe_screen_position, probe_depth, probe_normal, probe_dynamic) || probe_dynamic != pixel_dynamic) {
+	if (!load_resolve_probe_surface(probe_position, r_probe_screen_position, probe_depth, probe_normal, probe_dynamic) || probe_dynamic != pixel_dynamic ||
+			!directional_receiver_normal_compatible(pixel_normal, probe_normal)) {
 		return 0.0;
 	}
 	vec2 probe_uv = (vec2(r_probe_screen_position) + 0.5) / vec2(params.screen_size);
@@ -4439,7 +4459,7 @@ float directional_receiver_weight(ivec2 probe_position, vec3 pixel_view_position
 	vec3 receiver_delta = probe_view_position - pixel_view_position;
 	float receiver_separation = length(receiver_delta);
 	float receiver_plane_distance = abs(dot(receiver_delta, pixel_normal));
-	float receiver_plane_tolerance = max(params.history_depth_tolerance + params.spatial_depth_tolerance_scale * receiver_separation, 1e-4);
+	float receiver_plane_tolerance = directional_receiver_plane_tolerance(pixel_view_position, receiver_separation, params.history_depth_tolerance, params.spatial_depth_tolerance_scale);
 	return 1.0 - smoothstep(receiver_plane_tolerance, receiver_plane_tolerance * 2.0, receiver_plane_distance);
 }
 
@@ -4627,7 +4647,11 @@ void screen_probe_resolve_main() {
 		resolved = clamp(resolved, vec4(0.0), vec4(65504.0));
 	}
 #ifdef MODE_DIRECTIONAL_RESOLVE
-	resolved.rgb = mix(directional_base_ambient(resolve_position, resolve_size), resolved.rgb, clamp(coverage, 0.0, 1.0));
+	// HWRT has no voxel ambient to blend into. Coverage is reconstruction
+	// confidence, not visibility: valid normalized irradiance must keep its energy.
+	if ((params.flags & SCREEN_PROBE_FLAG_HWRT) == 0u) {
+		resolved.rgb = mix(directional_base_ambient(resolve_position, resolve_size), resolved.rgb, clamp(coverage, 0.0, 1.0));
+	}
 #endif
 	imageStore(resolved_radiance_output, resolve_position, resolved);
 #ifdef MODE_SVGF_PREPARE
