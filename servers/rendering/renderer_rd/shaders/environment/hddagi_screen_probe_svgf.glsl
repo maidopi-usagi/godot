@@ -463,6 +463,7 @@ void svgf_temporal_main() {
 	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 size = imageSize(current_signal_output);
 	bool specular_mode = (params.control.x & 2u) != 0u;
+	bool stochastic_specular_lighting = (params.control.x & 32u) != 0u;
 	bool diffuse_lighting_response = (params.control.x & 16u) != 0u;
 	bool lighting_changed = (params.control.x & 8u) != 0u;
 	bool pixel_in_bounds = all(lessThan(pixel, size));
@@ -510,6 +511,11 @@ void svgf_temporal_main() {
 		current_surface_uv_offset = vec2(0.0);
 		current_dynamic = false;
 	}
+	float motion_history_response = 0.0;
+	if (specular_mode) {
+		float motion_pixels = length(motion_sample.xy * vec2(size));
+		motion_history_response = max(current_dynamic ? 1.0 : 0.0, smoothstep(0.25, 2.0, motion_pixels));
+	}
 
 	vec3 accumulated_history = vec3(0.0);
 	vec2 accumulated_moments = vec2(0.0);
@@ -522,7 +528,10 @@ void svgf_temporal_main() {
 		vec2 current_uv = (vec2(pixel) + 0.5) / vec2(size);
 		vec2 current_surface_uv = current_uv + current_surface_uv_offset;
 		bool half_resolution_specular = specular_mode && (params.control.x & 4u) == 0u;
-		vec2 previous_uv = half_resolution_specular ? current_uv + motion : current_surface_uv + motion + (frame_data.taa_jitter.zw - frame_data.taa_jitter.xy) * 0.5;
+		// Integrate stationary stochastic lighting over the pixel's TAA footprint.
+		// Reprojecting jitter alone repeatedly blurs a long bilinear history.
+		float jitter_reprojection = stochastic_specular_lighting ? motion_history_response : 1.0;
+		vec2 previous_uv = half_resolution_specular ? current_uv + motion : current_surface_uv + motion + (frame_data.taa_jitter.zw - frame_data.taa_jitter.xy) * (0.5 * jitter_reprojection);
 		vec3 current_view_position;
 		if (svgf_finite_vec4(motion_sample) && svgf_finite_vec2(previous_uv) && svgf_finite_vec2(current_surface_uv) &&
 				svgf_reconstruct_view(frame_data.current_inv_projection, current_surface_uv, current_view_z, (params.control.w & 1u) != 0u, current_view_position)) {
@@ -621,15 +630,23 @@ void svgf_temporal_main() {
 		bool neighborhood_valid = (specular_mode || lighting_changed || diffuse_lighting_response) && svgf_temporal_neighborhood(current_signal.rgb, neighborhood_center, neighborhood_extent);
 		if (specular_mode) {
 			float broad_history_response = smoothstep(0.05, 0.12, current_roughness);
-			float stationary_history_length = mix(12.0, params.atrous.w, broad_history_response);
-			float motion_pixels = length(motion_sample.xy * vec2(size));
-			float motion_history_response = max(current_dynamic ? 1.0 : 0.0, smoothstep(0.25, 2.0, motion_pixels));
+			float stationary_history_length = mix(stochastic_specular_lighting ? 32.0 : 12.0, params.atrous.w, broad_history_response);
 			maximum_history_length = mix(stationary_history_length, 12.0, motion_history_response);
 			if ((params.control.x & 4u) != 0u) {
 				float temporal_roughness = current_roughness < 0.001 ? 0.0 : max(current_roughness, 0.0316227766);
-				maximum_history_length = mix(2.0, maximum_history_length, clamp(temporal_roughness / 0.05, 0.0, 1.0));
+				float mirror_history_length = mix(2.0, maximum_history_length, clamp(temporal_roughness / 0.05, 0.0, 1.0));
+				// HWRT's secondary diffuse bounce is stochastic even at roughness 0.
+				// Accumulate it while stationary, retaining the short moving-mirror history.
+				maximum_history_length = mix(mirror_history_length, maximum_history_length, stochastic_specular_lighting ? 1.0 - motion_history_response : 0.0);
 			}
 			if (neighborhood_valid) {
+				if (stochastic_specular_lighting && !lighting_changed) {
+					// A dark Monte Carlo neighborhood does not prove that its true lighting
+					// is black. Retain its measured noise only while the scene is unchanged;
+					// changed occluders or lights must still retire the old reflected light.
+					float temporal_sigma = sqrt(max(previous_moments.y - previous_moments.x * previous_moments.x, 0.0)) / SPECULAR_MOMENT_LUMINANCE_SCALE;
+					neighborhood_extent = max(neighborhood_extent, vec3(temporal_sigma * (1.0 - motion_history_response)));
+				}
 				vec3 history_ycocg = svgf_rgb_to_ycocg(history_signal);
 				vec3 clamped_history_ycocg = clamp(history_ycocg, neighborhood_center - neighborhood_extent, neighborhood_center + neighborhood_extent);
 				vec3 normalized_history_error = abs(clamped_history_ycocg - history_ycocg) / max(neighborhood_extent, vec3(0.1));

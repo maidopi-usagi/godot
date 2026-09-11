@@ -347,7 +347,8 @@ struct HDDAGIScreenProbeSVGF::Implementation {
 		SVGFPushConstant push_constant = {};
 		push_constant.control[0] = (history_valid ? 1u : 0u) | (p_frame.specular ? 2u : 0u) |
 				(p_frame.specular && p_frame.specular_full_resolution ? 4u : 0u) | (p_frame.lighting_changed ? 8u : 0u) |
-				(!p_frame.specular && p_frame.diffuse_lighting_response ? 16u : 0u);
+				(!p_frame.specular && p_frame.diffuse_lighting_response ? 16u : 0u) |
+				(p_frame.specular && p_frame.specular_stochastic_lighting ? 32u : 0u);
 		push_constant.control[2] = uint32_t(p_frame.quality) << 2u;
 		push_constant.control[3] = (p_frame.projection.is_orthogonal() ? 1u : 0u) | (p_frame.previous_projection.is_orthogonal() ? 2u : 0u) |
 				((view->frame_sequence & 7u) << 2u);

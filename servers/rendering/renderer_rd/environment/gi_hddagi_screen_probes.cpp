@@ -1584,6 +1584,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	if (specular_reflections) {
 		bool specular_svgf_succeeded[2] = {};
 		bool specular_svgf_failed = false;
+		const bool hwrt_scene_changed = hwrt && rbgi->screen_probe_specular_hwrt_scene_version != hddagi->hwrt.get_scene_version();
 		if (specular_svgf_active) {
 			for (uint32_t v = 0; v < p_view_count; v++) {
 				HDDAGIScreenProbeSVGF::FrameSettings frame;
@@ -1597,9 +1598,10 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				frame.denoising_range = SCREEN_PROBE_SPECULAR_DENOISING_RANGE;
 				frame.quality = svgf_quality;
 				frame.history_valid = specular_history_valid;
-				frame.lighting_changed = environment_lighting_changed || hddagi->rigid.has_pending_changes();
+				frame.lighting_changed = environment_lighting_changed || hddagi->rigid.has_pending_changes() || hwrt_scene_changed;
 				frame.specular = true;
 				frame.specular_full_resolution = p_gi_size == internal_size;
+				frame.specular_stochastic_lighting = hwrt && hddagi->bounce_feedback > 0.0f;
 
 				HDDAGIScreenProbeSVGF::Resources resources;
 				resources.motion_vectors = specular_motion[v];
@@ -1635,6 +1637,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		}
 		RD::get_singleton()->compute_list_end();
 		rbgi->hddagi_specular_reflection_valid = true;
+		rbgi->screen_probe_specular_hwrt_scene_version = hwrt ? hddagi->hwrt.get_scene_version() : 0;
 	}
 	rbgi->screen_probe_debug_montage_valid = debug_montage;
 	rbgi->screen_probe_debug_svgf_output_valid = debug_montage && svgf_all_views_succeeded;

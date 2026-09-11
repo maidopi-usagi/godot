@@ -199,8 +199,14 @@ bool trace_screen_probe_hwrt(vec3 origin_world, vec3 direction_world, vec3 recei
 	// One optional extra diffuse bounce, using the same triangle scene. No world
 	// probes or voxel-driven multibounce training are involved.
 	if (hwrt_scene.bounce_feedback > 0.0 && any(greaterThan(albedo, vec3(0.0)))) {
+#ifdef MODE_SPECULAR_TRACE
+		// Use a separate, temporally permuted stream for reflected indirect light.
+		// A common R2 phase across the mirror produces coherent moving noise.
+		vec2 random_sample = sample_temporally_permuted_r2_sequence(gl_GlobalInvocationID.xy, params.frame_index, 0x48575242u ^ (params.view_index * 0x9e3779b9u));
+#else
 		uvec2 seed = floatBitsToUint(origin_world.xy) ^ uvec2(floatBitsToUint(origin_world.z));
 		vec2 random_sample = sample_r2_sequence(seed, params.frame_index);
+#endif
 		vec3 direction = tangent_to_world(cosine_sample_hemisphere(random_sample), endpoint_normal_world);
 		vec3 next_position, next_normal, next_albedo, next_emission;
 		vec3 incoming;

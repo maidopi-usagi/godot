@@ -61,6 +61,8 @@ public:
 		bool diffuse_temporal_only = false;
 		bool specular = false;
 		bool specular_full_resolution = false;
+		// A deterministic mirror ray can still carry sampled indirect lighting.
+		bool specular_stochastic_lighting = false;
 	};
 
 	struct Resources {
