@@ -35,6 +35,7 @@
 #include "core/templates/local_vector.h"
 #include "servers/rendering/renderer_rd/shaders/environment/hddagi_screen_probe_svgf.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
+#include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/rendering_server_globals.h"
 #include "servers/rendering/storage/utilities.h"
@@ -280,6 +281,9 @@ struct HDDAGIScreenProbeSVGF::Implementation {
 		if (error == OK) {
 			error = validate_texture(p_resources.diffuse_radiance_hit_distance, p_frame.size, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT, "diffuse_radiance_hit_distance");
 		}
+		if (error == OK && p_frame.specular && p_frame.specular_stochastic_lighting) {
+			error = validate_texture(p_resources.specular_direct_radiance, p_frame.size, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT, "specular_direct_radiance");
+		}
 		if (error == OK) {
 			error = validate_texture(p_resources.output_diffuse_radiance_hit_distance, p_frame.size, RD::DATA_FORMAT_R16G16B16A16_SFLOAT,
 					RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, "output_diffuse_radiance_hit_distance");
@@ -371,6 +375,8 @@ struct HDDAGIScreenProbeSVGF::Implementation {
 		ERR_FAIL_COND_V(temporal_shader.is_null() || history_fix_shader.is_null() || atrous_shader.is_null() || specular_reconstruct_shader.is_null(), ERR_CANT_CREATE);
 
 		const bool specular_reconstruction = p_frame.specular && p_frame.quality != HDDAGIScreenProbeSVGF::QUALITY_LOW;
+		const RID direct_radiance = p_frame.specular && p_frame.specular_stochastic_lighting ? p_resources.specular_direct_radiance :
+				RendererRD::TextureStorage::get_singleton()->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
 		RID specular_reconstruct_set;
 		RID temporal_signal_input = p_resources.diffuse_radiance_hit_distance;
 		if (specular_reconstruction) {
@@ -381,7 +387,8 @@ struct HDDAGIScreenProbeSVGF::Implementation {
 					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 2, p_resources.view_z),
 					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 3, p_resources.motion_vectors),
 					RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 4, nearest_sampler),
-					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, view->filter_scratch));
+					RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, view->filter_scratch),
+					RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 6, direct_radiance));
 			temporal_signal_input = view->filter_scratch;
 		}
 
@@ -401,7 +408,8 @@ struct HDDAGIScreenProbeSVGF::Implementation {
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 9, temporal_signal_destination),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 10, temporal_moments_destination),
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 11, view->history_normal_roughness[current_slot]),
-				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 12, view->history_view_z[current_slot]));
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 12, view->history_view_z[current_slot]),
+				RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 13, direct_radiance));
 		const RID temporal_frame_data_set = uniform_set_cache->get_cache(
 				temporal_shader, 1,
 				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 0, view->frame_data_buffer));
@@ -437,6 +445,7 @@ struct HDDAGIScreenProbeSVGF::Implementation {
 			atrous_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 6, p_resources.diffuse_radiance_hit_distance));
 			atrous_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 7, p_resources.normal_roughness));
 			atrous_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 8, p_resources.motion_vectors));
+			atrous_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 9, direct_radiance));
 			atrous_sets[iteration] = uniform_set_cache->get_cache_vec(atrous_shader, 0, atrous_uniforms);
 			signal_source = signal_destination;
 		}

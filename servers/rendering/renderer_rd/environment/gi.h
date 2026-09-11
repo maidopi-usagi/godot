@@ -100,6 +100,7 @@
 #define RB_TEX_HDDAGI_SCREEN_PROBE_DENOISER_OUTPUT SNAME("output")
 
 #define RB_TEX_HDDAGI_SPECULAR_RAW SNAME("raw")
+#define RB_TEX_HDDAGI_SPECULAR_DIRECT SNAME("direct")
 #define RB_TEX_HDDAGI_SPECULAR_NORMAL_ROUGHNESS SNAME("normal_roughness")
 #define RB_TEX_HDDAGI_SPECULAR_VIEW_Z SNAME("view_z")
 #define RB_TEX_HDDAGI_SPECULAR_MOTION SNAME("motion")
@@ -674,7 +675,6 @@ public:
 		HDDAGIScreenProbeIrradianceCache screen_probe_irradiance_cache;
 		bool hddagi_specular_reflection_valid = false;
 		uint32_t screen_probe_specular_denoised_view_mask = 0;
-		uint64_t screen_probe_specular_hwrt_scene_version = 0;
 		bool screen_probe_debug_montage_valid = false;
 		bool screen_probe_debug_svgf_output_valid = false;
 		bool screen_probe_debug_hiz_valid = false;

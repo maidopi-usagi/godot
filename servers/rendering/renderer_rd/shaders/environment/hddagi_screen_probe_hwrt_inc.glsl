@@ -1,6 +1,11 @@
 #ifndef HDDAGI_SCREEN_PROBE_HWRT_INC_GLSL
 #define HDDAGI_SCREEN_PROBE_HWRT_INC_GLSL
 
+#ifdef MODE_SPECULAR_TRACE
+vec3 hwrt_specular_direct_radiance = vec3(0.0);
+vec3 hwrt_specular_albedo = vec3(0.0);
+#endif
+
 layout(set = 0, binding = 45) uniform accelerationStructureEXT screen_probe_hwrt_scene;
 layout(set = 0, binding = 46, std430) restrict readonly buffer HWRTInstances {
 	uvec4 data[]; // Triangle-normal offset, material sample offset, reserved.
@@ -196,6 +201,10 @@ bool trace_screen_probe_hwrt(vec3 origin_world, vec3 direction_world, vec3 recei
 	}
 #endif
 	radiance = hwrt_direct_lighting(endpoint_world, endpoint_normal_world, albedo, emission);
+#ifdef MODE_SPECULAR_TRACE
+	hwrt_specular_direct_radiance = radiance;
+	hwrt_specular_albedo = albedo;
+#endif
 	// One optional extra diffuse bounce, using the same triangle scene. No world
 	// probes or voxel-driven multibounce training are involved.
 	if (hwrt_scene.bounce_feedback > 0.0 && any(greaterThan(albedo, vec3(0.0)))) {

@@ -715,13 +715,17 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				specular_texture_matches(RB_TEX_HDDAGI_SPECULAR_NORMAL_ROUGHNESS, RD::DATA_FORMAT_R8G8B8A8_UNORM) &&
 				specular_texture_matches(RB_TEX_HDDAGI_SPECULAR_VIEW_Z, RD::DATA_FORMAT_R32_SFLOAT) &&
 				specular_texture_matches(RB_TEX_HDDAGI_SPECULAR_MOTION, RD::DATA_FORMAT_R16G16B16A16_SFLOAT) &&
-				specular_texture_matches(RB_TEX_HDDAGI_SPECULAR_DENOISED, RD::DATA_FORMAT_R16G16B16A16_SFLOAT);
+				specular_texture_matches(RB_TEX_HDDAGI_SPECULAR_DENOISED, RD::DATA_FORMAT_R16G16B16A16_SFLOAT) &&
+				(!hwrt || specular_texture_matches(RB_TEX_HDDAGI_SPECULAR_DIRECT, RD::DATA_FORMAT_R16G16B16A16_SFLOAT));
 		if (!specular_resources_valid) {
 			specular_resources_recreated = true;
 			p_render_buffers->clear_context(RB_SCOPE_HDDAGI_SPECULAR_REFLECTIONS);
 			rbgi->screen_probe_specular_svgf.clear();
 			const uint32_t usage = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT;
 			p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SPECULAR_REFLECTIONS, RB_TEX_HDDAGI_SPECULAR_RAW, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, p_gi_size, p_view_count);
+			if (hwrt) {
+				p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SPECULAR_REFLECTIONS, RB_TEX_HDDAGI_SPECULAR_DIRECT, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, p_gi_size, p_view_count);
+			}
 			p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SPECULAR_REFLECTIONS, RB_TEX_HDDAGI_SPECULAR_NORMAL_ROUGHNESS, RD::DATA_FORMAT_R8G8B8A8_UNORM, usage, RD::TEXTURE_SAMPLES_1, p_gi_size, p_view_count);
 			p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SPECULAR_REFLECTIONS, RB_TEX_HDDAGI_SPECULAR_VIEW_Z, RD::DATA_FORMAT_R32_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, p_gi_size, p_view_count);
 			p_render_buffers->create_texture(RB_SCOPE_HDDAGI_SPECULAR_REFLECTIONS, RB_TEX_HDDAGI_SPECULAR_MOTION, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, p_gi_size, p_view_count);
@@ -730,7 +734,8 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 					specular_texture_matches(RB_TEX_HDDAGI_SPECULAR_NORMAL_ROUGHNESS, RD::DATA_FORMAT_R8G8B8A8_UNORM) &&
 					specular_texture_matches(RB_TEX_HDDAGI_SPECULAR_VIEW_Z, RD::DATA_FORMAT_R32_SFLOAT) &&
 					specular_texture_matches(RB_TEX_HDDAGI_SPECULAR_MOTION, RD::DATA_FORMAT_R16G16B16A16_SFLOAT) &&
-					specular_texture_matches(RB_TEX_HDDAGI_SPECULAR_DENOISED, RD::DATA_FORMAT_R16G16B16A16_SFLOAT);
+					specular_texture_matches(RB_TEX_HDDAGI_SPECULAR_DENOISED, RD::DATA_FORMAT_R16G16B16A16_SFLOAT) &&
+					(!hwrt || specular_texture_matches(RB_TEX_HDDAGI_SPECULAR_DIRECT, RD::DATA_FORMAT_R16G16B16A16_SFLOAT));
 		}
 		if (!specular_resources_valid) {
 			p_render_buffers->clear_context(RB_SCOPE_HDDAGI_SPECULAR_REFLECTIONS);
@@ -945,6 +950,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	RID specular_apply_sets[2];
 	RID specular_denoised_apply_sets[2];
 	RID specular_raw[2];
+	RID specular_direct[2];
 	RID specular_normal_roughness[2];
 	RID specular_view_z[2];
 	RID specular_motion[2];
@@ -1279,6 +1285,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		}
 		if (specular_reflections) {
 			specular_raw[v] = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SPECULAR_REFLECTIONS, RB_TEX_HDDAGI_SPECULAR_RAW, v, 0);
+			if (hwrt) {
+				specular_direct[v] = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SPECULAR_REFLECTIONS, RB_TEX_HDDAGI_SPECULAR_DIRECT, v, 0);
+			}
 			specular_normal_roughness[v] = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SPECULAR_REFLECTIONS, RB_TEX_HDDAGI_SPECULAR_NORMAL_ROUGHNESS, v, 0);
 			specular_view_z[v] = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SPECULAR_REFLECTIONS, RB_TEX_HDDAGI_SPECULAR_VIEW_Z, v, 0);
 			specular_motion[v] = p_render_buffers->get_texture_slice(RB_SCOPE_HDDAGI_SPECULAR_REFLECTIONS, RB_TEX_HDDAGI_SPECULAR_MOTION, v, 0);
@@ -1310,6 +1319,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			(hwrt ? default_rigid : hddagi->rigid).append_uniforms(specular_trace_uniforms);
 			if (hwrt) {
 				hddagi->hwrt.append_uniforms(specular_trace_uniforms);
+				specular_trace_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 53, specular_direct[v]));
 			}
 			specular_trace_sets[v] = UniformSetCacheRD::get_singleton()->get_cache_vec(hddagi_shader.screen_probe_shader_version[specular_trace_mode], 0, specular_trace_uniforms);
 			specular_trace_sky_sets[v] = UniformSetCacheRD::get_singleton()->get_cache(
@@ -1584,7 +1594,6 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	if (specular_reflections) {
 		bool specular_svgf_succeeded[2] = {};
 		bool specular_svgf_failed = false;
-		const bool hwrt_scene_changed = hwrt && rbgi->screen_probe_specular_hwrt_scene_version != hddagi->hwrt.get_scene_version();
 		if (specular_svgf_active) {
 			for (uint32_t v = 0; v < p_view_count; v++) {
 				HDDAGIScreenProbeSVGF::FrameSettings frame;
@@ -1598,7 +1607,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				frame.denoising_range = SCREEN_PROBE_SPECULAR_DENOISING_RANGE;
 				frame.quality = svgf_quality;
 				frame.history_valid = specular_history_valid;
-				frame.lighting_changed = environment_lighting_changed || hddagi->rigid.has_pending_changes() || hwrt_scene_changed;
+				// AS updates are not a global lighting change. Reflected surfaces
+				// validate their own depth and normal history, including skinned hits.
+				frame.lighting_changed = environment_lighting_changed || (!hwrt && hddagi->rigid.has_pending_changes());
 				frame.specular = true;
 				frame.specular_full_resolution = p_gi_size == internal_size;
 				frame.specular_stochastic_lighting = hwrt && hddagi->bounce_feedback > 0.0f;
@@ -1608,6 +1619,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 				resources.normal_roughness = specular_normal_roughness[v];
 				resources.view_z = specular_view_z[v];
 				resources.diffuse_radiance_hit_distance = specular_raw[v];
+				resources.specular_direct_radiance = specular_direct[v];
 				resources.output_diffuse_radiance_hit_distance = specular_denoised[v];
 				const Error error = rbgi->screen_probe_specular_svgf.denoise(v, frame, resources);
 				specular_svgf_succeeded[v] = error == OK;
@@ -1637,7 +1649,6 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		}
 		RD::get_singleton()->compute_list_end();
 		rbgi->hddagi_specular_reflection_valid = true;
-		rbgi->screen_probe_specular_hwrt_scene_version = hwrt ? hddagi->hwrt.get_scene_version() : 0;
 	}
 	rbgi->screen_probe_debug_montage_valid = debug_montage;
 	rbgi->screen_probe_debug_svgf_output_valid = debug_montage && svgf_all_views_succeeded;

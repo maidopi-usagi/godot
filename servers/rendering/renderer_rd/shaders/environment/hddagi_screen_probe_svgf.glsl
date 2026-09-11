@@ -42,6 +42,7 @@ layout(rgba16f, set = 0, binding = 9) uniform restrict writeonly image2D current
 layout(rgba16f, set = 0, binding = 10) uniform restrict writeonly image2D current_moments_output;
 layout(rgba8, set = 0, binding = 11) uniform restrict writeonly image2D current_normal_roughness_output;
 layout(r32f, set = 0, binding = 12) uniform restrict writeonly image2D current_view_z_output;
+layout(set = 0, binding = 13) uniform texture2D direct_radiance_input;
 
 const int SPECULAR_NEIGHBORHOOD_RADIUS = 2;
 const int SPECULAR_NEIGHBORHOOD_SHARED_SIZE = 12;
@@ -58,6 +59,7 @@ layout(set = 0, binding = 2) uniform texture2D reconstruction_view_z_input;
 layout(set = 0, binding = 3) uniform texture2D reconstruction_motion_input;
 layout(set = 0, binding = 4) uniform sampler reconstruction_nearest_sampler;
 layout(rgba16f, set = 0, binding = 5) uniform restrict writeonly image2D reconstruction_signal_output;
+layout(set = 0, binding = 6) uniform texture2D reconstruction_direct_input;
 
 #endif
 
@@ -84,6 +86,7 @@ layout(rgba16f, set = 0, binding = 5) uniform restrict writeonly image2D filtere
 layout(set = 0, binding = 6) uniform texture2D current_raw_signal_input;
 layout(set = 0, binding = 7) uniform texture2D current_roughness_input;
 layout(set = 0, binding = 8) uniform texture2D current_motion_input;
+layout(set = 0, binding = 9) uniform texture2D direct_radiance_input;
 
 #endif
 
@@ -270,7 +273,8 @@ void svgf_specular_reconstruct_main() {
 	vec2 center_specular_guide = svgf_unpack_specular_roughness_source(center_encoded_normal.a);
 	float center_roughness = center_specular_guide.x;
 	vec4 center_signal = svgf_sanitize_signal(texelFetch(sampler2D(reconstruction_signal_input, reconstruction_nearest_sampler), pixel, 0));
-	if (center_roughness < 0.10 || center_roughness >= 0.40) {
+	bool mirror_indirect = (params.control.x & 32u) != 0u && center_roughness < 0.001;
+	if ((!mirror_indirect && center_roughness < 0.10) || center_roughness >= 0.40) {
 		imageStore(reconstruction_signal_output, pixel, center_signal);
 		return;
 	}
@@ -288,9 +292,9 @@ void svgf_specular_reconstruct_main() {
 	float signal_resolution_scale = (params.control.x & 4u) != 0u ? 1.0 : 0.5;
 	float maximum_radius = mix(4.0, 6.0, quality_response) * signal_resolution_scale;
 	float filter_radius = maximum_radius * clamp(center_roughness * 8.0, 0.0, 1.0);
-	int sample_count = 2 + int(reconstruction_quality) * 2;
+	int sample_count = mirror_indirect ? 8 : 2 + int(reconstruction_quality) * 2;
 	float broad_lobe_response = smoothstep(0.10, 0.30, center_roughness);
-	float reconstruction_response = smoothstep(0.10, 0.16, center_roughness) * (1.0 - smoothstep(0.34, 0.40, center_roughness));
+	float reconstruction_response = mirror_indirect ? 1.0 : smoothstep(0.10, 0.16, center_roughness) * (1.0 - smoothstep(0.34, 0.40, center_roughness));
 	float normal_power = params.atrous.x * mix(1.0, 0.35, broad_lobe_response);
 	bool center_dynamic = center_motion.w > 1.0;
 	bool center_far_hit = center_signal.a >= 65000.0;
@@ -308,15 +312,23 @@ void svgf_specular_reconstruct_main() {
 			abs(gradient_up) < abs(gradient_down) ? gradient_up : gradient_down);
 	float base_plane_threshold = max(0.001, params.atrous.y * (((params.control.w & 1u) != 0u) ? 1.0 : center_view_z));
 
-	vec3 center_denoiser_signal = svgf_specular_to_denoiser_space(center_signal.rgb);
-	vec3 signal_sum = center_denoiser_signal * 2.0;
-	float weight_sum = 2.0;
+	// Only reconstruct the sampled bounce in a mirror. Deterministic lighting
+	// remains sharp, and virtual depth/normal plus the coarse albedo key guard edges.
+	vec4 center_direct = mirror_indirect ? texelFetch(sampler2D(reconstruction_direct_input, reconstruction_nearest_sampler), pixel, 0) : vec4(0.0);
+	vec3 center_denoiser_signal = mirror_indirect ? max(center_signal.rgb - center_direct.rgb, vec3(0.0)) : svgf_specular_to_denoiser_space(center_signal.rgb);
+	float center_weight = mirror_indirect ? 1.0 : 2.0;
+	vec3 signal_sum = center_denoiser_signal * center_weight;
+	float weight_sum = center_weight;
 	for (int sample_index = 0; sample_index < 8; sample_index++) {
 		if (sample_index >= sample_count) {
 			break;
 		}
 		vec2 disk_sample = SPECULAR_RECONSTRUCTION_DISK[sample_index];
 		ivec2 offset = ivec2(round(disk_sample * filter_radius));
+		if (mirror_indirect) {
+			int neighbor = sample_index + (sample_index >= 4 ? 1 : 0);
+			offset = ivec2(neighbor % 3, neighbor / 3) - ivec2(1);
+		}
 		if (all(equal(offset, ivec2(0)))) {
 			continue;
 		}
@@ -336,7 +348,7 @@ void svgf_specular_reconstruct_main() {
 			continue;
 		}
 		float normal_cosine = max(dot(center_normal, sample_normal), 0.0);
-		if (!(normal_cosine > 0.6)) {
+		if (!(normal_cosine > (mirror_indirect ? 0.95 : 0.6))) {
 			continue;
 		}
 		float expected_depth_delta = dot(depth_gradient, vec2(offset));
@@ -346,7 +358,7 @@ void svgf_specular_reconstruct_main() {
 		}
 
 		vec2 sample_specular_guide = svgf_unpack_specular_roughness_source(sample_encoded_normal.a);
-		if (sample_specular_guide.x >= 0.40) {
+		if (sample_specular_guide.x >= 0.40 || (mirror_indirect && sample_specular_guide.x >= 0.001)) {
 			continue;
 		}
 		float roughness_delta = abs(sample_specular_guide.x - center_roughness);
@@ -356,6 +368,10 @@ void svgf_specular_reconstruct_main() {
 		float route_mismatch_weight = 0.35 * smoothstep(0.16, 0.38, center_roughness);
 		float source_weight = sample_specular_guide.y == center_specular_guide.y ? 1.0 : route_mismatch_weight;
 		vec4 sample_signal = svgf_sanitize_signal(texelFetch(sampler2D(reconstruction_signal_input, reconstruction_nearest_sampler), sample_pos, 0));
+		vec4 sample_direct = mirror_indirect ? texelFetch(sampler2D(reconstruction_direct_input, reconstruction_nearest_sampler), sample_pos, 0) : vec4(0.0);
+		if (mirror_indirect && sample_direct.a != center_direct.a) {
+			continue;
+		}
 		bool sample_far_hit = sample_signal.a >= 65000.0;
 		float hit_class_weight = sample_far_hit == center_far_hit ? 1.0 : route_mismatch_weight;
 		float hit_weight = hit_class_weight * mix(exp2(-abs(svgf_hit_log(sample_signal.a) - svgf_hit_log(center_signal.a)) * 12.0), 1.0, broad_lobe_response * 0.5);
@@ -364,12 +380,13 @@ void svgf_specular_reconstruct_main() {
 		if (!(weight > 1e-5) || !svgf_finite_float(weight)) {
 			continue;
 		}
-		signal_sum += svgf_specular_to_denoiser_space(sample_signal.rgb) * weight;
+		vec3 sample_filtered_signal = mirror_indirect ? max(sample_signal.rgb - sample_direct.rgb, vec3(0.0)) : svgf_specular_to_denoiser_space(sample_signal.rgb);
+		signal_sum += sample_filtered_signal * weight;
 		weight_sum += weight;
 	}
 
 	vec3 reconstructed_denoiser_signal = mix(center_denoiser_signal, signal_sum / max(weight_sum, 1e-5), reconstruction_response);
-	vec3 reconstructed_signal = svgf_specular_from_denoiser_space(reconstructed_denoiser_signal);
+	vec3 reconstructed_signal = mirror_indirect ? center_direct.rgb + reconstructed_denoiser_signal : svgf_specular_from_denoiser_space(reconstructed_denoiser_signal);
 	imageStore(reconstruction_signal_output, pixel, svgf_sanitize_signal(vec4(reconstructed_signal, center_signal.a)));
 }
 
@@ -477,6 +494,9 @@ void svgf_temporal_main() {
 				float sample_view_z = texelFetch(sampler2D(current_view_z_input, nearest_sampler), sample_position, 0).r;
 				vec4 sample_signal = texelFetch(sampler2D(current_signal_input, nearest_sampler), sample_position, 0);
 				if (svgf_valid_view_z(sample_view_z) && svgf_finite_vec4(sample_signal) && (!specular_mode || sample_signal.a > 0.0)) {
+					if (stochastic_specular_lighting) {
+						sample_signal.rgb = max(sample_signal.rgb - texelFetch(sampler2D(direct_radiance_input, nearest_sampler), sample_position, 0).rgb, vec3(0.0));
+					}
 					vec3 neighborhood_signal = specular_mode ? svgf_specular_to_denoiser_space(sample_signal.rgb) : max(sample_signal.rgb, vec3(0.0));
 					packed_sample = vec4(svgf_rgb_to_ycocg(neighborhood_signal), 1.0);
 				}
@@ -491,6 +511,9 @@ void svgf_temporal_main() {
 	}
 
 	vec4 current_signal = svgf_sanitize_signal(texelFetch(sampler2D(current_signal_input, nearest_sampler), pixel, 0));
+	if (stochastic_specular_lighting) {
+		current_signal.rgb = max(current_signal.rgb - texelFetch(sampler2D(direct_radiance_input, nearest_sampler), pixel, 0).rgb, vec3(0.0));
+	}
 	if (specular_mode) {
 		current_signal.rgb = svgf_specular_to_denoiser_space(current_signal.rgb);
 	}
@@ -516,6 +539,10 @@ void svgf_temporal_main() {
 		float motion_pixels = length(motion_sample.xy * vec2(size));
 		motion_history_response = max(current_dynamic ? 1.0 : 0.0, smoothstep(0.25, 2.0, motion_pixels));
 	}
+	// A static mirror's diffuse bounce is view independent. Its virtual hit
+	// already supplies camera reprojection and local geometry rejection; camera
+	// motion alone must not collapse this history to the moving-mirror limit.
+	float history_motion_response = stochastic_specular_lighting && current_roughness < 0.001 && !current_dynamic ? 0.0 : motion_history_response;
 
 	vec3 accumulated_history = vec3(0.0);
 	vec2 accumulated_moments = vec2(0.0);
@@ -630,22 +657,25 @@ void svgf_temporal_main() {
 		bool neighborhood_valid = (specular_mode || lighting_changed || diffuse_lighting_response) && svgf_temporal_neighborhood(current_signal.rgb, neighborhood_center, neighborhood_extent);
 		if (specular_mode) {
 			float broad_history_response = smoothstep(0.05, 0.12, current_roughness);
-			float stationary_history_length = mix(stochastic_specular_lighting ? 32.0 : 12.0, params.atrous.w, broad_history_response);
-			maximum_history_length = mix(stationary_history_length, 12.0, motion_history_response);
+			// Reconstructed mirror bounces already reuse the compatible 3x3 samples.
+			// A short history converges quickly without averaging deterministic detail.
+			float stochastic_history_length = current_roughness < 0.001 && (params.control.z >> 2u) != 0u ? 16.0 : 32.0;
+			float stationary_history_length = mix(stochastic_specular_lighting ? stochastic_history_length : 12.0, params.atrous.w, broad_history_response);
+			maximum_history_length = mix(stationary_history_length, 12.0, history_motion_response);
 			if ((params.control.x & 4u) != 0u) {
 				float temporal_roughness = current_roughness < 0.001 ? 0.0 : max(current_roughness, 0.0316227766);
 				float mirror_history_length = mix(2.0, maximum_history_length, clamp(temporal_roughness / 0.05, 0.0, 1.0));
 				// HWRT's secondary diffuse bounce is stochastic even at roughness 0.
-				// Accumulate it while stationary, retaining the short moving-mirror history.
-				maximum_history_length = mix(mirror_history_length, maximum_history_length, stochastic_specular_lighting ? 1.0 - motion_history_response : 0.0);
+				// Retain the short history only when the mirror itself is moving.
+				maximum_history_length = mix(mirror_history_length, maximum_history_length, stochastic_specular_lighting ? 1.0 - history_motion_response : 0.0);
 			}
 			if (neighborhood_valid) {
 				if (stochastic_specular_lighting && !lighting_changed) {
 					// A dark Monte Carlo neighborhood does not prove that its true lighting
-					// is black. Retain its measured noise only while the scene is unchanged;
-					// changed occluders or lights must still retire the old reflected light.
+					// is black. Geometry changes are rejected locally by the hit guides;
+					// actual environment lighting changes can still retire old illumination.
 					float temporal_sigma = sqrt(max(previous_moments.y - previous_moments.x * previous_moments.x, 0.0)) / SPECULAR_MOMENT_LUMINANCE_SCALE;
-					neighborhood_extent = max(neighborhood_extent, vec3(temporal_sigma * (1.0 - motion_history_response)));
+					neighborhood_extent = max(neighborhood_extent, vec3(temporal_sigma * (1.0 - history_motion_response)));
 				}
 				vec3 history_ycocg = svgf_rgb_to_ycocg(history_signal);
 				vec3 clamped_history_ycocg = clamp(history_ycocg, neighborhood_center - neighborhood_extent, neighborhood_center + neighborhood_extent);
@@ -898,6 +928,9 @@ void svgf_store_atrous(ivec2 pixel, vec3 signal, float variance) {
 	if ((params.control.z & 2u) != 0u) {
 		if ((params.control.x & 2u) != 0u) {
 			signal = svgf_specular_from_denoiser_space(signal);
+			if ((params.control.x & 32u) != 0u) {
+				signal += texelFetch(sampler2D(direct_radiance_input, nearest_sampler), pixel, 0).rgb;
+			}
 		}
 		float hit_distance = texelFetch(sampler2D(current_raw_signal_input, nearest_sampler), pixel, 0).a;
 		packed_value = svgf_finite_float(hit_distance) ? clamp(hit_distance, 0.0, FP16_MAX) : 0.0;

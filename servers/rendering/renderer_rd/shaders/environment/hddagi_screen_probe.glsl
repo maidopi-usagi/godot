@@ -271,6 +271,9 @@ layout(r32f, set = 0, binding = 15) uniform restrict writeonly image2D specular_
 layout(rgba16f, set = 0, binding = 16) uniform restrict writeonly image2D specular_motion_output;
 layout(set = 0, binding = 17) uniform texture2D specular_screen_radiance_buffer;
 layout(set = 0, binding = 18) uniform texture2D specular_previous_depth_buffer;
+#ifdef USE_HWRT
+layout(rgba16f, set = 0, binding = 53) uniform restrict writeonly image2D specular_direct_output;
+#endif
 #endif
 #ifdef MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE
 layout(r16ui, set = 0, binding = 10) uniform restrict readonly uimage3D hddagi_albedo_cascades;
@@ -3834,6 +3837,9 @@ void specular_trace_main() {
 	if (any(greaterThanEqual(output_position, output_size))) {
 		return;
 	}
+#ifdef USE_HWRT
+	imageStore(specular_direct_output, output_position, vec4(0.0));
+#endif
 
 	ivec2 screen_position = ivec2(0);
 	float origin_depth;
@@ -3894,6 +3900,14 @@ void specular_trace_main() {
 	vec3 sample_radiance = vec3(0.0);
 	float hit_distance = 0.0;
 	vec3 endpoint_world = vec3(0.0);
+	vec3 guide_view_position = view_position;
+	vec3 guide_view_normal = origin_normal;
+#ifdef USE_HWRT
+	bool split_mirror_lighting = roughness < 0.001 && hwrt_scene.bounce_feedback > 0.0;
+	vec3 direct_radiance = vec3(0.0);
+	float albedo_key = 0.0;
+	bool virtual_surface = false;
+#endif
 	bool screen_radiance_used = false;
 #ifndef USE_HWRT
 	if ((params.flags & SCREEN_PROBE_FLAG_DETAIL_TRACE) != 0u &&
@@ -3917,14 +3931,42 @@ void specular_trace_main() {
 		if (trace_hit && (hit_cascade >= 0 || hit_cascade == HDDAGI_TRACE_RIGID_ENDPOINT || hit_cascade == HDDAGI_TRACE_HWRT_ENDPOINT) && !any(isnan(endpoint_world)) && !any(isinf(endpoint_world))) {
 			vec3 receiver_world = (scene_data.cam_transform * vec4(view_position, 1.0)).xyz;
 			hit_distance = clamp(length(endpoint_world - receiver_world), 0.0, 65504.0);
+#ifdef USE_HWRT
+			if (split_mirror_lighting) {
+				direct_radiance = hwrt_specular_direct_radiance * hddagi.energy;
+				albedo_key = 1.0 + dot(floor(clamp(hwrt_specular_albedo, vec3(0.0), vec3(1.0)) * 7.0 + 0.5), vec3(1.0, 8.0, 64.0));
+				// Unfold the mirror ray into its virtual surface. History rejection
+				// and spatial reconstruction now follow the reflected geometry.
+				guide_view_position = view_position - view_direction * hit_distance;
+				guide_view_normal = reflect(transpose(mat3(scene_data.cam_transform)) * endpoint_normal_world, origin_normal);
+				virtual_surface = true;
+			}
+#endif
 		}
 		if (!trace_hit) {
 			sample_radiance = sample_environment(ray_direction);
 			hit_distance = 65504.0;
+#ifdef USE_HWRT
+			if (split_mirror_lighting) {
+				direct_radiance = sample_radiance * hddagi.energy;
+			}
+#endif
 		}
 	}
 	vec3 traced_radiance = sample_radiance * (screen_radiance_used ? 1.0 : hddagi.energy);
-	specular_store_guides(output_position, screen_position, true, dynamic_surface, view_position, origin_normal, roughness, screen_radiance_used);
+	specular_store_guides(output_position, screen_position, true, dynamic_surface, guide_view_position, guide_view_normal, roughness, screen_radiance_used);
+#ifdef USE_HWRT
+	if (virtual_surface && !dynamic_surface) {
+		vec3 virtual_world = (scene_data.cam_transform * vec4(guide_view_position, 1.0)).xyz;
+		vec3 previous_virtual_view = (scene_data.previous_cam_inv_transform * vec4(virtual_world, 1.0)).xyz;
+		vec2 current_uv, previous_uv;
+		if (specular_clip_to_uv(scene_data.temporal_projection[params.view_index] * vec4(guide_view_position, 1.0), current_uv) &&
+				specular_clip_to_uv(scene_data.previous_temporal_projection[params.view_index] * vec4(previous_virtual_view, 1.0), previous_uv)) {
+			vec2 surface_offset = origin_uv - (vec2(output_position) + 0.5) / vec2(output_size);
+			imageStore(specular_motion_output, output_position, vec4(previous_uv - current_uv, surface_offset));
+		}
+	}
+#endif
 
 	vec4 radiance_hit_distance = vec4(traced_radiance, hit_distance);
 	if (any(isnan(radiance_hit_distance)) || any(isinf(radiance_hit_distance))) {
@@ -3938,6 +3980,9 @@ void specular_trace_main() {
 		radiance_hit_distance.a = clamp(radiance_hit_distance.a, 0.0, 65504.0);
 	}
 	imageStore(raw_radiance_output, output_position, radiance_hit_distance);
+#ifdef USE_HWRT
+	imageStore(specular_direct_output, output_position, vec4(clamp(direct_radiance, vec3(0.0), radiance_hit_distance.rgb), albedo_key));
+#endif
 }
 
 #endif

@@ -70,6 +70,8 @@ public:
 		RID normal_roughness;
 		RID view_z;
 		RID diffuse_radiance_hit_distance;
+		// Deterministic mirror lighting, kept outside stochastic accumulation.
+		RID specular_direct_radiance;
 		RID output_diffuse_radiance_hit_distance;
 
 		bool is_valid() const {
