@@ -33,6 +33,7 @@
 #include "core/templates/hash_map.h"
 #include "core/templates/paged_array.h"
 #include "servers/rendering/renderer_geometry_instance.h"
+#include "servers/rendering/renderer_rd/shaders/environment/hddagi_hwrt_material.glsl.gen.h"
 #include "servers/rendering/rendering_device.h"
 
 namespace RendererRD {
@@ -42,6 +43,24 @@ namespace RendererRD {
 class HDDAGIHwrt {
 	static constexpr uint32_t MATERIAL_TILE_SIZE = 4;
 	static constexpr uint32_t MATERIAL_TILES_PER_ROW = 128;
+	static constexpr uint64_t CACHE_KEEP_FRAMES = 120;
+	static constexpr uint64_t CACHE_MAX_UNUSED_BYTES = 64 * 1024 * 1024;
+	struct Range {
+		uint32_t offset = 0;
+		uint32_t count = 0;
+	};
+	// Stable element offsets, with GPU copies only when the backing buffer grows.
+	struct Pool {
+		RID buffer;
+		uint32_t capacity = 0;
+		uint32_t used = 0;
+		uint32_t stride = 4;
+		LocalVector<Range> free_ranges;
+		bool reserve(uint32_t p_count);
+		Range allocate(uint32_t p_count);
+		void release(Range p_range);
+		void free();
+	};
 	struct MeshKey {
 		RID mesh;
 		Vector<int> surfaces;
@@ -56,10 +75,10 @@ class HDDAGIHwrt {
 		RID material_mesh;
 		Size2i material_size;
 		Vector<int> material_surfaces;
-		Vector<float> normals; // One vec4 per triangle, in object space.
+		Range normals; // One vec4 per triangle, in object space.
+		uint64_t bytes = 0; // Geometry/cache estimate for the inactive retention budget.
 		uint64_t version = 0;
 		uint64_t last_seen = 0;
-		uint32_t normal_offset = 0;
 	};
 	struct MaterialKey {
 		Vector<uint64_t> values;
@@ -69,28 +88,40 @@ class HDDAGIHwrt {
 		static uint32_t hash(const MaterialKey &p_key);
 	};
 	struct Material {
-		Vector<uint32_t> samples; // 4x4 barycentric samples per triangle: albedo/metallic + RGB9E5 emission.
+		Range samples; // GPU-only 4x4 samples per triangle: albedo/metallic + RGB9E5 emission.
 		uint64_t last_seen = 0;
-		uint32_t offset = 0;
 		bool valid = false;
+	};
+	struct CachedInstance {
+		MeshKey mesh;
+		MaterialKey material;
+		uint64_t capture_version = 0;
+		uint64_t last_seen = 0;
 	};
 	struct Instance {
 		uint64_t id = 0;
-		MeshKey mesh;
+		RID blas;
 		Transform3D transform;
-		MaterialKey material;
-		bool operator==(const Instance &p_other) const {
-			return id == p_other.id && mesh == p_other.mesh && transform == p_other.transform && material == p_other.material;
+		uint32_t normal_offset = 0;
+		uint32_t material_offset = 0;
+		bool same_geometry(const Instance &p_other) const {
+			return id == p_other.id && blas == p_other.blas && transform == p_other.transform;
 		}
 		bool operator<(const Instance &p_other) const { return id < p_other.id; }
 	};
 	HashMap<MeshKey, Mesh, MeshKeyHasher> meshes;
 	HashMap<MaterialKey, Material, MaterialKeyHasher> materials;
+	HashMap<uint64_t, CachedInstance> cached_instances;
 	LocalVector<Instance> instances;
+	LocalVector<Instance> next_instances;
 	RID tlas;
-	RID normal_buffer;
+	Pool normal_pool;
 	RID instance_buffer;
-	RID material_buffer;
+	Pool material_pool;
+	HddagiHwrtMaterialShaderRD material_shader;
+	bool material_shader_initialized = false;
+	RID material_shader_version;
+	RID material_pipeline;
 	RID scene_buffer;
 	RID lights_buffer; // Owned by the GI context; packing is shared with software lighting.
 	AABB bounds;
@@ -103,11 +134,15 @@ class HDDAGIHwrt {
 	uint64_t scene_version = 0;
 	uint32_t instance_capacity = 0;
 	uint64_t frame = 0;
+	bool mesh_timestamped = false;
+	bool material_timestamped = false;
 	bool ready = false;
 
 	bool _create_mesh(const MeshKey &p_key, Mesh &r_mesh);
 	MaterialKey _material_key(RenderGeometryInstanceBase *p_instance) const;
+	bool _material_is_current(const MaterialKey &p_key) const;
 	bool _capture_material(RenderGeometryInstanceBase *p_instance, const Mesh &p_mesh, Material &r_material);
+	void _evict_unused();
 	void _free_mesh(Mesh &p_mesh);
 	bool _supports_instance(RenderGeometryInstanceBase *p_instance) const;
 	MeshKey _mesh_key(RenderGeometryInstanceBase *p_instance) const;

@@ -3520,8 +3520,10 @@ void RenderForwardClustered::_render_material(const Transform3D &p_cam_transform
 	RD::get_singleton()->draw_command_end_label();
 }
 
-void RenderForwardClustered::_render_uv2(const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region) {
-	RENDER_TIMESTAMP("Setup Rendering UV2");
+void RenderForwardClustered::_render_uv2(const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region, bool p_capture_timestamps) {
+	if (p_capture_timestamps) {
+		RENDER_TIMESTAMP("Setup Rendering UV2");
+	}
 
 	RD::get_singleton()->draw_command_begin_label("Render UV2");
 
@@ -3555,7 +3557,9 @@ void RenderForwardClustered::_render_uv2(const PagedArray<RenderGeometryInstance
 
 	RID rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_SECONDARY, nullptr, false, RID(), RendererRD::MaterialStorage::get_singleton()->samplers_rd_get_default(), uniform_buffer_index);
 
-	RENDER_TIMESTAMP("Render 3D Material");
+	if (p_capture_timestamps) {
+		RENDER_TIMESTAMP("Render 3D Material");
+	}
 
 	{
 		RenderListParameters render_list_params(render_list[RENDER_LIST_SECONDARY].elements.ptr(), render_list[RENDER_LIST_SECONDARY].element_info.ptr(), render_list[RENDER_LIST_SECONDARY].elements.size(), true, pass_mode, 0, true, false, rp_uniform_set, true);
