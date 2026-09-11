@@ -369,7 +369,7 @@ void hddagi_irradiance_cache_vote_position(uint entry_index, uint generation, fl
 	}
 }
 
-HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_finish_lookup(uint entry_index, uint generation, uint cascade, float cell_size, vec3 position, vec3 normal, vec3 query_origin) {
+HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_finish_lookup(uint entry_index, uint generation, uint cascade, float cell_size, vec3 position, vec3 normal, vec3 query_origin, bool allow_update) {
 	HDDAGIIrradianceCacheLookup result = hddagi_irradiance_cache_empty_lookup();
 	uvec4 state = hddagi_irradiance_cache_entry_state[entry_index];
 	if (generation == 0u || state.y != generation) {
@@ -394,7 +394,7 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_finish_lookup(uint entry_ind
 	// An incompatible surface may share this coarse spatial cell, but it must not
 	// keep the old surface alive forever. Once compatible queries disappear, TTL
 	// eviction lets the cell train a new representative.
-	if (!result.representative_valid || representative_compatible) {
+	if (allow_update && (!result.representative_valid || representative_compatible)) {
 		uint rank = min(cascade / 4u, 2u);
 		atomicMax(hddagi_irradiance_cache_entry_state[entry_index].x, hddagi_irradiance_cache_params.control.x);
 		atomicMin(hddagi_irradiance_cache_entry_state[entry_index].w, rank);
@@ -410,13 +410,14 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_finish_lookup(uint entry_ind
 
 	uint refresh_hash = hddagi_irradiance_cache_hash_combine(entry_index, generation);
 	refresh_hash = hddagi_irradiance_cache_hash_combine(refresh_hash, hddagi_irradiance_cache_params.control.x);
-	result.needs_refresh = !radiance_valid || (refresh_hash & 3u) == 0u;
+	result.needs_refresh = !radiance_valid || (allow_update && (refresh_hash & 3u) == 0u);
 	return result;
 }
 
 // Finds or creates the toroidal clipmap entry containing position. query_origin
 // is the point toward which the position-reservoir proposal is pulled.
-HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 normal, vec3 query_origin) {
+// Read-only queries never allocate, vote, touch TTL, or wait on a writer.
+HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 normal, vec3 query_origin, bool allow_update) {
 	HDDAGIIrradianceCacheLookup result = hddagi_irradiance_cache_empty_lookup();
 	if (!hddagi_irradiance_cache_is_finite(position) || !hddagi_irradiance_cache_is_finite(normal) || !(dot(normal, normal) > 1e-12)) {
 		return result;
@@ -453,6 +454,9 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 n
 	for (uint attempt = 0u; attempt < 32u; attempt++) {
 		uvec2 grid_value = hddagi_irradiance_cache_grid[slot];
 		if (grid_value.x == HDDAGI_IRRADIANCE_CACHE_LOCKED) {
+			if (!allow_update) {
+				return result;
+			}
 			continue;
 		}
 
@@ -461,8 +465,11 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 n
 			ivec4 entry_cell = hddagi_irradiance_cache_entry_cells[entry_index];
 			uvec4 entry_state = hddagi_irradiance_cache_entry_state[entry_index];
 			if (grid_value.y != 0u && entry_state.y == grid_value.y && all(equal(entry_cell.xyz, world_cell)) && entry_cell.w == int(slot)) {
-				return hddagi_irradiance_cache_finish_lookup(entry_index, grid_value.y, cascade, cell_size, position, normal, query_origin);
+				return hddagi_irradiance_cache_finish_lookup(entry_index, grid_value.y, cascade, cell_size, position, normal, query_origin, allow_update);
 			}
+		}
+		if (!allow_update) {
+			return result;
 		}
 
 		uint expected = grid_value.x;
@@ -492,10 +499,14 @@ HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 n
 		hddagi_irradiance_cache_grid[slot].y = generation;
 		memoryBarrierBuffer();
 		atomicExchange(hddagi_irradiance_cache_grid[slot].x, entry_index);
-		return hddagi_irradiance_cache_finish_lookup(entry_index, generation, cascade, cell_size, position, normal, query_origin);
+		return hddagi_irradiance_cache_finish_lookup(entry_index, generation, cascade, cell_size, position, normal, query_origin, allow_update);
 	}
 
 	return result;
+}
+
+HDDAGIIrradianceCacheLookup hddagi_irradiance_cache_lookup(vec3 position, vec3 normal, vec3 query_origin) {
+	return hddagi_irradiance_cache_lookup(position, normal, query_origin, true);
 }
 
 // Loads one published representative without touching its lifetime or voting

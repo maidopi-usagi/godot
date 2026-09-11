@@ -178,7 +178,18 @@ bool trace_screen_probe_hwrt(vec3 origin_world, vec3 direction_world, vec3 recei
 	hit_cascade = HDDAGI_TRACE_HWRT_ENDPOINT;
 	screen_probe_debug_set_source(SCREEN_PROBE_DEBUG_HWRT);
 #ifdef MODE_IRRADIANCE_CACHE_QUERY
-	HDDAGIIrradianceCacheLookup lookup = hddagi_irradiance_cache_lookup(endpoint_world, endpoint_normal_world, origin_world);
+	HDDAGIIrradianceCacheLookup lookup = hddagi_irradiance_cache_empty_lookup();
+	// A changed triangle scene invalidates cached lighting, including shadows on
+	// static receivers. Do not populate a freshly cleared cache until the scene
+	// has survived one frame unchanged; continuous animation cannot reuse it.
+	bool cache_stable = hddagi_irradiance_cache_params.control.x != 0u;
+	// Rotate one writer per 8x8 tile. The other rays only read published entries
+	// or shade their actual hit, avoiding per-pixel allocation/voting contention.
+	uint writer_index = (gl_GlobalInvocationID.x & 7u) | ((gl_GlobalInvocationID.y & 7u) << 3u);
+	bool cache_update = cache_stable && writer_index == (params.frame_index & 63u);
+	if (cache_stable) {
+		lookup = hddagi_irradiance_cache_lookup(endpoint_world, endpoint_normal_world, origin_world, cache_update);
+	}
 	if (lookup.has_radiance && !lookup.needs_refresh) {
 		radiance = lookup.radiance;
 		return true;
@@ -205,7 +216,7 @@ bool trace_screen_probe_hwrt(vec3 origin_world, vec3 direction_world, vec3 recei
 	}
 	radiance = max(radiance, vec3(0.0));
 #ifdef MODE_IRRADIANCE_CACHE_QUERY
-	if (hddagi_irradiance_cache_should_submit_endpoint_sample(lookup)) {
+	if (cache_update && hddagi_irradiance_cache_should_submit_endpoint_sample(lookup)) {
 		hddagi_irradiance_cache_submit(lookup, endpoint_world, endpoint_normal_world, radiance);
 	}
 #endif
