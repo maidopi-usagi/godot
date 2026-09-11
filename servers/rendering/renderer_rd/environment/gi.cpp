@@ -3390,6 +3390,8 @@ void GI::init(SkyRD *p_sky) {
 		screen_probe_modes.push_back("\n#define MODE_TRACE\n#define MODE_SPECULAR_TRACE\n#define USE_HWRT\n");
 		screen_probe_modes.push_back("\n#define MODE_TRACE\n#define MODE_DEBUG_MONTAGE\n#define USE_HWRT\n");
 		screen_probe_modes.push_back("\n#define MODE_TRACE\n#define MODE_IRRADIANCE_CACHE_QUERY\n#define MODE_DEBUG_MONTAGE\n#define USE_HWRT\n");
+		screen_probe_modes.push_back("\n#define MODE_RESOLVE\n#define MODE_DIRECTIONAL_RESOLVE\n#define USE_HWRT\n");
+		screen_probe_modes.push_back("\n#define MODE_RESOLVE\n#define MODE_DIRECTIONAL_RESOLVE\n#define MODE_SVGF_PREPARE\n#define USE_HWRT\n");
 		DEV_ASSERT(screen_probe_modes.size() == HDDAGIShader::SCREEN_PROBE_MODE_MAX);
 
 		String screen_probe_defines;

@@ -6,6 +6,9 @@
 
 #ifdef USE_HWRT
 #extension GL_EXT_ray_query : require
+#ifdef MODE_DIRECTIONAL_RESOLVE
+#define HWRT_DIRECTIONAL_RESOLVE
+#endif
 #endif
 
 #if defined(MODE_IRRADIANCE_CACHE_QUERY) || defined(MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE)
@@ -197,20 +200,13 @@ layout(rgba32ui, set = 0, binding = 9) uniform restrict readonly uimage2D adapti
 
 #endif
 
-#if defined(MODE_TRACE) || defined(MODE_SPECULAR_TRACE) || defined(MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE)
-
-#include "hddagi_rigid_inc.glsl"
-
-#if defined(MODE_TRACE) || defined(MODE_SPECULAR_TRACE)
-layout(rgba32ui, set = 0, binding = 0) uniform restrict readonly uimage2D screen_probe_surface_input;
-layout(rgba16f, set = 0, binding = 1) uniform restrict writeonly image2D raw_radiance_output;
+#if defined(MODE_TRACE) || defined(MODE_SPECULAR_TRACE) || defined(MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE) || defined(HWRT_DIRECTIONAL_RESOLVE)
+#ifdef HWRT_DIRECTIONAL_RESOLVE
+layout(set = 0, binding = 15, std140)
+#else
+layout(set = 0, binding = 7, std140)
 #endif
-layout(rg32ui, set = 0, binding = 2) uniform restrict readonly uimage3D hddagi_voxel_cascades;
-layout(r8ui, set = 0, binding = 3) uniform restrict readonly uimage3D hddagi_voxel_region_cascades;
-layout(set = 0, binding = 4) uniform texture3D hddagi_light_cascades;
-layout(set = 0, binding = 5) uniform sampler linear_sampler;
-layout(r32ui, set = 0, binding = 6) uniform restrict readonly uimage3D hddagi_voxel_neighbours;
-layout(set = 0, binding = 7, std140) uniform HDDAGIData {
+uniform HDDAGIData {
 	ivec3 grid_size;
 	int max_cascades;
 
@@ -227,6 +223,21 @@ layout(set = 0, binding = 7, std140) uniform HDDAGIData {
 	ScreenProbeCascadeData cascades[8];
 }
 hddagi;
+#endif
+
+#if defined(MODE_TRACE) || defined(MODE_SPECULAR_TRACE) || defined(MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE)
+
+#include "hddagi_rigid_inc.glsl"
+
+#if defined(MODE_TRACE) || defined(MODE_SPECULAR_TRACE)
+layout(rgba32ui, set = 0, binding = 0) uniform restrict readonly uimage2D screen_probe_surface_input;
+layout(rgba16f, set = 0, binding = 1) uniform restrict writeonly image2D raw_radiance_output;
+#endif
+layout(rg32ui, set = 0, binding = 2) uniform restrict readonly uimage3D hddagi_voxel_cascades;
+layout(r8ui, set = 0, binding = 3) uniform restrict readonly uimage3D hddagi_voxel_region_cascades;
+layout(set = 0, binding = 4) uniform texture3D hddagi_light_cascades;
+layout(set = 0, binding = 5) uniform sampler linear_sampler;
+layout(r32ui, set = 0, binding = 6) uniform restrict readonly uimage3D hddagi_voxel_neighbours;
 layout(r8ui, set = 0, binding = 8) uniform restrict readonly uimage3D hddagi_voxel_disocclusion;
 layout(set = 0, binding = 9, std140) uniform SceneDataBuffer {
 	ScreenProbeSceneData scene_data;
@@ -265,6 +276,9 @@ layout(set = 0, binding = 18) uniform texture2D specular_previous_depth_buffer;
 layout(r16ui, set = 0, binding = 10) uniform restrict readonly uimage3D hddagi_albedo_cascades;
 #endif
 
+#endif
+
+#if defined(MODE_TRACE) || defined(MODE_SPECULAR_TRACE) || defined(MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE) || defined(HWRT_DIRECTIONAL_RESOLVE)
 #ifdef USE_RADIANCE_OCTMAP_ARRAY
 layout(set = 1, binding = 0) uniform texture2DArray sky_radiance;
 #else
@@ -662,8 +676,8 @@ float directional_receiver_plane_tolerance(vec3 receiver_view, float receiver_se
 
 bool directional_receiver_normal_compatible(vec3 receiver_normal, vec3 probe_normal) {
 	// Hardware probes include real back-side/self occlusion. Those directions
-	// cannot provide irradiance for an opposite-facing receiver across a thin edge.
-	return (params.flags & SCREEN_PROBE_FLAG_HWRT) == 0u || dot(receiver_normal, probe_normal) > 0.0;
+	// cannot provide irradiance for a differently oriented receiver across an edge.
+	return (params.flags & SCREEN_PROBE_FLAG_HWRT) == 0u || dot(receiver_normal, probe_normal) >= 0.9;
 }
 #endif
 
@@ -794,6 +808,9 @@ float directional_adaptive_receiver_weight_decoded(vec3 receiver_view, vec3 rece
 	vec3 receiver_delta = probe_view - receiver_view;
 	float receiver_separation = length(receiver_delta);
 	float receiver_plane_distance = abs(dot(receiver_delta, receiver_normal));
+	if ((params.flags & SCREEN_PROBE_FLAG_HWRT) != 0u) {
+		receiver_plane_distance = max(receiver_plane_distance, abs(dot(receiver_delta, probe_normal)));
+	}
 	float receiver_tolerance = directional_receiver_plane_tolerance(receiver_view, receiver_separation, 0.02, 0.02);
 	float plane_weight = 1.0 - smoothstep(receiver_tolerance, receiver_tolerance * 2.0, receiver_plane_distance);
 	return max(spatial_weight, 0.0) * plane_weight;
@@ -1325,6 +1342,58 @@ void screen_probe_surface_main() {
 	imageStore(screen_probe_surface_output, probe_position, uvec4(uvec2(best_screen_position), floatBitsToUint(best_depth), pack_surface_normal(best_normal, best_dynamic)));
 }
 
+#endif
+
+#if defined(MODE_TRACE) || defined(MODE_SPECULAR_TRACE) || defined(MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE) || defined(HWRT_DIRECTIONAL_RESOLVE)
+vec3 sample_environment(vec3 ray_direction_view) {
+#ifdef MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE
+	uint sky_mode = hddagi_irradiance_cache_params.training.z;
+	vec4 sky = hddagi_irradiance_cache_params.sky_color_or_border_energy;
+	if (sky_mode == SCREEN_PROBE_SKY_COLOR) {
+		return max(sky.rgb * sky.w, vec3(0.0));
+	}
+	if (sky_mode != SCREEN_PROBE_SKY_TEXTURE) {
+		return vec3(0.0);
+	}
+	float border = clamp(sky.x, 0.0, 0.499);
+	float sky_energy = sky.w;
+#else
+	if (params.sky_mode == SCREEN_PROBE_SKY_COLOR) {
+		return max(params.sky_color.rgb * params.sky_energy, vec3(0.0));
+	}
+	if (params.sky_mode != SCREEN_PROBE_SKY_TEXTURE) {
+		return vec3(0.0);
+	}
+
+	float border = clamp(params.sky_color.w, 0.0, 0.499);
+	float sky_energy = params.sky_energy;
+#endif
+	vec3 sky_direction = scene_data.radiance_inverse_xform * ray_direction_view;
+	float direction_length_squared = dot(sky_direction, sky_direction);
+	if (!(direction_length_squared > 1e-8) || any(isnan(sky_direction)) || any(isinf(sky_direction))) {
+		return vec3(0.0);
+	}
+	sky_direction *= inversesqrt(direction_length_squared);
+	vec2 sky_uv = vec3_to_oct_with_border(sky_direction, vec2(border, 1.0 - border * 2.0));
+#ifdef USE_RADIANCE_OCTMAP_ARRAY
+	vec3 radiance = textureLod(sampler2DArray(sky_radiance, sky_sampler), vec3(sky_uv, 0.0), 0.0).rgb * sky_energy;
+#else
+	vec3 radiance = textureLod(sampler2D(sky_radiance, sky_sampler), sky_uv, 0.0).rgb * sky_energy;
+#endif
+	if (any(isnan(radiance)) || any(isinf(radiance))) {
+		return vec3(0.0);
+	}
+	return max(radiance, vec3(0.0));
+}
+#endif
+
+#ifdef USE_HWRT
+#ifdef HWRT_DIRECTIONAL_RESOLVE
+void screen_probe_debug_set_source(uint source) {}
+#else
+void screen_probe_debug_set_source(uint source);
+#endif
+#include "hddagi_screen_probe_hwrt_inc.glsl"
 #endif
 
 #if defined(MODE_TRACE) || defined(MODE_SPECULAR_TRACE)
@@ -2121,47 +2190,6 @@ bool sample_irradiance_cache_representative(vec3 position_world, vec3 normal_wor
 
 #endif
 
-vec3 sample_environment(vec3 ray_direction_view) {
-#ifdef MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE
-	uint sky_mode = hddagi_irradiance_cache_params.training.z;
-	vec4 sky = hddagi_irradiance_cache_params.sky_color_or_border_energy;
-	if (sky_mode == SCREEN_PROBE_SKY_COLOR) {
-		return max(sky.rgb * sky.w, vec3(0.0));
-	}
-	if (sky_mode != SCREEN_PROBE_SKY_TEXTURE) {
-		return vec3(0.0);
-	}
-	float border = clamp(sky.x, 0.0, 0.499);
-	float sky_energy = sky.w;
-#else
-	if (params.sky_mode == SCREEN_PROBE_SKY_COLOR) {
-		return max(params.sky_color.rgb * params.sky_energy, vec3(0.0));
-	}
-	if (params.sky_mode != SCREEN_PROBE_SKY_TEXTURE) {
-		return vec3(0.0);
-	}
-
-	float border = clamp(params.sky_color.w, 0.0, 0.499);
-	float sky_energy = params.sky_energy;
-#endif
-	vec3 sky_direction = scene_data.radiance_inverse_xform * ray_direction_view;
-	float direction_length_squared = dot(sky_direction, sky_direction);
-	if (!(direction_length_squared > 1e-8) || any(isnan(sky_direction)) || any(isinf(sky_direction))) {
-		return vec3(0.0);
-	}
-	sky_direction *= inversesqrt(direction_length_squared);
-	vec2 sky_uv = vec3_to_oct_with_border(sky_direction, vec2(border, 1.0 - border * 2.0));
-#ifdef USE_RADIANCE_OCTMAP_ARRAY
-	vec3 radiance = textureLod(sampler2DArray(sky_radiance, sky_sampler), vec3(sky_uv, 0.0), 0.0).rgb * sky_energy;
-#else
-	vec3 radiance = textureLod(sampler2D(sky_radiance, sky_sampler), sky_uv, 0.0).rgb * sky_energy;
-#endif
-	if (any(isnan(radiance)) || any(isinf(radiance))) {
-		return vec3(0.0);
-	}
-	return max(radiance, vec3(0.0));
-}
-
 #ifdef MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE
 
 bool trace_irradiance_cache_static_segment(vec3 origin_world, vec3 origin_normal_world, vec3 direction_world, out vec3 r_direct_radiance, out vec3 r_endpoint_world, out vec3 r_endpoint_normal_world, out vec3 r_surface_albedo) {
@@ -2432,10 +2460,6 @@ bool directional_sample_screen_radiance(vec3 endpoint_world, out vec3 r_radiance
 
 #endif
 
-#ifdef USE_HWRT
-#include "hddagi_screen_probe_hwrt_inc.glsl"
-#endif
-
 bool trace_hddagi_sample(ivec2 origin_position, float origin_depth, vec3 origin_normal, vec3 ray_direction_view, float detail_distance_limit, out vec3 r_radiance, out int r_hit_cascade, out vec3 r_endpoint_world, out vec3 r_endpoint_normal_world) {
 	r_radiance = vec3(0.0);
 	r_hit_cascade = -1;
@@ -2455,11 +2479,7 @@ bool trace_hddagi_sample(ivec2 origin_position, float origin_depth, vec3 origin_
 	vec3 trace_normal_world = normalize(camera_basis * origin_normal);
 
 #ifdef USE_HWRT
-	// Orthographic depth reconstruction subtracts values on the scale of the
-	// far plane. Its float rounding error can exceed the world-space ray epsilon.
-	if (abs(scene_data.projection[params.view_index][3][3]) > 0.5) {
-		trace_origin_world += trace_normal_world * abs(scene_data.inv_projection[params.view_index][2][2]) * 1.1920928955078125e-7;
-	}
+	trace_origin_world = hwrt_offset_reconstructed_origin(trace_origin_world, trace_normal_world);
 	return trace_screen_probe_hwrt(trace_origin_world, trace_direction_world, trace_normal_world, r_radiance, r_hit_cascade, r_endpoint_world, r_endpoint_normal_world);
 #else
 
@@ -4100,6 +4120,9 @@ void directional_filter_main() {
 		}
 		float receiver_separation = length(receiver_delta);
 		float receiver_plane_distance = abs(dot(receiver_delta, center_normal));
+		if ((params.flags & SCREEN_PROBE_FLAG_HWRT) != 0u) {
+			receiver_plane_distance = max(receiver_plane_distance, abs(dot(receiver_delta, neighbor_normal)));
+		}
 		float receiver_tolerance = directional_receiver_plane_tolerance(center_view_position, receiver_separation, params.history_depth_tolerance, params.spatial_depth_tolerance_scale);
 		float receiver_plane_weight = 1.0 - smoothstep(0.0, receiver_tolerance, receiver_plane_distance);
 		float weight = receiver_plane_weight * kernel_weight;
@@ -4459,6 +4482,9 @@ float directional_receiver_weight(ivec2 probe_position, vec3 pixel_view_position
 	vec3 receiver_delta = probe_view_position - pixel_view_position;
 	float receiver_separation = length(receiver_delta);
 	float receiver_plane_distance = abs(dot(receiver_delta, pixel_normal));
+	if ((params.flags & SCREEN_PROBE_FLAG_HWRT) != 0u) {
+		receiver_plane_distance = max(receiver_plane_distance, abs(dot(receiver_delta, probe_normal)));
+	}
 	float receiver_plane_tolerance = directional_receiver_plane_tolerance(pixel_view_position, receiver_separation, params.history_depth_tolerance, params.spatial_depth_tolerance_scale);
 	return 1.0 - smoothstep(receiver_plane_tolerance, receiver_plane_tolerance * 2.0, receiver_plane_distance);
 }
@@ -4647,6 +4673,27 @@ void screen_probe_resolve_main() {
 		resolved = clamp(resolved, vec4(0.0), vec4(65504.0));
 	}
 #ifdef MODE_DIRECTIONAL_RESOLVE
+#ifdef HWRT_DIRECTIONAL_RESOLVE
+	// Sparse probes may miss a thin receiver, including when the adaptive budget
+	// is exhausted. Sample that receiver directly instead of reusing another
+	// surface's self occlusion or treating missing coverage as black visibility.
+	if (weight_sum < SCREEN_PROBE_DIRECTIONAL_ADAPTIVE_SPAWN_COVERAGE) {
+		vec3 origin_world = (scene_data.cam_transform * vec4(pixel_view_position, 1.0)).xyz;
+		origin_world = hwrt_offset_reconstructed_origin(origin_world, pixel_world_normal);
+		vec2 random_sample = sample_temporally_permuted_r2_sequence(uvec2(screen_position), params.frame_index, 0x44544330u);
+		vec3 direction_view = tangent_to_world(cosine_sample_hemisphere(random_sample), pixel_normal);
+		vec3 direction_world = normalize(mat3(scene_data.cam_transform) * direction_view);
+		vec3 radiance, endpoint, endpoint_normal;
+		int hit_cascade;
+		if (trace_screen_probe_hwrt(origin_world, direction_world, pixel_world_normal, radiance, hit_cascade, endpoint, endpoint_normal)) {
+			resolved.a = min(length(endpoint - origin_world), SCREEN_PROBE_DIRECTIONAL_FP16_MAX);
+		} else {
+			radiance = sample_environment(direction_view);
+			resolved.a = SCREEN_PROBE_DIRECTIONAL_FP16_MAX;
+		}
+		resolved.rgb = directional_clamp_radiance(radiance * hddagi.energy);
+	}
+#endif
 	// HWRT has no voxel ambient to blend into. Coverage is reconstruction
 	// confidence, not visibility: valid normalized irradiance must keep its energy.
 	if ((params.flags & SCREEN_PROBE_FLAG_HWRT) == 0u) {

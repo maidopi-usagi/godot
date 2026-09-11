@@ -47,6 +47,15 @@ layout(set = 0, binding = 52) uniform sampler hwrt_area_light_sampler;
 
 #include "../area_lights_inc.glsl"
 
+vec3 hwrt_offset_reconstructed_origin(vec3 origin_world, vec3 normal_world) {
+	// Orthographic depth reconstruction subtracts values on the scale of the
+	// far plane. Its float rounding error can exceed the world-space ray epsilon.
+	if (abs(scene_data.projection[params.view_index][3][3]) > 0.5) {
+		origin_world += normal_world * abs(scene_data.inv_projection[params.view_index][2][2]) * 1.1920928955078125e-7;
+	}
+	return origin_world;
+}
+
 float hwrt_ray_epsilon(vec3 position) {
 	return max(0.0001, max(abs(position.x), max(abs(position.y), abs(position.z))) * 2e-7);
 }
