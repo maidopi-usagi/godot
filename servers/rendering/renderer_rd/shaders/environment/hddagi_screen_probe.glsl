@@ -2436,6 +2436,11 @@ bool trace_hddagi_sample(ivec2 origin_position, float origin_depth, vec3 origin_
 	vec3 trace_normal_world = normalize(camera_basis * origin_normal);
 
 #ifdef USE_HWRT
+	// Orthographic depth reconstruction subtracts values on the scale of the
+	// far plane. Its float rounding error can exceed the world-space ray epsilon.
+	if (abs(scene_data.projection[params.view_index][3][3]) > 0.5) {
+		trace_origin_world += trace_normal_world * abs(scene_data.inv_projection[params.view_index][2][2]) * 1.1920928955078125e-7;
+	}
 	return trace_screen_probe_hwrt(trace_origin_world, trace_direction_world, trace_normal_world, r_radiance, r_hit_cascade, r_endpoint_world, r_endpoint_normal_world);
 #else
 
@@ -3807,6 +3812,9 @@ void specular_trace_main() {
 	vec3 eye_to_surface = view_position - params.specular_eye_offset_exposure.xyz;
 	float eye_distance_squared = dot(eye_to_surface, eye_to_surface);
 	vec3 view_direction = eye_distance_squared > 1e-10 ? -eye_to_surface * inversesqrt(eye_distance_squared) : vec3(0.0, 0.0, 1.0);
+	if (abs(scene_data.projection[params.view_index][3][3]) > 0.5) {
+		view_direction = vec3(0.0, 0.0, 1.0);
+	}
 	bool valid_orientation = !any(isnan(view_direction)) && !any(isinf(view_direction)) && dot(origin_normal, view_direction) > 1e-5;
 	if (!valid_orientation || roughness >= params.specular_tuning.y) {
 		imageStore(raw_radiance_output, output_position, vec4(0.0));

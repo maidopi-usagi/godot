@@ -110,6 +110,14 @@ public:
 	bool non_uniform_scale = false;
 	float lod_model_scale = 1.0;
 	float lod_bias = 0.0;
+	_FORCE_INLINE_ float get_lod_distance(const Vector3 &p_camera_position, bool p_orthogonal) const {
+		if (p_orthogonal) {
+			return 1.0f;
+		}
+		const Vector3 aabb_min = transformed_aabb.position;
+		const Vector3 aabb_max = transformed_aabb.position + transformed_aabb.size;
+		return Vector3().max(aabb_min - p_camera_position).max(p_camera_position - aabb_max).length();
+	}
 	float sorting_offset = 0.0;
 	bool use_aabb_center = true;
 

@@ -44,7 +44,7 @@ void GI::HDDAGI::update_rigid_objects(RenderDataRD *p_render_data) {
 	if (hwrt_enabled) {
 		DEV_ASSERT(cascades.is_empty() && voxel_bits_tex.is_null() && voxel_light_tex.is_null() && !rigid.is_active());
 		RENDER_TIMESTAMP("HDDAGI HWRT Scene Update");
-		hwrt.update(p_render_data->hddagi_update_data->hwrt_geometry_instances, p_render_data->scene_data->cam_transform.origin);
+		hwrt.update(p_render_data->hddagi_update_data->hwrt_geometry_instances, p_render_data->scene_data);
 		RENDER_TIMESTAMP("HDDAGI HWRT Scene Update End");
 		return;
 	}

@@ -1183,18 +1183,7 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 
 		GeometryInstanceSurfaceDataCache *surf = inst->surface_caches;
 
-		float lod_distance = 0.0;
-
-		if (p_render_data->scene_data->cam_orthogonal) {
-			lod_distance = 1.0;
-		} else {
-			Vector3 aabb_min = inst->transformed_aabb.position;
-			Vector3 aabb_max = inst->transformed_aabb.position + inst->transformed_aabb.size;
-			Vector3 camera_position = p_render_data->scene_data->main_cam_transform.origin;
-			Vector3 surface_distance = Vector3(0.0, 0.0, 0.0).max(aabb_min - camera_position).max(camera_position - aabb_max);
-
-			lod_distance = surface_distance.length();
-		}
+		const float lod_distance = inst->get_lod_distance(p_render_data->scene_data->main_cam_transform.origin, p_render_data->scene_data->cam_orthogonal);
 
 		if (unlikely(inst->transform_status != GeometryInstanceForwardClustered::TransformStatus::NONE && frame > inst->prev_transform_change_frame && inst->prev_transform_change_frame)) {
 			inst->prev_transform = inst->transform;

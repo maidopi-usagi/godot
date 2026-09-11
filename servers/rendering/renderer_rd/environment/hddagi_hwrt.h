@@ -37,6 +37,8 @@
 #include "servers/rendering/renderer_rd/shaders/environment/hddagi_hwrt_material.glsl.gen.h"
 #include "servers/rendering/rendering_device.h"
 
+class RenderSceneDataRD;
+
 namespace RendererRD {
 
 // Independent triangle scene and material samples. Screen-probe sampling and
@@ -65,8 +67,10 @@ class HDDAGIHwrt {
 	struct MeshKey {
 		RID mesh;
 		Vector<int> surfaces;
+		Vector<uint32_t> lods;
 		bool deformed = false;
-		bool operator==(const MeshKey &p_other) const { return mesh == p_other.mesh && surfaces == p_other.surfaces && deformed == p_other.deformed; }
+		bool has_lods = false; // Derived from the compatible surfaces, not part of identity.
+		bool operator==(const MeshKey &p_other) const { return mesh == p_other.mesh && surfaces == p_other.surfaces && lods == p_other.lods && deformed == p_other.deformed; }
 	};
 	struct MeshKeyHasher {
 		static uint32_t hash(const MeshKey &p_key);
@@ -93,7 +97,8 @@ class HDDAGIHwrt {
 	};
 	struct MaterialKey {
 		Vector<uint64_t> values;
-		bool operator==(const MaterialKey &p_other) const { return values == p_other.values; }
+		Vector<uint32_t> lods;
+		bool operator==(const MaterialKey &p_other) const { return values == p_other.values && lods == p_other.lods; }
 	};
 	struct MaterialKeyHasher {
 		static uint32_t hash(const MaterialKey &p_key);
@@ -109,11 +114,13 @@ class HDDAGIHwrt {
 		RID blas;
 		Range normals;
 		uint64_t version = 0;
+		uint64_t mesh_version = 0;
+		uint64_t last_seen = 0;
 	};
 	struct CachedInstance {
 		MeshKey mesh;
 		MaterialKey material;
-		DeformedMesh deformed;
+		HashMap<MeshKey, DeformedMesh, MeshKeyHasher> deformed_meshes;
 		uint64_t capture_version = 0;
 		uint64_t last_seen = 0;
 	};
@@ -170,12 +177,14 @@ class HDDAGIHwrt {
 	void _evict_unused();
 	void _free_mesh(Mesh &p_mesh);
 	void _free_deformed(DeformedMesh &p_mesh);
+	void _free_deformed_meshes(CachedInstance &p_instance);
 	bool _supports_instance(RenderGeometryInstanceBase *p_instance) const;
 	MeshKey _mesh_key(RenderGeometryInstanceBase *p_instance) const;
+	bool _update_mesh_lods(RenderGeometryInstanceBase *p_instance, const RenderSceneDataRD *p_scene_data, MeshKey &r_key) const;
 
 public:
 	static bool is_supported();
-	void update(const PagedArray<RenderGeometryInstance *> *p_instances, const Vector3 &p_origin);
+	void update(const PagedArray<RenderGeometryInstance *> *p_instances, const RenderSceneDataRD *p_scene_data);
 	void update_lights(RID p_lights_buffer, uint32_t p_light_count, float p_exposure, float p_bounce_feedback);
 	void append_uniforms(LocalVector<RD::Uniform> &r_uniforms) const;
 	const AABB &get_bounds() const { return bounds; }
