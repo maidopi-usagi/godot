@@ -31,6 +31,7 @@
 #include "hddagi_hwrt.h"
 
 #include "core/config/project_settings.h"
+#include "core/io/marshalls.h"
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
@@ -141,7 +142,7 @@ uint32_t HDDAGIHwrt::MeshKeyHasher::hash(const MeshKey &p_key) {
 	return hash_fmix32(hash);
 }
 
-HDDAGIHwrt::MeshKey HDDAGIHwrt::_mesh_key(RenderGeometryInstanceBase *p_instance) const {
+HDDAGIHwrt::MeshKey HDDAGIHwrt::_mesh_key(RenderGeometryInstanceBase *p_instance, int p_surface) const {
 	MeshKey key;
 	key.mesh = p_instance->get_hddagi_mesh();
 	key.deformed = p_instance->mesh_instance.is_valid();
@@ -161,24 +162,22 @@ HDDAGIHwrt::MeshKey HDDAGIHwrt::_mesh_key(RenderGeometryInstanceBase *p_instance
 	};
 	MeshStorage *mesh_storage = MeshStorage::get_singleton();
 	RID mesh = key.mesh;
-	for (int surface = 0; surface < mesh_storage->mesh_get_surface_count(mesh); surface++) {
-		void *surface_data = mesh_storage->mesh_get_surface(mesh, uint32_t(surface));
-		if (mesh_storage->mesh_surface_get_primitive(surface_data) != RSE::PRIMITIVE_TRIANGLES ||
-				(mesh_storage->mesh_surface_get_format(surface_data) & RSE::ARRAY_FLAG_USE_2D_VERTICES)) {
-			continue;
-		}
-		RID material = p_instance->data->material_override;
-		if (material.is_null() && surface < p_instance->data->surface_materials.size()) {
-			material = p_instance->data->surface_materials[surface];
-		}
-		if (material.is_null()) {
-			material = mesh_storage->mesh_surface_get_material(mesh, surface);
-		}
-		if (supports_material(material)) {
-			key.surfaces.push_back(surface);
-			key.lods.push_back(0);
-			key.has_lods = key.has_lods || mesh_storage->mesh_surface_has_lod(surface_data);
-		}
+	void *surface_data = mesh_storage->mesh_get_surface(mesh, uint32_t(p_surface));
+	if (mesh_storage->mesh_surface_get_primitive(surface_data) != RSE::PRIMITIVE_TRIANGLES ||
+			(mesh_storage->mesh_surface_get_format(surface_data) & RSE::ARRAY_FLAG_USE_2D_VERTICES)) {
+		return key;
+	}
+	RID material = p_instance->data->material_override;
+	if (material.is_null() && p_surface < p_instance->data->surface_materials.size()) {
+		material = p_instance->data->surface_materials[p_surface];
+	}
+	if (material.is_null()) {
+		material = mesh_storage->mesh_surface_get_material(mesh, p_surface);
+	}
+	if (supports_material(material)) {
+		key.surfaces.push_back(p_surface);
+		key.lods.push_back(0);
+		key.has_lods = key.has_lods || mesh_storage->mesh_surface_has_lod(surface_data);
 	}
 	return key;
 }
@@ -207,35 +206,78 @@ bool HDDAGIHwrt::_update_mesh_lods(RenderGeometryInstanceBase *p_instance, const
 	return changed;
 }
 
-bool HDDAGIHwrt::_create_mesh(const MeshKey &p_key, Mesh &r_mesh) {
+const HDDAGIHwrt::SourceSurface *HDDAGIHwrt::_get_source_surface(RID p_mesh, int p_surface) {
 	const MeshStorage *mesh_storage = MeshStorage::get_singleton();
+	SourceMesh &source = source_meshes[p_mesh];
+	const uint64_t version = mesh_storage->mesh_get_data_version(p_mesh);
+	if (source.version != version) {
+		source = SourceMesh();
+		source.version = version;
+	}
+	source.last_seen = frame;
+	if (const SourceSurface *surface = source.surfaces.getptr(p_surface)) {
+		return surface;
+	}
+	// All LODs share these attributes. Read and decode once per source version,
+	// rather than flushing the GPU again every time the camera selects a new LOD.
+	const RenderingServerTypes::SurfaceData data = mesh_storage->mesh_get_surface(p_mesh, p_surface);
+	mesh_timestamped = false;
+	material_timestamped = false;
+	deform_timestamped = false;
+	const Array arrays = RenderingServer::get_singleton()->mesh_create_arrays_from_surface_data(data);
+	ERR_FAIL_COND_V(arrays.size() != RSE::ARRAY_MAX, nullptr);
+	SourceSurface surface;
+	surface.positions = arrays[RSE::ARRAY_VERTEX];
+	surface.normals = arrays[RSE::ARRAY_NORMAL];
+	surface.tangents = arrays[RSE::ARRAY_TANGENT];
+	surface.colors = arrays[RSE::ARRAY_COLOR];
+	surface.uv = arrays[RSE::ARRAY_TEX_UV];
+	surface.indices.push_back(arrays[RSE::ARRAY_INDEX]);
+	for (const RenderingServerTypes::SurfaceData::LOD &lod : data.lods) {
+		const uint32_t index_size = data.vertex_count <= 65536 ? sizeof(uint16_t) : sizeof(uint32_t);
+		ERR_FAIL_COND_V(lod.index_data.size() % index_size != 0, nullptr);
+		Vector<int> indices;
+		indices.resize(lod.index_data.size() / index_size);
+		int *write = indices.ptrw();
+		const uint8_t *read = lod.index_data.ptr();
+		for (int i = 0; i < indices.size(); i++) {
+			write[i] = index_size == sizeof(uint16_t) ? decode_uint16(read + i * index_size) : decode_uint32(read + i * index_size);
+		}
+		surface.indices.push_back(indices);
+	}
+	surface.deformed = (data.format & RSE::ARRAY_FORMAT_BONES) || mesh_storage->mesh_get_blend_shape_count(p_mesh) > 0;
+	source.bytes += uint64_t(surface.positions.size() + surface.normals.size()) * sizeof(Vector3) +
+			uint64_t(surface.tangents.size()) * sizeof(float) + uint64_t(surface.colors.size()) * sizeof(Color) + uint64_t(surface.uv.size()) * sizeof(Vector2);
+	for (const Vector<int> &indices : surface.indices) {
+		source.bytes += uint64_t(indices.size()) * sizeof(int);
+	}
+	return &source.surfaces.insert(p_surface, surface)->value;
+}
+
+bool HDDAGIHwrt::_create_mesh(const MeshKey &p_key, Mesh &r_mesh, bool p_create_geometry) {
+	r_mesh.family = p_key;
+	r_mesh.family.lods.clear();
+	r_mesh.material_surfaces.clear();
 	LocalVector<float> vertices;
 	LocalVector<float> normals;
 	LocalVector<uint32_t> triangle_indices;
 	Vector<Array> material_arrays;
-	// Keep opaque surfaces of imported meshes which also contain unsupported
-	// materials. The supported subset is part of the shared BLAS cache key.
+	// Each entry contains one compatible surface, independently of the LODs or
+	// material support of the other surfaces in the imported mesh.
 	for (int surface_index = 0; surface_index < p_key.surfaces.size(); surface_index++) {
 		const int surface = p_key.surfaces[surface_index];
-		// Decode with the existing mesh codec, including compressed imported meshes.
-		// Readback/upload happens only when mesh data changes, never for rigid motion.
-		RenderingServerTypes::SurfaceData surface_data = mesh_storage->mesh_get_surface(p_key.mesh, surface);
-		const uint32_t lod = p_key.lods[surface_index];
-		if (lod > 0) {
-			ERR_FAIL_COND_V(lod > uint32_t(surface_data.lods.size()), false);
-			surface_data.index_data = surface_data.lods[lod - 1].index_data;
-			surface_data.index_count = surface_data.index_data.size() / (surface_data.vertex_count <= 65536 ? sizeof(uint16_t) : sizeof(uint32_t));
-		}
-		Array arrays = RenderingServer::get_singleton()->mesh_create_arrays_from_surface_data(surface_data);
-		if (arrays.size() != RSE::ARRAY_MAX) {
+		const SourceSurface *source = _get_source_surface(p_key.mesh, surface);
+		if (!source) {
 			return false;
 		}
-		const Vector<Vector3> positions = arrays[RSE::ARRAY_VERTEX];
-		const Vector<int> indices = arrays[RSE::ARRAY_INDEX];
-		const Vector<Vector3> source_normals = arrays[RSE::ARRAY_NORMAL];
-		const Vector<float> source_tangents = arrays[RSE::ARRAY_TANGENT];
-		const Vector<Color> source_colors = arrays[RSE::ARRAY_COLOR];
-		const Vector<Vector2> source_uv = arrays[RSE::ARRAY_TEX_UV];
+		const uint32_t lod = p_key.lods[surface_index];
+		ERR_FAIL_UNSIGNED_INDEX_V(lod, uint32_t(source->indices.size()), false);
+		const Vector<Vector3> &positions = source->positions;
+		const Vector<int> &indices = source->indices[lod];
+		const Vector<Vector3> &source_normals = source->normals;
+		const Vector<float> &source_tangents = source->tangents;
+		const Vector<Color> &source_colors = source->colors;
+		const Vector<Vector2> &source_uv = source->uv;
 		Vector<Vector3> bake_positions;
 		Vector<Vector3> bake_normals;
 		Vector<float> bake_tangents;
@@ -247,14 +289,36 @@ bool HDDAGIHwrt::_create_mesh(const MeshKey &p_key, Mesh &r_mesh) {
 		if (count % 3 != 0) {
 			return false;
 		}
+		// Fill the chart arrays through stable writes; per-vertex Vector::push_back
+		// repeatedly checks copy-on-write ownership and dominates cold preparation.
+		bake_positions.resize(count);
+		bake_normals.resize(count);
+		bake_uv2.resize(count);
+		bake_tangents.resize(source_tangents.is_empty() ? 0 : count * 4);
+		bake_colors.resize(source_colors.is_empty() ? 0 : count);
+		bake_uv.resize(source_uv.is_empty() ? 0 : count);
+		Vector3 *positions_write = bake_positions.ptrw();
+		Vector3 *normals_write = bake_normals.ptrw();
+		Vector2 *uv2_write = bake_uv2.ptrw();
+		float *tangents_write = bake_tangents.ptrw();
+		Color *colors_write = bake_colors.ptrw();
+		Vector2 *uv_write = bake_uv.ptrw();
+		vertices.reserve(vertices.size() + count * 3);
+		normals.reserve(normals.size() + count / 3 * 4);
+		if (p_key.deformed) {
+			triangle_indices.reserve(triangle_indices.size() + count);
+		}
+		uint32_t baked_vertices = 0;
 		for (uint32_t triangle = 0; triangle < count; triangle += 3) {
 			Vector3 points[3];
+			int corner_indices[3];
 			for (uint32_t corner = 0; corner < 3; corner++) {
 				int index = indices.is_empty() ? int(triangle + corner) : indices[triangle + corner];
 				if (index < 0 || index >= positions.size() || !positions[index].is_finite()) {
 					return false;
 				}
 				points[corner] = positions[index];
+				corner_indices[corner] = index;
 			}
 			Vector3 normal = (points[1] - points[0]).cross(points[2] - points[0]);
 			if (normal.length_squared() == 0.0 && !p_key.deformed) {
@@ -263,29 +327,27 @@ bool HDDAGIHwrt::_create_mesh(const MeshKey &p_key, Mesh &r_mesh) {
 			// Degenerate bind-pose triangles can open when bones move.
 			normal = normal.length_squared() > 0.0 ? normal.normalized() : Vector3(0, 0, 1);
 			const uint32_t primitive = normals.size() / 4;
+			const Vector2 chart_origin = Vector2(primitive % MATERIAL_TILES_PER_ROW, primitive / MATERIAL_TILES_PER_ROW) * MATERIAL_TILE_SIZE + Vector2(0.5, 0.5);
 			for (uint32_t corner = 0; corner < 3; corner++) {
-				const int index = indices.is_empty() ? int(triangle + corner) : indices[triangle + corner];
+				const int index = corner_indices[corner];
 				if (p_key.deformed) {
 					triangle_indices.push_back(index);
 				}
-				bake_positions.push_back(points[corner]);
-				bake_normals.push_back(source_normals.is_empty() ? -normal : source_normals[index]);
+				positions_write[baked_vertices] = points[corner];
+				normals_write[baked_vertices] = source_normals.is_empty() ? -normal : source_normals[index];
 				if (!source_tangents.is_empty()) {
 					for (int axis = 0; axis < 4; axis++) {
-						bake_tangents.push_back(source_tangents[index * 4 + axis]);
+						tangents_write[baked_vertices * 4 + axis] = source_tangents[index * 4 + axis];
 					}
 				}
 				if (!source_colors.is_empty()) {
-					bake_colors.push_back(source_colors[index]);
+					colors_write[baked_vertices] = source_colors[index];
 				}
 				if (!source_uv.is_empty()) {
-					bake_uv.push_back(source_uv[index]);
+					uv_write[baked_vertices] = source_uv[index];
 				}
-				Vector2 uv2(primitive % MATERIAL_TILES_PER_ROW, primitive / MATERIAL_TILES_PER_ROW);
-				uv2 *= MATERIAL_TILE_SIZE;
-				uv2 += Vector2(0.5, 0.5);
-				uv2 += Vector2(corner == 1 ? MATERIAL_TILE_SIZE - 1 : 0, corner == 2 ? MATERIAL_TILE_SIZE - 1 : 0);
-				bake_uv2.push_back(uv2);
+				uv2_write[baked_vertices] = chart_origin + Vector2(corner == 1 ? MATERIAL_TILE_SIZE - 1 : 0, corner == 2 ? MATERIAL_TILE_SIZE - 1 : 0);
+				baked_vertices++;
 			}
 			for (const Vector3 &point : points) {
 				for (int axis = 0; axis < 3; axis++) {
@@ -297,8 +359,14 @@ bool HDDAGIHwrt::_create_mesh(const MeshKey &p_key, Mesh &r_mesh) {
 			}
 			normals.push_back(0.0f);
 		}
+		bake_positions.resize(baked_vertices);
+		bake_normals.resize(baked_vertices);
+		bake_uv2.resize(baked_vertices);
+		bake_tangents.resize(source_tangents.is_empty() ? 0 : baked_vertices * 4);
+		bake_colors.resize(source_colors.is_empty() ? 0 : baked_vertices);
+		bake_uv.resize(source_uv.is_empty() ? 0 : baked_vertices);
 		if (!bake_positions.is_empty()) {
-			if (p_key.deformed && ((surface_data.format & RSE::ARRAY_FORMAT_BONES) || mesh_storage->mesh_get_blend_shape_count(p_key.mesh) > 0)) {
+			if (p_create_geometry && p_key.deformed && source->deformed) {
 				r_mesh.deform_surfaces.push_back({ uint32_t(surface), triangle_offset, uint32_t(normals.size() / 4) - triangle_offset });
 			}
 			Array bake;
@@ -322,11 +390,6 @@ bool HDDAGIHwrt::_create_mesh(const MeshKey &p_key, Mesh &r_mesh) {
 	if (vertices.is_empty()) {
 		return true;
 	}
-	// Reading a newly encountered source mesh flushes RD's current frame and
-	// timestamp queries. Profile the first asset in the new command batch too.
-	mesh_timestamped = false;
-	material_timestamped = false;
-	deform_timestamped = false;
 	RD *rd = RD::get_singleton();
 	const uint32_t triangle_count = normals.size() / 4;
 	r_mesh.material_size = Size2i(MIN(triangle_count, MATERIAL_TILES_PER_ROW), (triangle_count + MATERIAL_TILES_PER_ROW - 1) / MATERIAL_TILES_PER_ROW) * MATERIAL_TILE_SIZE;
@@ -348,6 +411,12 @@ bool HDDAGIHwrt::_create_mesh(const MeshKey &p_key, Mesh &r_mesh) {
 		}
 		mutable_mesh_storage->mesh_add_surface(r_mesh.material_mesh, data);
 	}
+	// Raster-only chart geometry is scratch data. Keep it through this update so
+	// instances with different materials can share it, then release the GPU copy.
+	material_meshes_to_release.push_back(p_key);
+	if (!p_create_geometry) {
+		return true;
+	}
 	r_mesh.vertices = rd->vertex_buffer_create(vertices.size() * sizeof(float),
 			Span<uint8_t>(reinterpret_cast<const uint8_t *>(vertices.ptr()), vertices.size() * sizeof(float)),
 			RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT | RD::BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT);
@@ -355,7 +424,7 @@ bool HDDAGIHwrt::_create_mesh(const MeshKey &p_key, Mesh &r_mesh) {
 		return false;
 	}
 	r_mesh.triangle_count = triangle_count;
-	r_mesh.bytes = uint64_t(vertices.size()) * sizeof(float) * 4 + uint64_t(triangle_count) * 128;
+	r_mesh.bytes = uint64_t(vertices.size()) * sizeof(float) + uint64_t(triangle_count) * 128;
 	if (p_key.deformed) {
 		// Keep bind-pose data only as a shared template. Each animated instance owns
 		// its BLAS; surfaces without skinning retain this template's geometry.
@@ -391,6 +460,48 @@ bool HDDAGIHwrt::_create_mesh(const MeshKey &p_key, Mesh &r_mesh) {
 	}
 	rd->draw_command_end_label();
 	return error == OK;
+}
+
+bool HDDAGIHwrt::_prepare_lods(RenderGeometryInstanceBase *p_instance, const CachedInstance &p_cached, uint64_t p_version) {
+	const SourceSurface *source = _get_source_surface(p_cached.mesh.mesh, p_cached.mesh.surfaces[0]);
+	if (!source) {
+		return false;
+	}
+	// Prepare a surface's imported LODs with the initial asset/material upload.
+	// Surface-level BLASes avoid the combinatorial whole-mesh LOD cache, while
+	// preserving exactly the topology selected by rasterization for each surface.
+	bool materials_changed = false;
+	MeshKey mesh_key = p_cached.mesh;
+	MaterialKey material_key = p_cached.material;
+	for (int lod = 0; lod < source->indices.size(); lod++) {
+		mesh_key.lods.write[0] = lod;
+		material_key.lods = mesh_key.lods;
+		Mesh &mesh = meshes[mesh_key];
+		if (mesh.version != p_version) {
+			_free_mesh(mesh);
+			if (!_create_mesh(mesh_key, mesh)) {
+				WARN_PRINT_ONCE("HDDAGI HWRT could not build a triangle surface; skipping that contributor.");
+				_free_mesh(mesh);
+			}
+			mesh.family = p_cached.mesh_family;
+			mesh.version = p_version;
+		}
+		mesh.last_seen = frame;
+		if (mesh.triangle_count == 0 || (!mesh_key.deformed && mesh.blas.is_null())) {
+			continue;
+		}
+		if (!materials.has(material_key)) {
+			Material &material = materials[material_key];
+			material.family = p_cached.material_family;
+			material.valid = _capture_material(p_instance, mesh_key, mesh, material);
+			material.last_seen = frame;
+			materials_changed = true;
+			if (!material.valid) {
+				WARN_PRINT_ONCE("HDDAGI HWRT could not capture a surface material; skipping that contributor.");
+			}
+		}
+	}
+	return materials_changed;
 }
 
 bool HDDAGIHwrt::_update_deformed(RID p_mesh_instance, const Mesh &p_mesh, DeformedMesh &r_deformed, bool &r_changed) {
@@ -443,6 +554,7 @@ bool HDDAGIHwrt::_update_deformed(RID p_mesh_instance, const Mesh &p_mesh, Defor
 			_free_deformed(r_deformed);
 			return false;
 		}
+		r_deformed.family = p_mesh.family;
 		r_deformed.mesh_instance = p_mesh_instance;
 		r_deformed.mesh_version = p_mesh.version;
 	}
@@ -501,7 +613,7 @@ uint32_t HDDAGIHwrt::MaterialKeyHasher::hash(const MaterialKey &p_key) {
 	return hash_fmix32(hash);
 }
 
-HDDAGIHwrt::MaterialKey HDDAGIHwrt::_material_key(RenderGeometryInstanceBase *p_instance) const {
+HDDAGIHwrt::MaterialKey HDDAGIHwrt::_material_key(RenderGeometryInstanceBase *p_instance, int p_surface) const {
 	MeshStorage *mesh_storage = MeshStorage::get_singleton();
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
 	const RID mesh = p_instance->get_hddagi_mesh();
@@ -511,17 +623,16 @@ HDDAGIHwrt::MaterialKey HDDAGIHwrt::_material_key(RenderGeometryInstanceBase *p_
 	key.values.push_back(p_instance->shader_uniforms_offset >= 0 ? p_instance->get_hddagi_instance_id() : 0);
 	key.values.push_back(p_instance->shader_uniforms_offset >= 0 ? p_instance->get_hddagi_capture_version() : 0);
 	key.values.push_back(p_instance->mesh_instance.is_valid() ? 1 : 0);
-	for (int surface = 0; surface < mesh_storage->mesh_get_surface_count(mesh); surface++) {
-		RID material = p_instance->data->material_override;
-		if (material.is_null() && surface < p_instance->data->surface_materials.size()) {
-			material = p_instance->data->surface_materials[surface];
-		}
-		if (material.is_null()) {
-			material = mesh_storage->mesh_surface_get_material(mesh, surface);
-		}
-		key.values.push_back(material.get_id());
-		key.values.push_back(material.is_valid() ? material_storage->material_get_data_version(material) : 0);
+	key.values.push_back(p_surface);
+	RID material = p_instance->data->material_override;
+	if (material.is_null() && p_surface < p_instance->data->surface_materials.size()) {
+		material = p_instance->data->surface_materials[p_surface];
 	}
+	if (material.is_null()) {
+		material = mesh_storage->mesh_surface_get_material(mesh, p_surface);
+	}
+	key.values.push_back(material.get_id());
+	key.values.push_back(material.is_valid() ? material_storage->material_get_data_version(material) : 0);
 	return key;
 }
 
@@ -529,7 +640,7 @@ bool HDDAGIHwrt::_material_is_current(const MaterialKey &p_key) const {
 	MaterialStorage *storage = MaterialStorage::get_singleton();
 	// Uniform value changes do not always send a scene dependency notification.
 	// Check the cached RID/version pairs without rebuilding or allocating keys.
-	for (int i = 5; i < p_key.values.size(); i += 2) {
+	for (int i = 6; i < p_key.values.size(); i += 2) {
 		RID material = RID::from_uint64(p_key.values[i]);
 		if (material.is_valid() && storage->material_get_data_version(material) != p_key.values[i + 1]) {
 			return false;
@@ -538,9 +649,16 @@ bool HDDAGIHwrt::_material_is_current(const MaterialKey &p_key) const {
 	return true;
 }
 
-bool HDDAGIHwrt::_capture_material(RenderGeometryInstanceBase *p_instance, const Mesh &p_mesh, Material &r_material) {
+bool HDDAGIHwrt::_capture_material(RenderGeometryInstanceBase *p_instance, const MeshKey &p_key, Mesh &p_mesh, Material &r_material) {
 	// Reuse the native 2D material pass with a small barycentric chart per triangle.
 	// This captures only material parameters; there is no voxelization or lighting cache.
+	if (p_mesh.material_mesh.is_null() && !_create_mesh(p_key, p_mesh, false)) {
+		if (p_mesh.material_mesh.is_valid()) {
+			MeshStorage::get_singleton()->free(p_mesh.material_mesh);
+			p_mesh.material_mesh = RID();
+		}
+		return false;
+	}
 	RD *rd = RD::get_singleton();
 	if (material_shader_version.is_null()) {
 		if (!material_shader_initialized) {
@@ -682,32 +800,49 @@ void HDDAGIHwrt::_free_deformed_meshes(CachedInstance &p_instance) {
 }
 
 void HDDAGIHwrt::_evict_unused() {
+	// A different LOD of a contributing asset is part of its working set, not
+	// an off-scene asset. Applying the inactive budget to these siblings makes
+	// camera motion evict and rebuild the same geometry/materials continuously.
+	next_eviction_frame = UINT64_MAX;
 	struct Candidate {
 		MeshKey mesh;
 		MaterialKey material;
 		uint64_t last_seen = 0;
 		uint64_t bytes = 0;
 		bool is_material = false;
-		uint64_t instance_id = 0;
+		InstanceKey instance;
+		RID source;
 		bool operator<(const Candidate &p_other) const { return last_seen < p_other.last_seen; }
 	};
 	LocalVector<Candidate> unused;
 	uint64_t unused_bytes = 0;
-	for (const KeyValue<MeshKey, Mesh> &entry : meshes) {
+	for (KeyValue<MeshKey, Mesh> &entry : meshes) {
+		const MeshFamily *family = mesh_families.getptr(entry.value.family);
+		if (family && family->version == entry.value.version) {
+			entry.value.last_seen = MAX(entry.value.last_seen, family->last_seen);
+		}
 		if (entry.value.last_seen != frame) {
 			unused.push_back({ entry.key, MaterialKey(), entry.value.last_seen, entry.value.bytes, false });
 			unused_bytes += entry.value.bytes;
 		}
 	}
-	for (const KeyValue<MaterialKey, Material> &entry : materials) {
+	for (KeyValue<MaterialKey, Material> &entry : materials) {
+		const uint64_t *last_seen = material_families.getptr(entry.value.family);
+		if (last_seen) {
+			entry.value.last_seen = MAX(entry.value.last_seen, *last_seen);
+		}
 		if (entry.value.last_seen != frame) {
 			const uint64_t bytes = uint64_t(entry.value.samples.count) * material_pool.stride;
 			unused.push_back({ MeshKey(), entry.key, entry.value.last_seen, bytes, true });
 			unused_bytes += bytes;
 		}
 	}
-	for (const KeyValue<uint64_t, CachedInstance> &entry : cached_instances) {
-		for (const KeyValue<MeshKey, DeformedMesh> &deformed : entry.value.deformed_meshes) {
+	for (KeyValue<InstanceKey, CachedInstance> &entry : cached_instances) {
+		for (KeyValue<MeshKey, DeformedMesh> &deformed : entry.value.deformed_meshes) {
+			const MeshFamily *family = mesh_families.getptr(deformed.value.family);
+			if (family && family->version == deformed.value.mesh_version && entry.value.mesh_family == deformed.value.family) {
+				deformed.value.last_seen = MAX(deformed.value.last_seen, MIN(entry.value.last_seen, family->last_seen));
+			}
 			if (deformed.value.last_seen != frame && deformed.value.blas.is_valid()) {
 				const uint64_t bytes = uint64_t(deformed.value.normals.count) * 160;
 				unused.push_back({ deformed.key, MaterialKey(), deformed.value.last_seen, bytes, false, entry.key });
@@ -715,14 +850,23 @@ void HDDAGIHwrt::_evict_unused() {
 			}
 		}
 	}
+	for (KeyValue<RID, SourceMesh> &entry : source_meshes) {
+		if (entry.value.last_seen != frame) {
+			unused.push_back({ MeshKey(), MaterialKey(), entry.value.last_seen, entry.value.bytes, false, InstanceKey(), entry.key });
+			unused_bytes += entry.value.bytes;
+		}
+	}
 	unused.sort();
 	for (const Candidate &candidate : unused) {
 		if (frame - candidate.last_seen <= CACHE_KEEP_FRAMES && unused_bytes <= CACHE_MAX_UNUSED_BYTES) {
+			next_eviction_frame = candidate.last_seen + CACHE_KEEP_FRAMES + 1;
 			break;
 		}
 		unused_bytes -= candidate.bytes;
-		if (candidate.instance_id != 0) {
-			CachedInstance &instance = cached_instances[candidate.instance_id];
+		if (candidate.source.is_valid()) {
+			source_meshes.erase(candidate.source);
+		} else if (candidate.instance.id != 0) {
+			CachedInstance &instance = cached_instances[candidate.instance];
 			_free_deformed(instance.deformed_meshes[candidate.mesh]);
 			instance.deformed_meshes.erase(candidate.mesh);
 		} else if (candidate.is_material) {
@@ -733,18 +877,42 @@ void HDDAGIHwrt::_evict_unused() {
 			meshes.erase(candidate.mesh);
 		}
 	}
-	LocalVector<uint64_t> removed_instances;
-	for (const KeyValue<uint64_t, CachedInstance> &entry : cached_instances) {
+	LocalVector<InstanceKey> removed_instances;
+	for (const KeyValue<InstanceKey, CachedInstance> &entry : cached_instances) {
 		if (frame - entry.value.last_seen > CACHE_KEEP_FRAMES) {
 			removed_instances.push_back(entry.key);
+		} else if (entry.value.last_seen != frame) {
+			next_eviction_frame = MIN(next_eviction_frame, entry.value.last_seen + CACHE_KEEP_FRAMES + 1);
 		}
 	}
-	for (uint64_t id : removed_instances) {
-		if (cached_instances[id].instance.id != 0) {
+	for (const InstanceKey &id : removed_instances) {
+		if (cached_instances[id].instance.key.id != 0) {
 			free_metadata_indices.push_back(cached_instances[id].instance.metadata_index);
 		}
 		_free_deformed_meshes(cached_instances[id]);
 		cached_instances.erase(id);
+	}
+	LocalVector<MeshKey> removed_mesh_families;
+	for (const KeyValue<MeshKey, MeshFamily> &entry : mesh_families) {
+		if (frame - entry.value.last_seen > CACHE_KEEP_FRAMES) {
+			removed_mesh_families.push_back(entry.key);
+		} else if (entry.value.last_seen != frame) {
+			next_eviction_frame = MIN(next_eviction_frame, entry.value.last_seen + CACHE_KEEP_FRAMES + 1);
+		}
+	}
+	for (const MeshKey &key : removed_mesh_families) {
+		mesh_families.erase(key);
+	}
+	LocalVector<MaterialKey> removed_material_families;
+	for (const KeyValue<MaterialKey, uint64_t> &entry : material_families) {
+		if (frame - entry.value > CACHE_KEEP_FRAMES) {
+			removed_material_families.push_back(entry.key);
+		} else if (entry.value != frame) {
+			next_eviction_frame = MIN(next_eviction_frame, entry.value + CACHE_KEEP_FRAMES + 1);
+		}
+	}
+	for (const MaterialKey &key : removed_material_families) {
+		material_families.erase(key);
 	}
 }
 
@@ -789,6 +957,8 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 	next_instances.clear();
 	bool materials_changed = false;
 	bool deformation_changed = false;
+	bool cache_membership_changed = false;
+	uint32_t active_cache_instances = 0;
 	for (uint32_t i = 0; i < p_instances->size(); i++) {
 		RenderGeometryInstanceBase *geometry = static_cast<RenderGeometryInstanceBase *>((*p_instances)[i]);
 		if (!bounds.intersects(geometry->transformed_aabb)) {
@@ -801,83 +971,106 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 		const uint64_t id = geometry->get_hddagi_instance_id();
 		const RID mesh_rid = geometry->get_hddagi_mesh();
 		const uint64_t version = mesh_storage->mesh_get_data_version(mesh_rid);
-		CachedInstance &cached = cached_instances[id];
-		if (cached.material.values.is_empty() || cached.mesh.mesh != mesh_rid || cached.mesh.deformed != geometry->mesh_instance.is_valid() || cached.material.values[1] != version ||
-				cached.capture_version != geometry->get_hddagi_capture_version() || !_material_is_current(cached.material)) {
-			cached.mesh = _mesh_key(geometry);
-			MaterialKey material_key = _material_key(geometry);
-			if (cached.instance.id != 0 && cached.material.values != material_key.values) {
-				lighting_version++;
+		for (int surface = 0; surface < mesh_storage->mesh_get_surface_count(mesh_rid); surface++) {
+			const InstanceKey instance_key{ id, uint32_t(surface) };
+			CachedInstance &cached = cached_instances[instance_key];
+			cache_membership_changed = cache_membership_changed || cached.last_seen != frame - 1;
+			if (cached.material.values.is_empty() || cached.mesh.mesh != mesh_rid || cached.mesh.deformed != geometry->mesh_instance.is_valid() || cached.material.values[1] != version ||
+					cached.capture_version != geometry->get_hddagi_capture_version() || !_material_is_current(cached.material)) {
+				cached.mesh = _mesh_key(geometry, surface);
+				MaterialKey material_key = _material_key(geometry, surface);
+				cache_membership_changed = cache_membership_changed || cached.material.values != material_key.values;
+				if (cached.instance.key.id != 0 && cached.material.values != material_key.values) {
+					lighting_version++;
+				}
+				cached.material = material_key;
+				cached.mesh_family = cached.mesh;
+				cached.mesh_family.lods.clear();
+				cached.material_family = cached.material;
+				cached.material_family.lods.clear();
+				cached.capture_version = geometry->get_hddagi_capture_version();
 			}
-			cached.material = material_key;
-			cached.capture_version = geometry->get_hddagi_capture_version();
-		}
-		cached.last_seen = frame;
-		if (_update_mesh_lods(geometry, p_scene_data, cached.mesh) || cached.material.lods.is_empty()) {
-			cached.material.lods = cached.mesh.lods;
-		}
-		const MeshKey &key = cached.mesh;
-		if (key.surfaces.is_empty()) {
-			continue;
-		}
-		Mesh &mesh = meshes[key];
-		if (mesh.version != version) {
-			_free_mesh(mesh);
-			if (!_create_mesh(key, mesh)) {
-				WARN_PRINT_ONCE("HDDAGI HWRT could not build a triangle mesh; skipping that contributor.");
-				_free_mesh(mesh);
+			cached.last_seen = frame;
+			active_cache_instances++;
+			if (_update_mesh_lods(geometry, p_scene_data, cached.mesh) || cached.material.lods.is_empty()) {
+				cached.material.lods = cached.mesh.lods;
 			}
-			mesh.version = version;
-		}
-		mesh.last_seen = frame;
-		if (mesh.triangle_count == 0 || (!key.deformed && mesh.blas.is_null())) {
-			continue;
-		}
-		Instance instance;
-		instance.id = id;
-		instance.mesh_version = version;
-		instance.blas = mesh.blas;
-		instance.transform = geometry->transform;
-		instance.normal_offset = mesh.normals.offset;
-		Material *material = materials.getptr(cached.material);
-		if (!material) {
-			material = &materials[cached.material];
-			material->valid = _capture_material(geometry, mesh, *material);
-			materials_changed = true;
-			if (!material->valid) {
-				WARN_PRINT_ONCE("HDDAGI HWRT could not capture a mesh material; skipping that contributor.");
-			}
-		}
-		material->last_seen = frame;
-		if (!material->valid) {
-			continue;
-		}
-		if (key.deformed) {
-			DeformedMesh &deformed = cached.deformed_meshes[key];
-			if (!_update_deformed(geometry->mesh_instance, mesh, deformed, deformation_changed)) {
-				WARN_PRINT_ONCE("HDDAGI HWRT could not update a deformed mesh; skipping that contributor.");
+			const MeshKey &key = cached.mesh;
+			if (key.surfaces.is_empty()) {
 				continue;
 			}
-			instance.blas = deformed.blas;
-			instance.deformation_version = deformed.version;
-			instance.normal_offset = deformed.normals.offset;
+			MeshFamily &family = mesh_families[cached.mesh_family];
+			uint64_t &material_last_seen = material_families[cached.material_family];
+			// An off-scene family may have been partially evicted by the inactive
+			// budget. Restore its siblings on reentry, before the next LOD switch.
+			const bool restore_lods = family.last_seen < frame - 1 || material_last_seen < frame - 1;
+			family.last_seen = frame;
+			family.version = version;
+			material_last_seen = frame;
+			SourceMesh *source = source_meshes.getptr(mesh_rid);
+			if (source && source->version == version) {
+				source->last_seen = frame;
+			}
+			Mesh *existing = meshes.getptr(key);
+			if (restore_lods || !existing || existing->version != version || !materials.has(cached.material)) {
+				materials_changed = _prepare_lods(geometry, cached, version) || materials_changed;
+			}
+			Mesh &mesh = meshes[key];
+			mesh.last_seen = frame;
+			if (mesh.triangle_count == 0 || (!key.deformed && mesh.blas.is_null())) {
+				continue;
+			}
+			Material *material = materials.getptr(cached.material);
+			if (!material || !material->valid) {
+				continue;
+			}
+			material->last_seen = frame;
+			Instance instance;
+			instance.key = instance_key;
+			instance.mesh_version = version;
+			instance.blas = mesh.blas;
+			instance.transform = geometry->transform;
+			instance.normal_offset = mesh.normals.offset;
+			if (key.deformed) {
+				DeformedMesh &deformed = cached.deformed_meshes[key];
+				if (!_update_deformed(geometry->mesh_instance, mesh, deformed, deformation_changed)) {
+					WARN_PRINT_ONCE("HDDAGI HWRT could not update a deformed mesh; skipping that contributor.");
+					continue;
+				}
+				instance.blas = deformed.blas;
+				instance.deformation_version = deformed.version;
+				instance.normal_offset = deformed.normals.offset;
+			}
+			instance.material_offset = material->samples.offset;
+			if (cached.instance.key.id != 0) {
+				instance.metadata_index = cached.instance.metadata_index;
+			} else if (!free_metadata_indices.is_empty()) {
+				instance.metadata_index = free_metadata_indices[free_metadata_indices.size() - 1];
+				free_metadata_indices.resize(free_metadata_indices.size() - 1);
+			} else {
+				instance.metadata_index = metadata_count++;
+			}
+			// Stable metadata slots keep unrelated cache surfaces valid when TLAS
+			// membership changes. Material changes do not alter incident irradiance.
+			instance.surface_version = cached.instance.same_geometry(instance) ? cached.instance.surface_version : ++surface_version;
+			cached.instance = instance;
+			next_instances.push_back(instance);
 		}
-		instance.material_offset = material->samples.offset;
-		if (cached.instance.id != 0) {
-			instance.metadata_index = cached.instance.metadata_index;
-		} else if (!free_metadata_indices.is_empty()) {
-			instance.metadata_index = free_metadata_indices[free_metadata_indices.size() - 1];
-			free_metadata_indices.resize(free_metadata_indices.size() - 1);
-		} else {
-			instance.metadata_index = metadata_count++;
-		}
-		// Stable metadata slots keep unrelated cache surfaces valid when TLAS
-		// membership changes. Material changes do not alter incident irradiance.
-		instance.surface_version = cached.instance.same_geometry(instance) ? cached.instance.surface_version : ++surface_version;
-		cached.instance = instance;
-		next_instances.push_back(instance);
 	}
-	_evict_unused();
+	for (const MeshKey &key : material_meshes_to_release) {
+		Mesh *mesh = meshes.getptr(key);
+		if (mesh && mesh->material_mesh.is_valid()) {
+			mesh_storage->free(mesh->material_mesh);
+			mesh->material_mesh = RID();
+		}
+	}
+	material_meshes_to_release.clear();
+	// Family timestamps are maintained above. Scan retained LODs only when the
+	// asset working set changes or an inactive entry actually reaches its TTL.
+	if (cache_membership_changed || materials_changed || active_cache_instances != cache_instance_count || frame >= next_eviction_frame) {
+		_evict_unused();
+	}
+	cache_instance_count = active_cache_instances;
 	// Cull result ordering can change with worker scheduling.
 	next_instances.sort();
 	bool geometry_changed = !ready || instances.size() != next_instances.size();
@@ -1000,12 +1193,18 @@ void HDDAGIHwrt::free() {
 		_free_mesh(entry.value);
 	}
 	meshes.clear();
+	material_meshes_to_release.clear();
+	mesh_families.clear();
+	material_families.clear();
+	source_meshes.clear();
 	materials.clear();
-	for (KeyValue<uint64_t, CachedInstance> &entry : cached_instances) {
+	for (KeyValue<InstanceKey, CachedInstance> &entry : cached_instances) {
 		_free_deformed_meshes(entry.value);
 	}
 	cached_instances.clear();
 	metadata_count = 0;
+	next_eviction_frame = 0;
+	cache_instance_count = 0;
 	free_metadata_indices.clear();
 	instances.clear();
 	next_instances.clear();
