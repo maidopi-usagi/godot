@@ -1560,6 +1560,7 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 			device_functions.CreateAccelerationStructureKHR = PFN_vkCreateAccelerationStructureKHR(functions.GetDeviceProcAddr(vk_device, "vkCreateAccelerationStructureKHR"));
 			device_functions.DestroyAccelerationStructureKHR = PFN_vkDestroyAccelerationStructureKHR(functions.GetDeviceProcAddr(vk_device, "vkDestroyAccelerationStructureKHR"));
 			device_functions.GetAccelerationStructureBuildSizesKHR = PFN_vkGetAccelerationStructureBuildSizesKHR(functions.GetDeviceProcAddr(vk_device, "vkGetAccelerationStructureBuildSizesKHR"));
+			device_functions.GetAccelerationStructureDeviceAddressKHR = PFN_vkGetAccelerationStructureDeviceAddressKHR(functions.GetDeviceProcAddr(vk_device, "vkGetAccelerationStructureDeviceAddressKHR"));
 			device_functions.CmdBuildAccelerationStructuresKHR = PFN_vkCmdBuildAccelerationStructuresKHR(functions.GetDeviceProcAddr(vk_device, "vkCmdBuildAccelerationStructuresKHR"));
 		}
 
@@ -2529,6 +2530,26 @@ RDD::TextureID RenderingDeviceDriverVulkan::texture_create_from_extension(uint64
 	return TextureID(tex_info);
 }
 
+bool RenderingDeviceDriverVulkan::_texture_get_shared_view_usage(const TextureInfo *p_texture, const TextureView &p_view, VkImageViewUsageCreateInfo &r_usage) const {
+	if (!enabled_device_extension_names.has(VK_KHR_MAINTENANCE_2_EXTENSION_NAME) || RD_TO_VK_FORMAT[p_view.format] == p_texture->vk_view_create_info.format) {
+		return false;
+	}
+	r_usage = {};
+	r_usage.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO;
+	r_usage.usage = p_texture->vk_create_info.usage;
+	// Reinterpreted views, including slices, must only inherit supported usages.
+	VkFormatProperties properties = {};
+	vkGetPhysicalDeviceFormatProperties(physical_device, RD_TO_VK_FORMAT[p_view.format], &properties);
+	const VkFormatFeatureFlags supported_flags = p_texture->vk_create_info.tiling == VK_IMAGE_TILING_LINEAR ? properties.linearTilingFeatures : properties.optimalTilingFeatures;
+	if (!(supported_flags & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
+		r_usage.usage &= ~uint32_t(VK_IMAGE_USAGE_STORAGE_BIT);
+	}
+	if (!(supported_flags & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {
+		r_usage.usage &= ~uint32_t(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+	}
+	return true;
+}
+
 RDD::TextureID RenderingDeviceDriverVulkan::texture_create_shared(TextureID p_original_texture, const TextureView &p_view) {
 	const TextureInfo *owner_tex_info = (const TextureInfo *)p_original_texture.id;
 #ifdef DEBUG_ENABLED
@@ -2541,30 +2562,9 @@ RDD::TextureID RenderingDeviceDriverVulkan::texture_create_shared(TextureID p_or
 	image_view_create_info.components.b = (VkComponentSwizzle)p_view.swizzle_b;
 	image_view_create_info.components.a = (VkComponentSwizzle)p_view.swizzle_a;
 
-	if (enabled_device_extension_names.has(VK_KHR_MAINTENANCE_2_EXTENSION_NAME)) {
-		// May need to make VK_KHR_maintenance2 mandatory and thus has Vulkan 1.1 be our minimum supported version
-		// if we require setting this information. Vulkan 1.0 may simply not care.
-		if (image_view_create_info.format != owner_tex_info->vk_view_create_info.format) {
-			VkImageViewUsageCreateInfo *usage_info = ALLOCA_SINGLE(VkImageViewUsageCreateInfo);
-			*usage_info = {};
-			usage_info->sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO;
-			usage_info->usage = owner_tex_info->vk_create_info.usage;
-
-			// Certain features may not be available for the format of the view.
-			{
-				VkFormatProperties properties = {};
-				vkGetPhysicalDeviceFormatProperties(physical_device, RD_TO_VK_FORMAT[p_view.format], &properties);
-				const VkFormatFeatureFlags &supported_flags = owner_tex_info->vk_create_info.tiling == VK_IMAGE_TILING_LINEAR ? properties.linearTilingFeatures : properties.optimalTilingFeatures;
-				if ((usage_info->usage & VK_IMAGE_USAGE_STORAGE_BIT) && !(supported_flags & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
-					usage_info->usage &= ~uint32_t(VK_IMAGE_USAGE_STORAGE_BIT);
-				}
-				if ((usage_info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && !(supported_flags & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {
-					usage_info->usage &= ~uint32_t(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-				}
-			}
-
-			image_view_create_info.pNext = usage_info;
-		}
+	VkImageViewUsageCreateInfo usage_info;
+	if (_texture_get_shared_view_usage(owner_tex_info, p_view, usage_info)) {
+		image_view_create_info.pNext = &usage_info;
 	}
 
 	VkImageView new_vk_image_view = VK_NULL_HANDLE;
@@ -2577,6 +2577,7 @@ RDD::TextureID RenderingDeviceDriverVulkan::texture_create_shared(TextureID p_or
 	*tex_info = *owner_tex_info;
 	tex_info->vk_view = new_vk_image_view;
 	tex_info->vk_view_create_info = image_view_create_info;
+	tex_info->vk_view_create_info.pNext = nullptr;
 	tex_info->allocation = {};
 
 #if PRINT_NATIVE_COMMANDS
@@ -2619,6 +2620,10 @@ RDD::TextureID RenderingDeviceDriverVulkan::texture_create_shared_from_slice(Tex
 	image_view_create_info.subresourceRange.levelCount = p_mipmaps;
 	image_view_create_info.subresourceRange.baseArrayLayer = p_layer;
 	image_view_create_info.subresourceRange.layerCount = p_layers;
+	VkImageViewUsageCreateInfo usage_info;
+	if (_texture_get_shared_view_usage(owner_tex_info, p_view, usage_info)) {
+		image_view_create_info.pNext = &usage_info;
+	}
 
 	VkImageView new_vk_image_view = VK_NULL_HANDLE;
 	VkResult err = vkCreateImageView(vk_device, &image_view_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_IMAGE_VIEW), &new_vk_image_view);
@@ -2630,6 +2635,7 @@ RDD::TextureID RenderingDeviceDriverVulkan::texture_create_shared_from_slice(Tex
 	*tex_info = *owner_tex_info;
 	tex_info->vk_view = new_vk_image_view;
 	tex_info->vk_view_create_info = image_view_create_info;
+	tex_info->vk_view_create_info.pNext = nullptr;
 	tex_info->allocation = {};
 
 #if PRINT_NATIVE_COMMANDS
@@ -6452,7 +6458,7 @@ void RenderingDeviceDriverVulkan::acceleration_structure_instance_write(uint8_t 
 
 	if (p_instance.blas) {
 		const AccelerationStructureInfo *blas_info = (const AccelerationStructureInfo *)p_instance.blas.id;
-		vk_instance.accelerationStructureReference = buffer_get_device_address(blas_info->buffer);
+		vk_instance.accelerationStructureReference = blas_info->device_address;
 	} else {
 		vk_instance.accelerationStructureReference = 0;
 	}
@@ -6487,6 +6493,11 @@ void RenderingDeviceDriverVulkan::_acceleration_structure_create(VkAccelerationS
 	VkResult err = device_functions.CreateAccelerationStructureKHR(vk_device, &accel_create_info, nullptr, &r_accel_info->vk_acceleration_structure);
 	ERR_FAIL_COND_MSG(err, vformat("Couldn't create Vulkan raytracing acceleration structure (VkResult error %d).", err));
 	r_accel_info->build_info.dstAccelerationStructure = r_accel_info->vk_acceleration_structure;
+	// An AS address is not guaranteed to equal its storage buffer's address.
+	VkAccelerationStructureDeviceAddressInfoKHR address_info = {};
+	address_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+	address_info.accelerationStructure = r_accel_info->vk_acceleration_structure;
+	r_accel_info->device_address = device_functions.GetAccelerationStructureDeviceAddressKHR(vk_device, &address_info);
 #endif
 }
 

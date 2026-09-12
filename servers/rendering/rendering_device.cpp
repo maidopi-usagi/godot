@@ -537,7 +537,8 @@ Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance
 		AccelerationStructure::InstanceBuffer instance_buffer;
 		instance_buffer.driver_id = instance_buffer_driver_id;
 		instance_buffer.frame_used = frames_drawn;
-		instance_buffer.used_size = 0;
+		// Reserve this build's input before another build can reuse the buffer.
+		instance_buffer.used_size = instance_buffer_used_size;
 		instance_buffer.data_ptr = data_ptr;
 
 		instance_buffer_index = tlas->instance_buffers.size();
