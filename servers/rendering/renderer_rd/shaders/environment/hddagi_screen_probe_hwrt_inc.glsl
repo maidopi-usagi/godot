@@ -68,7 +68,10 @@ float hwrt_ray_epsilon(vec3 position) {
 }
 
 void hwrt_material_sample(uint base, uvec2 texel, out vec3 albedo, out vec3 emission) {
-	uvec2 packed = screen_probe_hwrt_materials.data[base + texel.x + texel.y * 4u];
+	// On the hypotenuse, interpolation can fetch an exterior point with zero
+	// weight. Keep that fetch inside this primitive's ten stored chart samples.
+	texel.x = min(texel.x, 3u - texel.y);
+	uvec2 packed = screen_probe_hwrt_materials.data[base + texel.x + texel.y * (9u - texel.y) / 2u];
 	vec4 color = vec4((uvec4(packed.x) >> uvec4(0, 8, 16, 24)) & 255u) / 255.0;
 	albedo = color.rgb * (1.0 - color.a);
 	uvec4 channels = (uvec4(packed.y) >> uvec4(0, 9, 18, 27)) & uvec4(511, 511, 511, 31);
@@ -115,7 +118,7 @@ bool hwrt_trace(vec3 origin_world, vec3 direction_world, vec3 receiver_normal_wo
 		normal = -normal;
 	}
 	position = origin + direction_world * rayQueryGetIntersectionTEXT(query, true);
-	hwrt_material(instance.y + primitive * 16u, rayQueryGetIntersectionBarycentricsEXT(query, true), albedo, emission);
+	hwrt_material(instance.y + primitive * 10u, rayQueryGetIntersectionBarycentricsEXT(query, true), albedo, emission);
 	return true;
 }
 

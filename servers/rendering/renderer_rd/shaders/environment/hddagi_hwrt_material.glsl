@@ -37,12 +37,14 @@ void main() {
 		return;
 	}
 	uint triangle = pixel.x / 4u + (pixel.y / 4u) * 128u;
-	if (triangle >= params.triangle_count) {
+	uvec2 texel = pixel % 4u;
+	if (triangle >= params.triangle_count || texel.x + texel.y > 3u) {
 		return;
 	}
 	vec3 albedo = texelFetch(source_albedo, ivec2(pixel), 0).rgb;
 	float metallic = texelFetch(source_orm, ivec2(pixel), 0).b;
 	vec3 emission = texelFetch(source_emission, ivec2(pixel), 0).rgb;
-	uint sample_index = triangle * 16u + (pixel.y % 4u) * 4u + pixel.x % 4u;
+	// Only the ten points on or inside the triangular chart are sampled.
+	uint sample_index = triangle * 10u + texel.x + texel.y * (9u - texel.y) / 2u;
 	material_samples.data[params.sample_offset + sample_index] = uvec2(packUnorm4x8(vec4(albedo, metallic)), rgbe_encode(emission));
 }

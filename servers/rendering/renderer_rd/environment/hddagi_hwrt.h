@@ -45,6 +45,7 @@ namespace RendererRD {
 // denoising remain shared; no voxel geometry, materials or lighting are used.
 class HDDAGIHwrt {
 	static constexpr uint32_t MATERIAL_TILE_SIZE = 4;
+	static constexpr uint32_t MATERIAL_SAMPLES_PER_TRIANGLE = MATERIAL_TILE_SIZE * (MATERIAL_TILE_SIZE + 1) / 2;
 	static constexpr uint32_t MATERIAL_TILES_PER_ROW = 128;
 	static constexpr uint64_t CACHE_KEEP_FRAMES = 120;
 	static constexpr uint64_t CACHE_MAX_UNUSED_BYTES = 64 * 1024 * 1024;
@@ -58,9 +59,10 @@ class HDDAGIHwrt {
 		uint32_t capacity = 0;
 		uint32_t used = 0;
 		uint32_t stride = 4;
+		uint32_t growth_quantum = 0; // Elements; zero keeps power-of-two growth.
 		LocalVector<Range> free_ranges;
 		bool reserve(uint32_t p_count);
-		Range allocate(uint32_t p_count);
+		Range allocate(uint32_t p_count, bool p_reserve_buffer = true);
 		void release(Range p_range);
 		void free();
 	};
@@ -121,7 +123,7 @@ class HDDAGIHwrt {
 	};
 	struct Material {
 		MaterialKey family;
-		Range samples; // GPU-only 4x4 samples per triangle: albedo/metallic + RGB9E5 emission.
+		Range samples; // Ten valid 4x4 chart samples: albedo/metallic + RGB9E5 emission.
 		uint64_t last_seen = 0;
 		bool valid = false;
 	};

@@ -48,7 +48,10 @@ bool HDDAGIHwrt::Pool::reserve(uint32_t p_count) {
 		return true;
 	}
 	RD *rd = RD::get_singleton();
-	const uint64_t new_capacity = Math::nearest_power_of_2_templated(MAX(uint64_t(p_count), uint64_t(16)));
+	uint64_t new_capacity = Math::nearest_power_of_2_templated(MAX(uint64_t(p_count), uint64_t(16)));
+	if (growth_quantum != 0 && new_capacity > growth_quantum) {
+		new_capacity = ((uint64_t(p_count) + growth_quantum - 1) / growth_quantum) * growth_quantum;
+	}
 	ERR_FAIL_COND_V(new_capacity * stride > UINT32_MAX, false);
 	RID next = rd->storage_buffer_create(uint32_t(new_capacity) * stride);
 	if (next.is_null()) {
@@ -63,7 +66,7 @@ bool HDDAGIHwrt::Pool::reserve(uint32_t p_count) {
 	return true;
 }
 
-HDDAGIHwrt::Range HDDAGIHwrt::Pool::allocate(uint32_t p_count) {
+HDDAGIHwrt::Range HDDAGIHwrt::Pool::allocate(uint32_t p_count, bool p_reserve_buffer) {
 	for (uint32_t i = 0; i < free_ranges.size(); i++) {
 		if (free_ranges[i].count >= p_count) {
 			Range result{ free_ranges[i].offset, p_count };
@@ -75,7 +78,7 @@ HDDAGIHwrt::Range HDDAGIHwrt::Pool::allocate(uint32_t p_count) {
 			return result;
 		}
 	}
-	if (p_count > UINT32_MAX - used || !reserve(used + p_count)) {
+	if (p_count > UINT32_MAX - used || uint64_t(used + p_count) * stride > UINT32_MAX || (p_reserve_buffer && !reserve(used + p_count))) {
 		return Range();
 	}
 	Range result{ used, p_count };
@@ -471,6 +474,7 @@ bool HDDAGIHwrt::_prepare_lods(RenderGeometryInstanceBase *p_instance, const Cac
 	// Surface-level BLASes avoid the combinatorial whole-mesh LOD cache, while
 	// preserving exactly the topology selected by rasterization for each surface.
 	bool materials_changed = false;
+	LocalVector<uint32_t> capture_lods;
 	MeshKey mesh_key = p_cached.mesh;
 	MaterialKey material_key = p_cached.material;
 	for (int lod = 0; lod < source->indices.size(); lod++) {
@@ -493,10 +497,30 @@ bool HDDAGIHwrt::_prepare_lods(RenderGeometryInstanceBase *p_instance, const Cac
 		if (!materials.has(material_key)) {
 			Material &material = materials[material_key];
 			material.family = p_cached.material_family;
-			material.valid = _capture_material(p_instance, mesh_key, mesh, material);
+			// Assign stable ranges for the entire LOD batch before growing the GPU
+			// pool. Existing free ranges are reused without overestimating capacity.
+			material.samples = material_pool.allocate(mesh.triangle_count * MATERIAL_SAMPLES_PER_TRIANGLE, false);
 			material.last_seen = frame;
 			materials_changed = true;
+			if (material.samples.count != 0) {
+				capture_lods.push_back(lod);
+			} else {
+				WARN_PRINT_ONCE("HDDAGI HWRT could not allocate surface material samples; skipping that contributor.");
+			}
+		}
+	}
+	if (!capture_lods.is_empty()) {
+		const bool reserved = material_pool.reserve(material_pool.used);
+		for (uint32_t lod : capture_lods) {
+			mesh_key.lods.write[0] = lod;
+			material_key.lods = mesh_key.lods;
+			Material &material = materials[material_key];
+			// A failed grow must not prevent captures that fit in the old buffer.
+			const bool fits = reserved || uint64_t(material.samples.offset) + material.samples.count <= material_pool.capacity;
+			material.valid = fits && _capture_material(p_instance, mesh_key, meshes[mesh_key], material);
 			if (!material.valid) {
+				material_pool.release(material.samples);
+				material.samples = Range();
 				WARN_PRINT_ONCE("HDDAGI HWRT could not capture a surface material; skipping that contributor.");
 			}
 		}
@@ -728,12 +752,7 @@ bool HDDAGIHwrt::_capture_material(RenderGeometryInstanceBase *p_instance, const
 	PagedArray<RenderGeometryInstance *> capture;
 	capture.set_page_pool(&pool);
 	capture.push_back(instance);
-	r_material.samples = material_pool.allocate(p_mesh.triangle_count * MATERIAL_TILE_SIZE * MATERIAL_TILE_SIZE);
-	if (r_material.samples.count == 0) {
-		renderer->geometry_instance_free(instance);
-		release();
-		return false;
-	}
+	DEV_ASSERT(r_material.samples.count == p_mesh.triangle_count * MATERIAL_SAMPLES_PER_TRIANGLE);
 	if (!material_timestamped) {
 		RENDER_TIMESTAMP("HDDAGI HWRT Material Capture");
 	}
@@ -940,6 +959,7 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 	deform_timestamped = false;
 	normal_pool.stride = sizeof(float) * 4;
 	material_pool.stride = sizeof(uint32_t) * 2;
+	material_pool.growth_quantum = (64 * 1024 * 1024) / material_pool.stride;
 	MeshStorage *mesh_storage = MeshStorage::get_singleton();
 	// Scene culling skins camera/shadow-visible meshes. GI also needs animated
 	// contributors outside those lists, bounded by its independent scene coverage.
