@@ -818,7 +818,33 @@ void HDDAGIHwrt::_free_deformed_meshes(CachedInstance &p_instance) {
 	p_instance.deformed_meshes.clear();
 }
 
+void HDDAGIHwrt::_touch_cached_resources(const CachedInstance &p_cached) {
+	if (p_cached.mesh.surfaces.is_empty()) {
+		return;
+	}
+	const uint64_t version = p_cached.material.values[1];
+	MeshFamily *family = mesh_families.getptr(p_cached.mesh_family);
+	if (family && family->version == version) {
+		family->last_seen = MAX(family->last_seen, p_cached.last_seen);
+	}
+	uint64_t *material_last_seen = material_families.getptr(p_cached.material_family);
+	if (material_last_seen) {
+		*material_last_seen = MAX(*material_last_seen, p_cached.last_seen);
+	}
+	SourceMesh *source = source_meshes.getptr(p_cached.mesh.mesh);
+	if (source && source->version == version) {
+		source->last_seen = MAX(source->last_seen, p_cached.last_seen);
+	}
+}
+
 void HDDAGIHwrt::_evict_unused() {
+	// Unchanged surfaces only touch their instance timestamp each frame. Resolve
+	// the shared working set here instead of looking up every family every frame.
+	// Include recently departed instances: retention starts at their last use,
+	// not at the last maintenance scan of a static scene.
+	for (const KeyValue<InstanceKey, CachedInstance> &entry : cached_instances) {
+		_touch_cached_resources(entry.value);
+	}
 	// A different LOD of a contributing asset is part of its working set, not
 	// an off-scene asset. Applying the inactive budget to these siblings makes
 	// camera motion evict and rebuild the same geometry/materials continuously.
@@ -905,6 +931,7 @@ void HDDAGIHwrt::_evict_unused() {
 		}
 	}
 	for (const InstanceKey &id : removed_instances) {
+		DEV_ASSERT(!cached_instances[id].active);
 		if (cached_instances[id].instance.key.id != 0) {
 			free_metadata_indices.push_back(cached_instances[id].instance.metadata_index);
 		}
@@ -974,7 +1001,15 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 	if (has_deformed) {
 		mesh_storage->update_mesh_instances();
 	}
-	next_instances.clear();
+	const bool lod_view_changed = !ready || lod_camera_origin != p_scene_data->main_cam_transform.origin ||
+			lod_orthogonal != p_scene_data->cam_orthogonal || lod_distance_multiplier != p_scene_data->lod_distance_multiplier || lod_threshold != p_scene_data->screen_mesh_lod_threshold;
+	lod_camera_origin = p_scene_data->main_cam_transform.origin;
+	lod_orthogonal = p_scene_data->cam_orthogonal;
+	lod_distance_multiplier = p_scene_data->lod_distance_multiplier;
+	lod_threshold = p_scene_data->screen_mesh_lod_threshold;
+	bool geometry_changed = !ready;
+	bool metadata_changed = !ready;
+	bool instance_membership_changed = false;
 	bool materials_changed = false;
 	bool deformation_changed = false;
 	bool cache_membership_changed = false;
@@ -991,12 +1026,18 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 		const uint64_t id = geometry->get_hddagi_instance_id();
 		const RID mesh_rid = geometry->get_hddagi_mesh();
 		const uint64_t version = mesh_storage->mesh_get_data_version(mesh_rid);
-		for (int surface = 0; surface < mesh_storage->mesh_get_surface_count(mesh_rid); surface++) {
+		const uint64_t deformation_version = geometry->mesh_instance.is_valid() ? mesh_storage->mesh_instance_get_deformation_version(geometry->mesh_instance) : 0;
+		const int surface_count = mesh_storage->mesh_get_surface_count(mesh_rid);
+		for (int surface = 0; surface < surface_count; surface++) {
 			const InstanceKey instance_key{ id, uint32_t(surface) };
 			CachedInstance &cached = cached_instances[instance_key];
-			cache_membership_changed = cache_membership_changed || cached.last_seen != frame - 1;
-			if (cached.material.values.is_empty() || cached.mesh.mesh != mesh_rid || cached.mesh.deformed != geometry->mesh_instance.is_valid() || cached.material.values[1] != version ||
-					cached.capture_version != geometry->get_hddagi_capture_version() || !_material_is_current(cached.material)) {
+			const bool continuous = cached.last_seen == frame - 1;
+			cache_membership_changed = cache_membership_changed || !continuous;
+			const bool keys_changed = cached.material.values.is_empty() || cached.mesh.mesh != mesh_rid || cached.mesh.deformed != geometry->mesh_instance.is_valid() || cached.material.values[1] != version ||
+					cached.capture_version != geometry->get_hddagi_capture_version() || !_material_is_current(cached.material);
+			if (keys_changed) {
+				// Preserve the previous family's last use before changing identity.
+				_touch_cached_resources(cached);
 				cached.mesh = _mesh_key(geometry, surface);
 				MaterialKey material_key = _material_key(geometry, surface);
 				cache_membership_changed = cache_membership_changed || cached.material.values != material_key.values;
@@ -1012,18 +1053,31 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 			}
 			cached.last_seen = frame;
 			active_cache_instances++;
-			if (_update_mesh_lods(geometry, p_scene_data, cached.mesh) || cached.material.lods.is_empty()) {
+			bool lod_changed = false;
+			if (cached.mesh.has_lods && (lod_view_changed || keys_changed || !continuous || cached.lod_bounds != geometry->transformed_aabb || cached.lod_scale != geometry->lod_model_scale * geometry->lod_bias)) {
+				lod_changed = _update_mesh_lods(geometry, p_scene_data, cached.mesh);
+				cached.lod_bounds = geometry->transformed_aabb;
+				cached.lod_scale = geometry->lod_model_scale * geometry->lod_bias;
+			}
+			if (lod_changed || cached.material.lods.is_empty()) {
 				cached.material.lods = cached.mesh.lods;
 			}
 			const MeshKey &key = cached.mesh;
 			if (key.surfaces.is_empty()) {
 				continue;
 			}
+			if (cached.active && continuous && !keys_changed && !lod_changed && cached.instance.transform == geometry->transform &&
+					cached.mesh_instance == geometry->mesh_instance && cached.instance.deformation_version == deformation_version) {
+				// Reuse the resolved BLAS, samples and metadata without allocating,
+				// hashing resource keys, copying instances or sorting the scene.
+				cached.instance_frame = frame;
+				continue;
+			}
 			MeshFamily &family = mesh_families[cached.mesh_family];
 			uint64_t &material_last_seen = material_families[cached.material_family];
 			// An off-scene family may have been partially evicted by the inactive
 			// budget. Restore its siblings on reentry, before the next LOD switch.
-			const bool restore_lods = family.last_seen < frame - 1 || material_last_seen < frame - 1;
+			const bool restore_lods = (!continuous || keys_changed) && (family.last_seen < frame - 1 || material_last_seen < frame - 1);
 			family.last_seen = frame;
 			family.version = version;
 			material_last_seen = frame;
@@ -1073,9 +1127,41 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 			// Stable metadata slots keep unrelated cache surfaces valid when TLAS
 			// membership changes. Material changes do not alter incident irradiance.
 			instance.surface_version = cached.instance.same_geometry(instance) ? cached.instance.surface_version : ++surface_version;
+			geometry_changed = geometry_changed || !cached.active || !cached.instance.same_geometry(instance);
+			metadata_changed = metadata_changed || !cached.active || cached.instance.normal_offset != instance.normal_offset || cached.instance.material_offset != instance.material_offset;
 			cached.instance = instance;
-			next_instances.push_back(instance);
+			cached.mesh_instance = geometry->mesh_instance;
+			cached.instance_frame = frame;
+			if (!cached.active) {
+				cached.active = true;
+				instances.push_back(&cached);
+				instance_membership_changed = true;
+			}
 		}
+	}
+	// Cull workers may change ordering. Track membership by stable instance ID,
+	// and keep TLAS ordering independent of the incoming list.
+	for (uint32_t i = 0; i < instances.size();) {
+		if (instances[i]->instance_frame != frame) {
+			instances[i]->active = false;
+			instances.remove_at_unordered(i);
+			geometry_changed = true;
+			instance_membership_changed = true;
+		} else {
+			i++;
+		}
+	}
+	if (instance_membership_changed) {
+		// Preserve the previous TLAS input order (and its traversal behavior).
+		// Poses, transforms and LOD switches need no sorting when IDs are unchanged.
+		struct InstanceSort {
+			bool operator()(const CachedInstance *p_a, const CachedInstance *p_b) const {
+				const InstanceKey &a = p_a->instance.key;
+				const InstanceKey &b = p_b->instance.key;
+				return a.id == b.id ? a.surface < b.surface : a.id < b.id;
+			}
+		};
+		instances.sort_custom<InstanceSort>();
 	}
 	for (const MeshKey &key : material_meshes_to_release) {
 		Mesh *mesh = meshes.getptr(key);
@@ -1085,21 +1171,13 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 		}
 	}
 	material_meshes_to_release.clear();
-	// Family timestamps are maintained above. Scan retained LODs only when the
-	// asset working set changes or an inactive entry actually reaches its TTL.
+	// Resolve family timestamps and scan retained LODs only when the asset
+	// working set changes or an inactive entry actually reaches its TTL.
 	if (cache_membership_changed || materials_changed || active_cache_instances != cache_instance_count || frame >= next_eviction_frame) {
 		_evict_unused();
 	}
 	cache_instance_count = active_cache_instances;
-	// Cull result ordering can change with worker scheduling.
-	next_instances.sort();
-	bool geometry_changed = !ready || instances.size() != next_instances.size();
-	bool metadata_changed = geometry_changed;
 	geometry_changed = geometry_changed || deformation_changed;
-	for (uint32_t i = 0; i < MIN(instances.size(), next_instances.size()); i++) {
-		geometry_changed = geometry_changed || !instances[i].same_geometry(next_instances[i]);
-		metadata_changed = metadata_changed || instances[i].normal_offset != next_instances[i].normal_offset || instances[i].material_offset != next_instances[i].material_offset;
-	}
 	metadata_changed = metadata_changed || geometry_changed;
 	if (!geometry_changed && !metadata_changed && !materials_changed) {
 		return;
@@ -1135,8 +1213,8 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 		LocalVector<uint32_t> metadata;
 		metadata.resize(instance_capacity * 4);
 		memset(metadata.ptr(), 0, metadata.size() * sizeof(uint32_t));
-		for (uint32_t i = 0; i < next_instances.size(); i++) {
-			const Instance &instance = next_instances[i];
+		for (uint32_t i = 0; i < instances.size(); i++) {
+			const Instance &instance = instances[i]->instance;
 			const uint32_t base = instance.metadata_index * 4;
 			metadata[base] = instance.normal_offset;
 			metadata[base + 1] = instance.material_offset;
@@ -1147,12 +1225,12 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 	}
 	if (geometry_changed) {
 		thread_local LocalVector<RD::AccelerationStructureInstance> build_instances;
-		build_instances.resize(next_instances.size());
-		for (uint32_t i = 0; i < next_instances.size(); i++) {
+		build_instances.resize(instances.size());
+		for (uint32_t i = 0; i < instances.size(); i++) {
 			RD::AccelerationStructureInstance &build = build_instances[i];
-			build.transform = next_instances[i].transform;
-			build.id = next_instances[i].metadata_index;
-			build.blas = next_instances[i].blas;
+			build.transform = instances[i]->instance.transform;
+			build.id = instances[i]->instance.metadata_index;
+			build.blas = instances[i]->instance.blas;
 			build.flags = RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT;
 		}
 		// Material updates never rebuild AS. Geometry/membership changes still use
@@ -1168,7 +1246,6 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 			return;
 		}
 	}
-	SWAP(instances, next_instances);
 	ready = true;
 }
 
@@ -1227,7 +1304,6 @@ void HDDAGIHwrt::free() {
 	cache_instance_count = 0;
 	free_metadata_indices.clear();
 	instances.clear();
-	next_instances.clear();
 	normal_pool.free();
 	material_pool.free();
 	if (material_shader_version.is_valid()) {

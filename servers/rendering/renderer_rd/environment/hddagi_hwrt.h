@@ -141,7 +141,6 @@ class HDDAGIHwrt {
 		uint64_t id = 0;
 		uint32_t surface = 0;
 		bool operator==(const InstanceKey &p_other) const { return id == p_other.id && surface == p_other.surface; }
-		bool operator<(const InstanceKey &p_other) const { return id == p_other.id ? surface < p_other.surface : id < p_other.id; }
 	};
 	struct InstanceKeyHasher {
 		static uint32_t hash(const InstanceKey &p_key) { return hash_fmix32(hash_murmur3_one_32(p_key.surface, hash_murmur3_one_64(p_key.id))); }
@@ -159,7 +158,6 @@ class HDDAGIHwrt {
 		bool same_geometry(const Instance &p_other) const {
 			return key == p_other.key && blas == p_other.blas && transform == p_other.transform && mesh_version == p_other.mesh_version && deformation_version == p_other.deformation_version;
 		}
-		bool operator<(const Instance &p_other) const { return key < p_other.key; }
 	};
 	struct CachedInstance {
 		MeshKey mesh;
@@ -168,8 +166,13 @@ class HDDAGIHwrt {
 		MaterialKey material_family;
 		HashMap<MeshKey, DeformedMesh, MeshKeyHasher> deformed_meshes;
 		Instance instance;
+		RID mesh_instance;
+		AABB lod_bounds;
+		float lod_scale = 0.0f;
 		uint64_t capture_version = 0;
 		uint64_t last_seen = 0;
+		uint64_t instance_frame = 0;
+		bool active = false;
 	};
 	struct MeshFamily {
 		uint64_t last_seen = 0;
@@ -182,8 +185,12 @@ class HDDAGIHwrt {
 	HashMap<MaterialKey, Material, MaterialKeyHasher> materials;
 	HashMap<InstanceKey, CachedInstance, InstanceKeyHasher> cached_instances;
 	LocalVector<MeshKey> material_meshes_to_release;
-	LocalVector<Instance> instances;
-	LocalVector<Instance> next_instances;
+	// HashMap values are pointer-stable. Remove inactive pointers before eviction.
+	LocalVector<CachedInstance *> instances;
+	Vector3 lod_camera_origin;
+	float lod_distance_multiplier = 0.0f;
+	float lod_threshold = 0.0f;
+	bool lod_orthogonal = false;
 	RID tlas;
 	Pool normal_pool;
 	RID instance_buffer;
@@ -227,6 +234,7 @@ class HDDAGIHwrt {
 	MaterialKey _material_key(RenderGeometryInstanceBase *p_instance, int p_surface) const;
 	bool _material_is_current(const MaterialKey &p_key) const;
 	bool _capture_material(RenderGeometryInstanceBase *p_instance, const MeshKey &p_key, Mesh &p_mesh, Material &r_material);
+	void _touch_cached_resources(const CachedInstance &p_cached);
 	void _evict_unused();
 	void _free_mesh(Mesh &p_mesh);
 	void _free_deformed(DeformedMesh &p_mesh);
