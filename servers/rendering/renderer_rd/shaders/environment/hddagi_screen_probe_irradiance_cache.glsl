@@ -27,6 +27,9 @@ void hddagi_irradiance_cache_clear(uint index) {
 
 	if (index < uint(HDDAGI_IRRADIANCE_CACHE_GRID_CAPACITY)) {
 		hddagi_irradiance_cache_grid[index] = uvec2(HDDAGI_IRRADIANCE_CACHE_EMPTY, 0u);
+		if (hddagi_irradiance_cache_hwrt()) {
+			hddagi_irradiance_cache_guide_grid[index] = HDDAGI_IRRADIANCE_CACHE_EMPTY;
+		}
 	}
 	if (index < uint(HDDAGI_IRRADIANCE_CACHE_ENTRY_CAPACITY)) {
 		hddagi_irradiance_cache_entry_cells[index] = ivec4(0, 0, 0, -1);
@@ -51,26 +54,35 @@ void hddagi_irradiance_cache_flush_spatial(uint entry_index, uint generation) {
 	uint spatial_base = entry_index * HDDAGI_IRRADIANCE_CACHE_SPATIAL_STRIDE;
 	vec4 proposal_position = hddagi_irradiance_cache_proposals[spatial_base + 0u];
 	vec4 proposal_normal = hddagi_irradiance_cache_proposals[spatial_base + 1u];
+	vec4 proposal_geometric_normal = hddagi_irradiance_cache_proposals[spatial_base + 3u];
 	if (floatBitsToUint(proposal_position.w) != generation ||
 			!hddagi_irradiance_cache_is_finite(proposal_position.xyz) ||
-			!hddagi_irradiance_cache_is_finite(proposal_normal.xyz)) {
+			!hddagi_irradiance_cache_is_finite(proposal_normal.xyz) ||
+			!hddagi_irradiance_cache_is_finite(proposal_geometric_normal.xyz)) {
 		return;
 	}
 
 	// Publish the generation marker last, mirroring the proposal writer.
 	hddagi_irradiance_cache_spatial[spatial_base + 1u] = proposal_normal;
 	hddagi_irradiance_cache_spatial[spatial_base + 2u] = hddagi_irradiance_cache_proposals[spatial_base + 2u];
+	hddagi_irradiance_cache_spatial[spatial_base + 3u] = proposal_geometric_normal;
 	memoryBarrierBuffer();
 	hddagi_irradiance_cache_spatial[spatial_base + 0u] = proposal_position;
 	hddagi_irradiance_cache_proposals[spatial_base + 0u] = vec4(0.0);
 	hddagi_irradiance_cache_proposals[spatial_base + 1u] = vec4(0.0);
 	hddagi_irradiance_cache_proposals[spatial_base + 2u] = vec4(0.0);
+	hddagi_irradiance_cache_proposals[spatial_base + 3u] = vec4(0.0);
 }
 
 void hddagi_irradiance_cache_age(uint entry_index) {
 	uint capacity = hddagi_irradiance_cache_capacity();
 	if (entry_index >= capacity) {
 		return;
+	}
+	if (hddagi_irradiance_cache_hwrt()) {
+		for (uint slot = entry_index; slot < hddagi_irradiance_cache_grid_count(); slot += capacity) {
+			hddagi_irradiance_cache_guide_grid[slot] = HDDAGI_IRRADIANCE_CACHE_EMPTY;
+		}
 	}
 
 	uvec4 state = hddagi_irradiance_cache_entry_state[entry_index];
@@ -181,6 +193,136 @@ void hddagi_irradiance_cache_process(uint request_index) {
 	atomicAdd(hddagi_irradiance_cache_accumulation[accumulation_base + 15u], int(round(normal.z * HDDAGI_IRRADIANCE_CACHE_ACCUM_SCALE)) * sample_weight);
 }
 
+float hddagi_irradiance_cache_history_weight(uint entry_index, uint sample_count, vec3 estimate, float update_weight) {
+	if (!hddagi_irradiance_cache_hwrt()) {
+		return float(min(sample_count, hddagi_irradiance_cache_multibounce_enabled() ? HDDAGI_IRRADIANCE_CACHE_MULTIBOUNCE_HISTORY_SAMPLE_CAP : HDDAGI_IRRADIANCE_CACHE_HISTORY_SAMPLE_CAP));
+	}
+
+	uint temporal_base = entry_index * HDDAGI_IRRADIANCE_CACHE_TEMPORAL_STRIDE;
+	vec4 recent = hddagi_irradiance_cache_temporal[temporal_base + 0u];
+	vec4 variance_history = hddagi_irradiance_cache_temporal[temporal_base + 1u];
+	vec4 change = hddagi_irradiance_cache_temporal[temporal_base + 2u];
+	vec4 residual = hddagi_irradiance_cache_temporal[temporal_base + 3u];
+	float recent_weight = min(recent.w, HDDAGI_IRRADIANCE_CACHE_HWRT_RECENT_SAMPLES);
+	float recent_blend = update_weight / (recent_weight + update_weight);
+	vec3 delta = estimate - recent.xyz;
+	recent.xyz += recent_blend * delta;
+	variance_history.xyz = (1.0 - recent_blend) * (variance_history.xyz + recent_blend * delta * delta);
+	recent.w = min(recent_weight + update_weight, HDDAGI_IRRADIANCE_CACHE_HWRT_RECENT_SAMPLES);
+	float history_weight = variance_history.w;
+	bool animated = (hddagi_irradiance_cache_params.training.x & HDDAGI_IRRADIANCE_CACHE_ANIMATED_MATERIALS) != 0u;
+	bool lighting_hint = hddagi_irradiance_cache_params.training.w != 0u;
+
+	// Compare a continuously refreshed estimator with the published solution.
+	// Variance is measured between ray batches, not between the correlated SH
+	// coefficients. Require a persistent change in the same RGB channel and
+	// direction so isolated bright paths cannot repeatedly reopen long history.
+	vec3 previous = vec3(hddagi_irradiance_cache_sh[entry_index * 4u + 0u].x,
+			hddagi_irradiance_cache_sh[entry_index * 4u + 1u].x,
+			hddagi_irradiance_cache_sh[entry_index * 4u + 2u].x);
+	vec3 difference = recent.xyz - previous;
+	// Recent variance alone forgets rare bright paths between hits and mistakes
+	// their absence for an extinction event. Keep a longer residual reference.
+	float residual_blend = update_weight / (residual.w + update_weight);
+	vec3 batch_residual = estimate - previous;
+	residual.xyz = mix(residual.xyz, batch_residual * batch_residual, residual_blend);
+	residual.w = min(residual.w + update_weight, HDDAGI_IRRADIANCE_CACHE_HWRT_VARIANCE_SAMPLES);
+	vec3 standard_error = sqrt(max(max(variance_history.xyz, residual.xyz) * recent_blend / (2.0 - recent_blend), vec3(0.0)));
+	float sigma = animated ? 3.0 : 6.0;
+	vec3 threshold = sigma * standard_error + 0.02 * max(recent.xyz, previous) + vec3(0.5 / HDDAGI_IRRADIANCE_CACHE_ACCUM_SCALE);
+	for (uint channel = 0u; channel < 3u; channel++) {
+		bool changed = recent_weight >= HDDAGI_IRRADIANCE_CACHE_HWRT_RECENT_SAMPLES && abs(difference[channel]) > threshold[channel];
+		float direction = sign(difference[channel]);
+		change[channel] = changed ? (sign(change[channel]) == direction ? change[channel] + direction : direction) : 0.0;
+	}
+	float confirmations = animated ? 2.0 : 4.0;
+	if (change.w == 0.0 && any(greaterThanEqual(abs(change.xyz), vec3(confirmations)))) {
+		// Keep sampling and updating the same surface. A short local settling
+		// interval also lets delayed recursive light propagate through this entry.
+		change.w = 16.0;
+		change.xyz = vec3(0.0);
+		residual = vec4(variance_history.xyz, recent.w);
+	}
+	if (lighting_hint || change.w > 0.0) {
+		// Explicit edits affect visibility and recursive paths beyond the edited
+		// surface. Conservatively refresh the cache while those paths settle.
+		history_weight = min(history_weight, float(HDDAGI_IRRADIANCE_CACHE_HWRT_REFRESH_SAMPLE_CAP));
+		change.w = max(change.w - 1.0, 0.0);
+		change.xyz = vec3(0.0);
+		residual = vec4(variance_history.xyz, recent.w);
+	} else if (animated || sample_count < HDDAGI_IRRADIANCE_CACHE_HWRT_BOOTSTRAP_SAMPLES) {
+		// Avoid retaining the initially dark recursive solution. TIME materials
+		// keep a responsive history even when there is no explicit lighting edit.
+		history_weight = min(history_weight, float(HDDAGI_IRRADIANCE_CACHE_HWRT_ANIMATED_SAMPLE_CAP));
+	}
+	variance_history.w = min(history_weight + update_weight, HDDAGI_IRRADIANCE_CACHE_HWRT_MAX_HISTORY);
+	hddagi_irradiance_cache_temporal[temporal_base + 0u] = recent;
+	hddagi_irradiance_cache_temporal[temporal_base + 1u] = variance_history;
+	hddagi_irradiance_cache_temporal[temporal_base + 2u] = change;
+	hddagi_irradiance_cache_temporal[temporal_base + 3u] = residual;
+	return history_weight;
+}
+
+void hddagi_irradiance_cache_resolve_guide(uint entry_index, uint generation) {
+	if (!hddagi_guide_enabled() || generation == 0u || !hddagi_irradiance_cache_geometry_current(entry_index)) {
+		return;
+	}
+	uint base = entry_index * HDDAGI_IRRADIANCE_CACHE_GUIDE_STRIDE;
+	vec4 meta = hddagi_irradiance_cache_guide[base + HDDAGI_IRRADIANCE_CACHE_GUIDE_META_OFFSET];
+	if (meta.y > 0.0) {
+		// Guiding adapts independently of progressive irradiance accumulation.
+		// The guide is only a proposal; even an outdated distribution remains
+		// correct because consumers retain cosine support and evaluate its PDF.
+		bool animated = (hddagi_irradiance_cache_params.training.x & HDDAGI_IRRADIANCE_CACHE_ANIMATED_MATERIALS) != 0u;
+		float history_limit = hddagi_irradiance_cache_params.training.w != 0u ? 32.0 : (animated ? 128.0 : 512.0);
+		float history = min(meta.x, history_limit);
+		float blend = meta.y / (history + meta.y);
+		float row_mass[8];
+		float total_mass = 0.0;
+		for (uint row = 0u; row < 8u; row++) {
+			row_mass[row] = 0.0;
+			for (uint part = 0u; part < 2u; part++) {
+				uint offset = row * 2u + part;
+				vec4 batch = hddagi_irradiance_cache_guide[base + HDDAGI_IRRADIANCE_CACHE_GUIDE_BATCH_OFFSET + offset] / meta.y;
+				vec4 mass = mix(hddagi_irradiance_cache_guide[base + offset], batch, blend);
+				hddagi_irradiance_cache_guide[base + offset] = mass;
+				hddagi_irradiance_cache_guide[base + HDDAGI_IRRADIANCE_CACHE_GUIDE_BATCH_OFFSET + offset] = vec4(0.0);
+				row_mass[row] += dot(mass, vec4(1.0));
+			}
+			total_mass += row_mass[row];
+		}
+		meta.x = min(history + meta.y, history_limit);
+		meta.y = 0.0;
+		meta.z = total_mass > 1e-8 && !isnan(total_mass) && !isinf(total_mass) ? 1.0 : 0.0;
+		float row_prefix = 0.0;
+		uint cdf_base = base + HDDAGI_IRRADIANCE_CACHE_GUIDE_CDF_OFFSET;
+		for (uint row = 0u; row < 8u; row++) {
+			row_prefix += row_mass[row];
+			hddagi_irradiance_cache_guide[cdf_base + row / 4u][row & 3u] = row == 7u ? 1.0 : clamp(row_prefix / max(total_mass, 1e-20), 0.0, 1.0);
+			float column_prefix = 0.0;
+			for (uint column = 0u; column < 8u; column++) {
+				uint bin = row * 8u + column;
+				column_prefix += hddagi_irradiance_cache_guide[base + bin / 4u][bin & 3u];
+				uint offset = 8u + bin;
+				hddagi_irradiance_cache_guide[cdf_base + offset / 4u][offset & 3u] = column == 7u ? 1.0 : clamp(column_prefix / max(row_mass[row], 1e-20), 0.0, 1.0);
+			}
+		}
+		hddagi_irradiance_cache_guide[base + HDDAGI_IRRADIANCE_CACHE_GUIDE_META_OFFSET] = meta;
+	}
+	ivec4 cell = hddagi_irradiance_cache_entry_cells[entry_index];
+	if (meta.z <= 0.0 || cell.w < 0) {
+		return;
+	}
+	uint cascade = uint(cell.w) / uint(HDDAGI_IRRADIANCE_CACHE_GRID_CELL_COUNT);
+	uint first_slot = hddagi_irradiance_cache_hwrt_slot(cascade, cell.xyz, uvec3(0u));
+	for (uint candidate = 0u; candidate < HDDAGI_IRRADIANCE_CACHE_HWRT_BUCKET_SIZE; candidate++) {
+		uint previous = atomicCompSwap(hddagi_irradiance_cache_guide_grid[first_slot + candidate], HDDAGI_IRRADIANCE_CACHE_EMPTY, entry_index);
+		if (previous == HDDAGI_IRRADIANCE_CACHE_EMPTY || previous == entry_index) {
+			break;
+		}
+	}
+}
+
 void hddagi_irradiance_cache_resolve(uint entry_index) {
 	uint capacity = hddagi_irradiance_cache_capacity();
 	if (entry_index >= capacity) {
@@ -188,22 +330,16 @@ void hddagi_irradiance_cache_resolve(uint entry_index) {
 	}
 
 	uvec4 state = hddagi_irradiance_cache_entry_state[entry_index];
+	hddagi_irradiance_cache_resolve_guide(entry_index, state.y);
 	uint accumulation_base = entry_index * uint(HDDAGI_IRRADIANCE_CACHE_ACCUM_STRIDE);
 	int signed_count = hddagi_irradiance_cache_accumulation[accumulation_base + 12u];
 	if (state.y != 0u && signed_count > 0) {
 		float inverse_weight = 1.0 / (HDDAGI_IRRADIANCE_CACHE_ACCUM_SCALE * float(signed_count));
-		// Moving rigid geometry changes lighting, not the cached surface identity.
-		// Keep the previous solution while budgeted updates replace its samples.
-		uint history_sample_cap = hddagi_irradiance_cache_hwrt() ? HDDAGI_IRRADIANCE_CACHE_HWRT_HISTORY_SAMPLE_CAP : hddagi_irradiance_cache_multibounce_enabled() ? HDDAGI_IRRADIANCE_CACHE_MULTIBOUNCE_HISTORY_SAMPLE_CAP : HDDAGI_IRRADIANCE_CACHE_HISTORY_SAMPLE_CAP;
-		// Keep geometry and published feedback when lights/materials change,
-		// but briefly replace lighting batches without temporal damping.
-		if (hddagi_irradiance_cache_hwrt() && hddagi_irradiance_cache_params.training.w != 0u) {
-			history_sample_cap = 0u;
-		}
-		float history_weight = float(min(state.z, history_sample_cap));
 		float update_weight = float(signed_count);
-		// A bounded sample-count blend damps sparse refreshes without making
-		// well-sampled cells unresponsive.
+		vec3 radiance_estimate = vec3(float(hddagi_irradiance_cache_accumulation[accumulation_base + 0u]),
+				float(hddagi_irradiance_cache_accumulation[accumulation_base + 4u]),
+				float(hddagi_irradiance_cache_accumulation[accumulation_base + 8u])) * inverse_weight;
+		float history_weight = hddagi_irradiance_cache_history_weight(entry_index, state.z, radiance_estimate, update_weight);
 		float blend = update_weight / (history_weight + update_weight);
 		uint sh_base = entry_index * 4u;
 		for (uint channel = 0u; channel < 3u; channel++) {

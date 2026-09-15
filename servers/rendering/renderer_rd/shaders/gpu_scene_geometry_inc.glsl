@@ -1,11 +1,12 @@
 #ifndef GPU_SCENE_GEOMETRY_INC_GLSL
 #define GPU_SCENE_GEOMETRY_INC_GLSL
 
-// Object-space edges in BLAS primitive order. Deformation updates this record
-// alongside the build input, so shading never uses a bind-pose UV density.
+// Object-space attributes in BLAS primitive order. Deformation updates the
+// edges and normals alongside the build input, including imported LODs.
 struct GPUSceneTriangle {
 	vec4 edge1;
 	vec4 edge2;
+	uvec4 normals; // Three octahedral UNORM16x2 vertex normals; w is validity.
 };
 
 vec3 gpu_scene_triangle_normal(vec3 edge1, vec3 edge2) {
@@ -13,6 +14,41 @@ vec3 gpu_scene_triangle_normal(vec3 edge1, vec3 edge2) {
 	vec3 normal = cross(edge1 / max(scale, 1e-20), edge2 / max(scale, 1e-20));
 	float area_squared = dot(normal, normal);
 	return area_squared > 1e-30 ? normal * inversesqrt(area_squared) : vec3(0.0, 0.0, 1.0);
+}
+
+vec3 gpu_scene_safe_normalize(vec3 normal, vec3 fallback) {
+	float scale = max(abs(normal.x), max(abs(normal.y), abs(normal.z)));
+	if (!(scale > 1e-20) || any(isnan(normal)) || any(isinf(normal))) {
+		return fallback;
+	}
+	normal /= scale;
+	return normalize(normal);
+}
+
+vec3 gpu_scene_decode_normal(uint packed) {
+	vec2 oct = unpackUnorm2x16(packed) * 2.0 - 1.0;
+	vec3 normal = vec3(oct, 1.0 - abs(oct.x) - abs(oct.y));
+	normal.xy += mix(vec2(1.0), vec2(-1.0), greaterThanEqual(normal.xy, vec2(0.0))) * max(-normal.z, 0.0);
+	return normalize(normal);
+}
+
+vec3 gpu_scene_triangle_shading_normal(GPUSceneTriangle triangle, vec2 barycentric, mat3 world_to_object, vec3 geometric_normal, vec3 ray_direction) {
+	if (triangle.normals.w == 0u) {
+		return geometric_normal;
+	}
+	mat3 normal_matrix = transpose(world_to_object);
+	// Raster normalizes transformed vertex normals before interpolation. Match
+	// that order under nonuniform scale; transforming the interpolant differs.
+	vec3 n0 = gpu_scene_safe_normalize(normal_matrix * gpu_scene_decode_normal(triangle.normals.x), geometric_normal);
+	vec3 n1 = gpu_scene_safe_normalize(normal_matrix * gpu_scene_decode_normal(triangle.normals.y), geometric_normal);
+	vec3 n2 = gpu_scene_safe_normalize(normal_matrix * gpu_scene_decode_normal(triangle.normals.z), geometric_normal);
+	vec3 normal = gpu_scene_safe_normalize(n0 * (1.0 - barycentric.x - barycentric.y) + n1 * barycentric.x + n2 * barycentric.y, geometric_normal);
+	// Orient against the actual hit side, including mirrored instances and
+	// double-sided hits. Authored normals must not point through the surface.
+	if (dot(normal, geometric_normal) < 0.0) {
+		normal = -normal;
+	}
+	return dot(normal, ray_direction) < 0.0 ? normal : geometric_normal;
 }
 
 // Project a circular ray footprint onto the hit plane, then map it through the

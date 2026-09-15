@@ -288,7 +288,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	const Size2i resolve_size = directional_gather ? internal_size : p_gi_size;
 	const float normal_bias = hwrt ? 0.0f : CLAMP(p_normal_bias, -8.0f, 8.0f);
 	const uint32_t candidate_count = directional_gather ? 1u : uint32_t(CLAMP(GLOBAL_GET_CACHED(int, "rendering/global_illumination/hddagi/screen_probe_candidate_count"), 1, 8));
-	const bool guided_sampling = (!hwrt || directional_gather) && GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_guided_sampling");
+	const bool guided_sampling = GLOBAL_GET_CACHED(bool, "rendering/global_illumination/hddagi/screen_probe_guided_sampling");
 	const uint32_t detail_trace_quality = uint32_t(CLAMP(GLOBAL_GET_CACHED(int, "rendering/global_illumination/hddagi/screen_probe_detail_trace_quality"), 0, 2));
 	const uint32_t detail_trace_quality_flags = detail_trace_quality << HDDAGIShader::ScreenProbePushConstant::FLAG_DETAIL_TRACE_QUALITY_SHIFT;
 	const int irradiance_cache_setting = !hwrt && directional_gather ? 0 : GLOBAL_GET_CACHED(int, "rendering/global_illumination/hddagi/screen_probe_radiance_cache");
@@ -342,9 +342,6 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	if (hwrt) {
 		transport_configuration = hash_murmur3_one_float(hddagi->hwrt.get_max_distance(), transport_configuration);
 		lighting_configuration = hash_murmur3_one_float(hddagi->bounce_feedback, lighting_configuration);
-		// Bindless parameter and texel updates preserve the AS but change reflected
-		// radiance. Let temporal denoisers respond without invalidating geometry.
-		lighting_configuration = hash_murmur3_one_64(hddagi->hwrt.get_lighting_version(), lighting_configuration);
 	}
 	if (!hwrt) {
 		transport_configuration = hash_murmur3_one_float(hddagi->y_mult, transport_configuration);
@@ -385,6 +382,13 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 		}
 	}
 	transport_configuration = hash_fmix32(transport_configuration);
+	// World-space entries are continuously retrained. TIME alone must not keep
+	// their global fast-refresh window open; explicit edits still shorten history.
+	const uint32_t cache_lighting_configuration = hwrt ? hash_fmix32(hash_murmur3_one_64(hddagi->hwrt.get_lighting_version(false), lighting_configuration)) : 0;
+	if (hwrt) {
+		// Screen-space denoisers also track directly visible animated emission.
+		lighting_configuration = hash_murmur3_one_64(hddagi->hwrt.get_lighting_version(), lighting_configuration);
+	}
 	lighting_configuration = hash_fmix32(lighting_configuration);
 	const bool lighting_changed = hddagi->screen_probe_history_initialized && hddagi->screen_probe_lighting_configuration != lighting_configuration;
 
@@ -502,7 +506,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			if (!hwrt) {
 				irradiance_cache_history_key = hash_murmur3_one_32(lighting_configuration, irradiance_cache_history_key);
 			}
-			irradiance_cache_history_key = hash_murmur3_one_32(0x49430101u, irradiance_cache_history_key);
+			irradiance_cache_history_key = hash_murmur3_one_32(0x49430106u, irradiance_cache_history_key);
 			irradiance_cache_history_key = hash_murmur3_one_32(irradiance_cache_multibounce ? 1u : 0u, irradiance_cache_history_key);
 			irradiance_cache_history_key = hash_murmur3_one_float(irradiance_cache_minimum_cell_size, irradiance_cache_history_key);
 			irradiance_cache_history_key = hash_fmix32(irradiance_cache_history_key);
@@ -510,7 +514,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			HDDAGIScreenProbeIrradianceCache::FrameSettings cache_frame;
 			cache_frame.camera_position = p_cam_transform.origin;
 			cache_frame.hwrt_instances = hwrt ? hddagi->hwrt.get_instance_buffer() : RID();
-			cache_frame.lighting_key = hwrt ? (uint64_t(lighting_configuration) << 32) ^ hddagi->hwrt.get_lighting_version() : 0;
+			cache_frame.lighting_key = hwrt ? (uint64_t(cache_lighting_configuration) << 32) ^ hddagi->hwrt.get_lighting_version(false) : 0;
 			cache_frame.history_key = irradiance_cache_history_key;
 			cache_frame.minimum_cell_size = irradiance_cache_minimum_cell_size;
 			cache_frame.sky_mode = screen_probe_sky_mode;
@@ -520,6 +524,8 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			}
 			cache_frame.reset_history = !hwrt && camera_cut;
 			cache_frame.multibounce = irradiance_cache_multibounce;
+			cache_frame.animated_materials = hwrt && hddagi->hwrt.uses_time();
+			cache_frame.guided_sampling = hwrt && guided_sampling;
 			const Error frame_error = rbgi->screen_probe_irradiance_cache.prepare_frame(cache_frame, irradiance_cache_dispatch_info);
 			if (frame_error != OK) {
 				clear_irradiance_cache(vformat("frame preparation failed with error %d", frame_error));

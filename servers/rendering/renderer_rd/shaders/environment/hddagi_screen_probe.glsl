@@ -2880,6 +2880,9 @@ vec3 sample_guided_direction(GuidedSamplingDistribution distribution, vec2 rando
 shared ivec2 directional_history_probe;
 shared uint directional_history_age;
 shared uint directional_history_valid;
+#if defined(USE_HWRT) && defined(MODE_IRRADIANCE_CACHE_QUERY)
+shared uint directional_world_guide;
+#endif
 shared float directional_lighting_response;
 shared vec4 directional_lighting_current[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
 shared vec4 directional_lighting_previous[SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT];
@@ -3441,6 +3444,14 @@ void directional_trace_main() {
 
 	if (gl_LocalInvocationIndex == 0u) {
 		directional_history_probe = ivec2(-1);
+#if defined(USE_HWRT) && defined(MODE_IRRADIANCE_CACHE_QUERY)
+		directional_world_guide = HDDAGI_IRRADIANCE_CACHE_EMPTY;
+		if ((params.flags & SCREEN_PROBE_FLAG_GUIDED_SAMPLING) != 0u) {
+			vec2 origin_uv = (vec2(origin_position) + 0.5) / vec2(params.screen_size);
+			vec3 origin_world = (scene_data.cam_transform * vec4(compute_view_position(vec3(origin_uv, origin_depth)), 1.0)).xyz;
+			directional_world_guide = hddagi_guide_lookup(origin_world, normalize(mat3(scene_data.cam_transform) * origin_normal));
+		}
+#endif
 		directional_history_age = 0u;
 		directional_history_valid = 0u;
 		directional_lighting_response = 0.0;
@@ -3515,6 +3526,15 @@ void directional_trace_main() {
 		guide_strength *= mix(1.0, 0.25, directional_lighting_response);
 		combined_pdf *= mix(1.0, normalized_lighting, guide_strength);
 	}
+#if defined(USE_HWRT) && defined(MODE_IRRADIANCE_CACHE_QUERY)
+	float world_guide_strength = hddagi_guide_strength(directional_world_guide);
+	if (world_guide_strength > 0.0) {
+		// The world guide already contains L * cosine mass per equal-area bin.
+		// It changes ray allocation, while each bin retains its own 1/N mean.
+		float world_pdf = hddagi_guide_probability(directional_world_guide, lane) * float(SCREEN_PROBE_DIRECTIONAL_SAMPLE_COUNT);
+		combined_pdf = mix(combined_pdf, world_pdf, world_guide_strength);
+	}
+#endif
 	if (isnan(combined_pdf) || isinf(combined_pdf)) {
 		combined_pdf = 1.0;
 	}
@@ -4013,17 +4033,44 @@ void screen_probe_trace_main() {
 	uint candidate_count = clamp(params.candidate_count, 1u, 8u);
 	bool guided_sampling = (params.flags & SCREEN_PROBE_FLAG_GUIDED_SAMPLING) != 0u;
 	GuidedSamplingDistribution guided_distribution;
+#if defined(USE_HWRT) && defined(MODE_IRRADIANCE_CACHE_QUERY)
+	uint world_guide = HDDAGI_IRRADIANCE_CACHE_EMPTY;
+	vec3 world_normal = normalize(mat3(scene_data.cam_transform) * origin_normal);
+	if (guided_sampling) {
+		vec2 origin_uv = (vec2(origin_position) + 0.5) / vec2(params.screen_size);
+		vec3 origin_world = (scene_data.cam_transform * vec4(compute_view_position(vec3(origin_uv, origin_depth)), 1.0)).xyz;
+		world_guide = hddagi_guide_lookup(origin_world, world_normal);
+	}
+#else
 	if (guided_sampling) {
 		guided_distribution = build_guided_sampling_distribution(origin_position, origin_depth, origin_normal);
 	}
+#endif
 	vec3 radiance = vec3(0.0);
 	float hit_distance = 0.0;
 	for (uint candidate = 0u; candidate < candidate_count; candidate++) {
 		vec2 sample_position = sample_temporally_permuted_r2_sequence(uvec2(probe_position), params.frame_index * candidate_count + candidate, 0x44544330u);
+#if defined(USE_HWRT) && defined(MODE_IRRADIANCE_CACHE_QUERY)
+		if (guided_sampling && world_guide < hddagi_irradiance_cache_capacity()) {
+			// The proposal depends on previous paths. Use a fresh per-frame
+			// scramble so it cannot select correlated temporal R2 outcomes.
+			// Candidates within this frame share a randomly shifted R2 pattern.
+			uvec2 scramble = uvec2(
+					hash_uvec3(uvec3(uvec2(probe_position), params.frame_index ^ 0x89d3a7c1u)),
+					hash_uvec3(uvec3(uvec2(probe_position), params.frame_index ^ 0x52f109bdu)));
+			uvec2 sequence = scramble + uvec2(candidate) * R2_WEYL_INCREMENT;
+			sample_position = vec2(uint_to_unit_float(sequence.x), uint_to_unit_float(sequence.y));
+		}
+#endif
 		float proposal_pdf;
 		vec3 ray_direction;
 		if (guided_sampling) {
+#if defined(USE_HWRT) && defined(MODE_IRRADIANCE_CACHE_QUERY)
+			vec3 world_direction = hwrt_sample_guided_diffuse(world_guide, world_normal, sample_position, proposal_pdf);
+			ray_direction = transpose(mat3(scene_data.cam_transform)) * world_direction;
+#else
 			ray_direction = sample_guided_direction(guided_distribution, sample_position, origin_normal, proposal_pdf);
+#endif
 		} else {
 			ray_direction = tangent_to_world(cosine_sample_hemisphere(sample_position), origin_normal);
 			proposal_pdf = max(dot(origin_normal, ray_direction), 0.0) / PI;

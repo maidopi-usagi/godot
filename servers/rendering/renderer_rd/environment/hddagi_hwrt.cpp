@@ -379,10 +379,24 @@ bool HDDAGIHwrt::_create_mesh(const MeshKey &p_key, Mesh &r_mesh, bool p_create_
 				triangle_data.edge1[axis] = points[1][axis] - points[0][axis];
 				triangle_data.edge2[axis] = points[2][axis] - points[0][axis];
 			}
+			if (!source_normals.is_empty()) {
+				triangle_data.normals[3] = 1;
+				for (uint32_t corner = 0; corner < 3; corner++) {
+					const Vector3 &vertex_normal = source_normals[corner_indices[corner]];
+					if (!vertex_normal.is_finite() || vertex_normal.length_squared() < 1e-12) {
+						triangle_data.normals[3] = 0;
+						break;
+					}
+					const Vector2 encoded = vertex_normal.octahedron_encode();
+					triangle_data.normals[corner] = uint32_t(CLAMP(Math::round(encoded.x * 65535.0), 0.0, 65535.0)) |
+							(uint32_t(CLAMP(Math::round(encoded.y * 65535.0), 0.0, 65535.0)) << 16);
+				}
+			}
 			triangles.push_back(triangle_data);
 		}
 		if (p_create_geometry && p_key.deformed && source->deformed) {
-			r_mesh.deform_surfaces.push_back({ uint32_t(surface), triangle_offset, uint32_t(triangles.size()) - triangle_offset });
+			const uint32_t normal_stride = source_normals.is_empty() ? 0 : (source_tangents.is_empty() ? 1 : 2);
+			r_mesh.deform_surfaces.push_back({ uint32_t(surface), triangle_offset, uint32_t(triangles.size()) - triangle_offset, uint32_t(positions.size()) * 3, normal_stride });
 		}
 		bake_positions.resize(baked_vertices);
 		bake_normals.resize(baked_vertices);
@@ -662,7 +676,7 @@ bool HDDAGIHwrt::_update_deformed(RID p_mesh_instance, const Mesh &p_mesh, Defor
 	rd->compute_list_bind_compute_pipeline(list, deform_pipeline);
 	for (uint32_t i = 0; i < p_mesh.deform_surfaces.size(); i++) {
 		const Mesh::DeformSurface &surface = p_mesh.deform_surfaces[i];
-		const uint32_t push_constant[4] = { surface.triangle_offset, surface.triangle_count, r_deformed.triangles.offset, 0 };
+		const uint32_t push_constant[8] = { surface.triangle_offset, surface.triangle_count, r_deformed.triangles.offset, surface.normal_offset, surface.normal_stride, 0, 0, 0 };
 		rd->compute_list_bind_uniform_set(list, uniform_sets[i], 0);
 		rd->compute_list_set_push_constant(list, push_constant, sizeof(push_constant));
 		rd->compute_list_dispatch_threads(list, surface.triangle_count, 1, 1);
@@ -1272,7 +1286,7 @@ void HDDAGIHwrt::update(const PagedArray<RenderGeometryInstance *> *p_instances,
 			lighting_version++;
 		}
 		if (time_changed && gpu_scene_materials.uses_time()) {
-			lighting_version++;
+			lighting_animation_version++;
 			RenderingServerDefault::redraw_request();
 		}
 	}

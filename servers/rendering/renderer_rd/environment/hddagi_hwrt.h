@@ -96,8 +96,9 @@ class HDDAGIHwrt {
 	struct TriangleData {
 		float edge1[4] = {};
 		float edge2[4] = {};
+		uint32_t normals[4] = {}; // Three octahedral UNORM16x2 normals; w is validity.
 	};
-	static_assert(sizeof(TriangleData) == 32);
+	static_assert(sizeof(TriangleData) == 48);
 	struct Mesh {
 		MeshKey family; // Surface identity, without a selected LOD.
 		RID vertices;
@@ -110,11 +111,13 @@ class HDDAGIHwrt {
 			uint32_t surface = 0;
 			uint32_t triangle_offset = 0;
 			uint32_t triangle_count = 0;
+			uint32_t normal_offset = 0; // Native deformed buffer, in uint32_t words.
+			uint32_t normal_stride = 0; // Zero when the surface has no normals.
 		};
 		LocalVector<DeformSurface> deform_surfaces;
 		Size2i material_size;
 		Vector<int> material_surfaces;
-		Range triangles; // Two vec4 edges per triangle, in object space.
+		Range triangles; // Edges and packed vertex normals, in object space.
 		Range uvs; // Three vec2 UVs per triangle, in BLAS primitive order.
 		uint64_t bytes = 0; // Geometry/cache estimate for the inactive retention budget.
 		uint64_t version = 0;
@@ -237,6 +240,7 @@ class HDDAGIHwrt {
 	uint64_t scene_version = 0;
 	uint64_t surface_version = 0;
 	uint64_t lighting_version = 0;
+	uint64_t lighting_animation_version = 0;
 	uint32_t lighting_signature = 0;
 	uint32_t metadata_count = 0;
 	LocalVector<uint32_t> free_metadata_indices;
@@ -279,7 +283,8 @@ public:
 	float get_max_distance() const { return scene_data.max_distance; }
 	uint64_t get_scene_version() const { return scene_version; }
 	RID get_instance_buffer() const { return instance_buffer; }
-	uint64_t get_lighting_version() const { return lighting_version; }
+	uint64_t get_lighting_version(bool p_include_animation = true) const { return lighting_version + (p_include_animation ? lighting_animation_version : 0); }
+	bool uses_time() const { return gpu_scene_materials.uses_time(); }
 	bool is_ready() const { return ready; }
 	void free();
 };

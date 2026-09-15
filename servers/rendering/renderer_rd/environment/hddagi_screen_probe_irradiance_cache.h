@@ -44,7 +44,9 @@ public:
 	static constexpr uint32_t MULTIBOUNCE_UPDATE_BUDGET = 4096u;
 	static constexpr uint32_t MULTIBOUNCE_UPDATE_STRIDE = (CAPACITY + MULTIBOUNCE_UPDATE_BUDGET - 1u) / MULTIBOUNCE_UPDATE_BUDGET;
 	static constexpr uint32_t SH_STRIDE = 4u;
-	static constexpr uint32_t SPATIAL_STRIDE = 3u;
+	static constexpr uint32_t SPATIAL_STRIDE = 4u;
+	static constexpr uint32_t TEMPORAL_STRIDE = 4u;
+	static constexpr uint32_t GUIDE_STRIDE = 51u;
 	static constexpr uint32_t REQUEST_STRIDE = 3u;
 	static constexpr uint32_t ACCUMULATION_STRIDE = 16u;
 	static_assert(GRID_COUNT >= CAPACITY && GRID_COUNT >= MAX_REQUESTS, "The clear dispatch must cover every fixed irradiance-cache allocation.");
@@ -61,6 +63,8 @@ public:
 		float sky_color[4] = {};
 		bool reset_history = false;
 		bool multibounce = false;
+		bool animated_materials = false;
+		bool guided_sampling = false;
 	};
 
 	struct DispatchInfo {
@@ -108,13 +112,18 @@ private:
 		RID free_pool;
 		RID requests;
 		RID accumulation;
+		RID temporal;
+		RID guide;
+		RID guide_grid;
+		bool hwrt = false;
 		RID parameters;
 		RID empty_geometry;
 
 		bool is_valid() const {
 			return meta.is_valid() && grid.is_valid() && entry_cells.is_valid() && entry_state.is_valid() &&
 					sh.is_valid() && spatial.is_valid() && proposals.is_valid() && vote_count.is_valid() &&
-					free_pool.is_valid() && requests.is_valid() && accumulation.is_valid() && parameters.is_valid() && empty_geometry.is_valid();
+					free_pool.is_valid() && requests.is_valid() && accumulation.is_valid() && temporal.is_valid() &&
+					guide.is_valid() && guide_grid.is_valid() && parameters.is_valid() && empty_geometry.is_valid();
 		}
 	};
 
@@ -128,6 +137,6 @@ private:
 	bool clear_required = false;
 	bool frame_prepared = false;
 
-	Error _allocate_resources();
+	Error _allocate_resources(bool p_hwrt);
 	Error _build_parameters(const FrameSettings &p_frame, uint32_t p_frame_index, Parameters &r_parameters) const;
 };
