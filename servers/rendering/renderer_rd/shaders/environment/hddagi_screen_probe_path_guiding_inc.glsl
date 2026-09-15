@@ -84,7 +84,7 @@ float hddagi_guide_strength(uint entry_index) {
 		return 0.0;
 	}
 	vec4 meta = hddagi_irradiance_cache_guide[entry_index * HDDAGI_IRRADIANCE_CACHE_GUIDE_STRIDE + HDDAGI_IRRADIANCE_CACHE_GUIDE_META_OFFSET];
-	return meta.z > 0.0 ? 0.5 * smoothstep(32.0, 256.0, meta.x) : 0.0;
+	return meta.z > 0.0 ? 0.5 * smoothstep(32.0, 256.0, meta.w) : 0.0;
 }
 
 uint hddagi_guide_lookup(vec3 position, vec3 normal) {

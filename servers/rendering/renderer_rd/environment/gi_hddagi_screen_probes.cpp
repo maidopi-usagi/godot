@@ -506,7 +506,7 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			if (!hwrt) {
 				irradiance_cache_history_key = hash_murmur3_one_32(lighting_configuration, irradiance_cache_history_key);
 			}
-			irradiance_cache_history_key = hash_murmur3_one_32(0x49430106u, irradiance_cache_history_key);
+			irradiance_cache_history_key = hash_murmur3_one_32(0x49430107u, irradiance_cache_history_key);
 			irradiance_cache_history_key = hash_murmur3_one_32(irradiance_cache_multibounce ? 1u : 0u, irradiance_cache_history_key);
 			irradiance_cache_history_key = hash_murmur3_one_float(irradiance_cache_minimum_cell_size, irradiance_cache_history_key);
 			irradiance_cache_history_key = hash_fmix32(irradiance_cache_history_key);
@@ -610,10 +610,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 	configuration = hash_murmur3_one_32(detail_trace ? 1u : 0u, configuration);
 	configuration = hash_murmur3_one_32(detail_trace_quality, configuration);
 	configuration = hash_murmur3_one_32(transport_configuration, configuration);
-	if (!directional_gather) {
-		// The stochastic path has no probe-level lighting response yet.
-		configuration = hash_murmur3_one_32(lighting_configuration, configuration);
-	}
+	// Lighting edits retain valid surfaces in both modes. Including them here
+	// reset stochastic diffuse and specular history on every animated-light frame.
+	// SVGF handles their response separately from geometry and transport changes.
 	configuration = hash_murmur3_one_32(irradiance_cache_active ? 1u : 0u, configuration);
 	if (irradiance_cache_active) {
 		configuration = hash_murmur3_one_32(irradiance_cache_multibounce ? 1u : 0u, configuration);
@@ -1626,7 +1625,9 @@ void GI::process_hddagi_screen_probes(Ref<RenderSceneBuffersRD> p_render_buffers
 			svgf_frame.denoising_range = SCREEN_PROBE_SVGF_DENOISING_RANGE;
 			svgf_frame.quality = svgf_quality;
 			svgf_frame.history_valid = svgf_history_valid;
-			svgf_frame.lighting_changed = lighting_changed || (!hwrt && hddagi->rigid.has_pending_changes());
+			// Recursive lighting arrives after the edit frame. Keep its local
+			// denoiser response available while the world-space cache catches up.
+			svgf_frame.lighting_changed = lighting_changed || (hwrt && rbgi->screen_probe_irradiance_cache.is_lighting_refresh_active()) || (!hwrt && hddagi->rigid.has_pending_changes());
 			svgf_frame.diffuse_lighting_response = directional_gather;
 			svgf_frame.diffuse_temporal_only = directional_gather && diffuse_temporal_only_setting;
 

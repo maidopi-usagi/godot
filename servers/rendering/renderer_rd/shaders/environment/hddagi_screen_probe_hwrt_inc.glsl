@@ -315,6 +315,14 @@ vec3 hwrt_sample_incident(vec3 position, vec3 normal, vec3 geometric_normal, vec
 void irradiance_cache_update_multibounce_hwrt() {
 	uint entry_index = gl_GlobalInvocationID.x;
 	uint stride = hddagi_irradiance_cache_training_stride();
+	// Spread the same ray budget over smaller, more frequent updates while
+	// lighting changes. A sixteen-ray jump every four frames exposes the cache
+	// update phases as patches; four rays each frame keep the response continuous.
+	uint subdivisions = 1u;
+	if (hddagi_irradiance_cache_params.training.w != 0u) {
+		subdivisions = (stride & 3u) == 0u ? 4u : ((stride & 1u) == 0u ? 2u : 1u);
+	}
+	stride /= subdivisions;
 	uint frame = hddagi_irradiance_cache_params.control.x;
 	if ((entry_index + frame) % stride != 0u) {
 		return;
@@ -325,7 +333,9 @@ void irradiance_cache_update_multibounce_hwrt() {
 	}
 	// Amortize a denser estimate across all consumers. Publish one weighted
 	// batch so training does not spend its budget contending on the request queue.
-	const uint sample_count = 16u;
+	uint sample_count = 16u / subdivisions;
+	uint stratum_columns = subdivisions == 4u ? 2u : 4u;
+	uint stratum_rows = sample_count / stratum_columns;
 	vec3 incident = vec3(0.0);
 	uint guide_base = entry_index * HDDAGI_IRRADIANCE_CACHE_GUIDE_STRIDE;
 	bool train_guide = hddagi_guide_enabled();
@@ -342,7 +352,7 @@ void irradiance_cache_update_multibounce_hwrt() {
 		vec2 random_sample = sample_r2_sequence(uvec2(entry_index, root.generation ^ (sample_index * 0x9e3779b9u)), frame / stride);
 		// Cover every stratum of the cosine-sampling domain in each update to
 		// reduce variance from emissive surfaces without increasing the ray budget.
-		random_sample = (vec2(sample_index & 3u, sample_index >> 2u) + random_sample) * 0.25;
+		random_sample = (vec2(sample_index % stratum_columns, sample_index / stratum_columns) + random_sample) / vec2(stratum_columns, stratum_rows);
 		vec3 sample_incident = hwrt_sample_incident(root.sample_position, root.sample_normal, root.sample_geometric_normal, vec2(root.cell_size, 0.0), random_sample, sample_index == request_stratum);
 		incident += sample_incident;
 		// Cosine training samples already estimate L * cos(theta) / PI.

@@ -55,6 +55,7 @@ static constexpr uint32_t HISTORY_FIX_FRAME_COUNT = 3u;
 static constexpr uint32_t HISTORY_FIX_BASE_PIXEL_STRIDE = 14u;
 static constexpr uint32_t SAMPLED_TEXTURE_COUNT = 8u;
 static constexpr uint32_t STORAGE_IMAGE_COUNT = 4u;
+static constexpr uint32_t DIFFUSE_LIGHTING_REFRESH_FRAME_COUNT = 32u;
 
 struct alignas(16) SVGFFrameData {
 	float current_inv_projection[16] = {};
@@ -87,6 +88,7 @@ struct HDDAGIScreenProbeSVGF::Implementation {
 		RID frame_data_buffer;
 		uint32_t history_slot = 0;
 		uint32_t frame_sequence = 0;
+		uint32_t lighting_refresh_frames = 0;
 		bool history_initialized = false;
 		bool diffuse_temporal_only = false;
 	};
@@ -346,11 +348,14 @@ struct HDDAGIScreenProbeSVGF::Implementation {
 		const bool diffuse_temporal_only = !p_frame.specular && p_frame.diffuse_temporal_only;
 		const bool history_mode_valid = p_frame.specular || view->diffuse_temporal_only == diffuse_temporal_only;
 		const bool history_valid = p_frame.history_valid && view->history_initialized && history_mode_valid;
+		// A light edit lasts one frame, while indirect lighting continues to arrive.
+		// Track the response per submitted view, independently of the world cache.
+		const uint32_t lighting_refresh_frames = !history_valid || p_frame.specular ? 0u : (p_frame.lighting_changed ? DIFFUSE_LIGHTING_REFRESH_FRAME_COUNT : view->lighting_refresh_frames);
 		const uint32_t iteration_count = diffuse_temporal_only ? 0u : (p_frame.specular ? 1u : HDDAGIScreenProbeSVGF::get_atrous_iteration_count(p_frame.quality));
 
 		SVGFPushConstant push_constant = {};
 		push_constant.control[0] = (history_valid ? 1u : 0u) | (p_frame.specular ? 2u : 0u) |
-				(p_frame.specular && p_frame.specular_full_resolution ? 4u : 0u) | (p_frame.lighting_changed ? 8u : 0u) |
+				(p_frame.specular && p_frame.specular_full_resolution ? 4u : 0u) | (p_frame.lighting_changed || lighting_refresh_frames > 0u ? 8u : 0u) |
 				(!p_frame.specular && p_frame.diffuse_lighting_response ? 16u : 0u) |
 				(p_frame.specular && p_frame.specular_stochastic_lighting ? 32u : 0u);
 		push_constant.control[2] = uint32_t(p_frame.quality) << 2u;
@@ -518,6 +523,7 @@ struct HDDAGIScreenProbeSVGF::Implementation {
 		view->history_initialized = true;
 		view->history_slot = current_slot;
 		view->frame_sequence++;
+		view->lighting_refresh_frames = lighting_refresh_frames > 0u ? lighting_refresh_frames - 1u : 0u;
 		view->diffuse_temporal_only = diffuse_temporal_only;
 		return OK;
 	}

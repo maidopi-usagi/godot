@@ -634,20 +634,25 @@ void svgf_temporal_main() {
 		// Missing bilinear coverage must not keep a static silhouette perpetually young.
 		float reprojection_quality = !current_dynamic ? 1.0 : sqrt(clamp(history_weight_sum, 0.0, 1.0));
 		float maximum_history_length = params.atrous.w;
+		if (!specular_mode && lighting_changed) {
+			// A brief, coherent update rate preserves denoising through an edit
+			// without waiting for each noisy pixel to detect it independently.
+			// Directional radiance already has an eight-frame probe history;
+			// avoid adding a full thirty-frame pixel history on top of that.
+			maximum_history_length = min(maximum_history_length, diffuse_lighting_response ? 8.0 : 12.0);
+		}
 		// Interpolated, weak probe responses are still useful for probe filtering,
 		// but must not disturb a mature pixel history in otherwise stable lighting.
 		float probe_lighting_response = diffuse_lighting_response ? smoothstep(0.1, 0.6, current_encoded_normal.a) : 0.0;
 		float original_history_luminance = svgf_luminance(history_signal);
-		float maximum_lighting_alpha = 0.25;
+		// A stochastic diffuse pixel can carry a rare bright path. Respond to
+		// changed illumination over several frames without exposing that sample.
+		float maximum_lighting_alpha = specular_mode ? 0.25 : 0.125;
 		if (diffuse_lighting_response) {
 			// The probe stage already rejects incoherent directional noise and
 			// strengthens spatial filtering for this local fast-update amount.
 			// Blend update rates, as the probe history does. Interpolating frame
 			// counts leaves moderate lighting changes almost as slow as full history.
-			// Keep fading illumination continuous across probes that detect the
-			// change at different times, while retaining the faster brightening rate.
-			float illumination_ratio = svgf_luminance(current_signal.rgb) / max(original_history_luminance, 1e-6);
-			maximum_lighting_alpha = mix(0.125, 0.25, smoothstep(0.9, 1.0, illumination_ratio));
 			maximum_history_length = 1.0 / mix(1.0 / maximum_history_length, maximum_lighting_alpha, probe_lighting_response);
 		}
 		float history_confidence = 1.0;
@@ -686,17 +691,9 @@ void svgf_temporal_main() {
 			}
 		}
 		bool probe_lighting_changed = probe_lighting_response > 0.0;
-		if (probe_lighting_changed && neighborhood_valid) {
-			// A validated probe change must also retire stale pixel lighting. The
-			// probe can finish adapting before a 30-frame pixel history catches up.
-			vec3 history_ycocg = svgf_rgb_to_ycocg(history_signal);
-			vec3 clamped_history = clamp(history_ycocg, neighborhood_center - neighborhood_extent, neighborhood_center + neighborhood_extent);
-			// Dimming needs a continuous decay. Clipping bright history to the
-			// dark neighborhood stamps the varying probe confidence into dark spots.
-			float neighborhood_luminance = max(svgf_luminance(svgf_ycocg_to_rgb(neighborhood_center)), 0.0);
-			float clamp_response = probe_lighting_response * smoothstep(0.9, 1.0, neighborhood_luminance / max(original_history_luminance, 1e-6));
-			history_signal = max(svgf_ycocg_to_rgb(mix(history_ycocg, clamped_history, clamp_response)), vec3(0.0));
-		}
+		// Diffuse lighting corrections use the temporal weight below. Clipping
+		// valid history separately would bypass that bound and expose noisy probe
+		// neighborhoods as patches during brightening.
 		if ((lighting_changed || probe_lighting_changed) && neighborhood_valid) {
 			// A receiver can stay still while a door changes its illumination.
 			// Require a luminance change beyond spatial and temporal noise; near-zero

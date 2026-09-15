@@ -130,7 +130,9 @@ layout(set = HDDAGI_IRRADIANCE_CACHE_SET, binding = 13, std430) coherent restric
 };
 
 // Per entry: 64 directional masses, an 8-row / 64-column hierarchical CDF,
-// 64 pending masses, then history samples / pending samples / valid CDF / spare.
+// 64 pending masses, then effective history / pending samples / valid CDF /
+// accumulated training confidence. Lighting edits shorten the effective history
+// without making an established proposal go through its bootstrap again.
 // These are incoming-light directions, independent of the irradiance SH basis.
 // Training writes only pending data; RESOLVE publishes before visible queries.
 layout(set = HDDAGI_IRRADIANCE_CACHE_SET, binding = 14, std430) coherent restrict buffer HDDAGIIrradianceCacheGuideBuffer {

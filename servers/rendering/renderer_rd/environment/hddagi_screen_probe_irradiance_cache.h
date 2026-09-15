@@ -82,6 +82,7 @@ public:
 
 	void mark_clear_recorded();
 	bool is_active() const;
+	bool is_lighting_refresh_active() const { return is_active() && lighting_refresh_frames > 0u; }
 	void clear();
 
 	HDDAGIScreenProbeIrradianceCache() = default;

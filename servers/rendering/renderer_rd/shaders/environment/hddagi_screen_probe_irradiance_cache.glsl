@@ -274,7 +274,7 @@ void hddagi_irradiance_cache_resolve_guide(uint entry_index, uint generation) {
 		// The guide is only a proposal; even an outdated distribution remains
 		// correct because consumers retain cosine support and evaluate its PDF.
 		bool animated = (hddagi_irradiance_cache_params.training.x & HDDAGI_IRRADIANCE_CACHE_ANIMATED_MATERIALS) != 0u;
-		float history_limit = hddagi_irradiance_cache_params.training.w != 0u ? 32.0 : (animated ? 128.0 : 512.0);
+		float history_limit = hddagi_irradiance_cache_params.training.w != 0u ? 64.0 : (animated ? 128.0 : 512.0);
 		float history = min(meta.x, history_limit);
 		float blend = meta.y / (history + meta.y);
 		float row_mass[8];
@@ -292,6 +292,7 @@ void hddagi_irradiance_cache_resolve_guide(uint entry_index, uint generation) {
 			total_mass += row_mass[row];
 		}
 		meta.x = min(history + meta.y, history_limit);
+		meta.w = min(meta.w + meta.y, 256.0);
 		meta.y = 0.0;
 		meta.z = total_mass > 1e-8 && !isnan(total_mass) && !isinf(total_mass) ? 1.0 : 0.0;
 		float row_prefix = 0.0;
