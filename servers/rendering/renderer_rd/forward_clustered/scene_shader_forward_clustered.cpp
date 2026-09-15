@@ -182,6 +182,9 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	}
 
 	if (err != OK) {
+		// Retire cached pipelines before freeing their shader dependencies. A
+		// later successful hot reload must not free the same pipeline RIDs again.
+		pipeline_hash_map.clear_pipelines();
 		if (version.is_valid()) {
 			SceneShaderForwardClustered::singleton->shader.version_free(version);
 			version = RID();

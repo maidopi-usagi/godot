@@ -67,6 +67,21 @@ struct TextureInfo {
 
 /* SHADER API */
 
+// Set only by the built-in material generator. Arbitrary shader code must use
+// the renderer's material capture path, even if it declares the same uniforms.
+struct ShaderMaterialProfile {
+	enum Type {
+		CUSTOM,
+		STANDARD,
+		ORM,
+	};
+	Type type = CUSTOM;
+	bool emission_enabled = false;
+	bool emission_multiply = false;
+	RSE::CanvasItemTextureFilter texture_filter = RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS;
+	bool repeat = true;
+};
+
 struct ShaderNativeSourceCode {
 	struct Version {
 		struct Stage {

@@ -222,15 +222,17 @@ void ShaderRD::setup_raytracing(const char *p_raygen_code, const char *p_any_hit
 	base_sha256 = tohash.as_string().sha256_text();
 }
 
-RID ShaderRD::version_create(bool p_embedded) {
+RID ShaderRD::version_create(bool p_embedded, int p_only_group) {
 	//initialize() was never called
 	ERR_FAIL_COND_V(group_to_variant_map.is_empty(), RID());
+	ERR_FAIL_COND_V(p_only_group < -1 || p_only_group >= int(group_enabled.size()), RID());
 
 	Version version;
 	version.dirty = true;
 	version.valid = false;
 	version.initialize_needed = true;
 	version.embedded = p_embedded;
+	version.only_group = p_only_group;
 	version.variants.clear();
 	version.variant_data.clear();
 
@@ -411,7 +413,7 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 	}
 
 	Vector<String> variant_stage_sources = _build_variant_stage_sources(variant, p_data);
-	Vector<RD::ShaderStageSPIRVData> variant_stages = compile_stages(variant_stage_sources, dynamic_buffers);
+	Vector<RD::ShaderStageSPIRVData> variant_stages = compile_stages(variant_stage_sources, dynamic_buffers, get_texture_tables(variant));
 	ERR_FAIL_COND(variant_stages.is_empty());
 
 	Vector<uint8_t> shader_data = RD::get_singleton()->shader_compile_binary_from_spirv(variant_stages, name + ":" + itos(variant));
@@ -599,7 +601,8 @@ String ShaderRD::_version_get_sha1(Version *p_version) const {
 }
 
 static const char *shader_file_header = "GDSC";
-static const uint32_t cache_file_version = 4;
+// Version 5 includes texture table metadata in RenderingShaderContainer.
+static const uint32_t cache_file_version = 5;
 
 String ShaderRD::_get_cache_file_relative_path(Version *p_version, int p_group, const String &p_api_name) {
 	String sha1 = _version_get_sha1(p_version);
@@ -697,6 +700,9 @@ void ShaderRD::_save_to_cache(Version *p_version, int p_group) {
 }
 
 void ShaderRD::_allocate_placeholders(Version *p_version, int p_group) {
+	if (p_version->only_group >= 0 && p_version->only_group != p_group) {
+		return;
+	}
 	ERR_FAIL_COND(p_version->variants.is_empty());
 
 	for (uint32_t i = 0; i < group_to_variant_map[p_group].size(); i++) {
@@ -711,7 +717,7 @@ void ShaderRD::_allocate_placeholders(Version *p_version, int p_group) {
 // Try to compile all variants for a given group.
 // Will skip variants that are disabled.
 void ShaderRD::_compile_version_start(Version *p_version, int p_group) {
-	if (!group_enabled[p_group]) {
+	if (!group_enabled[p_group] || (p_version->only_group >= 0 && p_version->only_group != p_group)) {
 		return;
 	}
 
@@ -965,6 +971,13 @@ const Vector<uint64_t> &ShaderRD::get_dynamic_buffers() const {
 	return dynamic_buffers;
 }
 
+Vector<RD::ShaderTextureTable> ShaderRD::get_texture_tables(int p_variant) const {
+	ERR_FAIL_INDEX_V(p_variant, variant_defines.size(), Vector<RD::ShaderTextureTable>());
+	Vector<RD::ShaderTextureTable> tables = texture_tables;
+	tables.append_array(variant_defines[p_variant].texture_tables);
+	return tables;
+}
+
 bool ShaderRD::shader_cache_cleanup_on_start = false;
 
 ShaderRD::ShaderRD() {
@@ -983,13 +996,14 @@ ShaderRD::ShaderRD() {
 	base_compute_defines = base_compute_define_text.ascii();
 }
 
-void ShaderRD::initialize(const Vector<String> &p_variant_defines, const String &p_general_defines, const Vector<RD::PipelineImmutableSampler> &p_immutable_samplers, const Vector<uint64_t> &p_dynamic_buffers) {
+void ShaderRD::initialize(const Vector<String> &p_variant_defines, const String &p_general_defines, const Vector<RD::PipelineImmutableSampler> &p_immutable_samplers, const Vector<uint64_t> &p_dynamic_buffers, const Vector<RD::ShaderTextureTable> &p_texture_tables) {
 	ERR_FAIL_COND(variant_defines.size());
 	ERR_FAIL_COND(p_variant_defines.is_empty());
 
 	general_defines = p_general_defines.utf8();
 	immutable_samplers = p_immutable_samplers;
 	dynamic_buffers = p_dynamic_buffers;
+	texture_tables = p_texture_tables;
 
 	// When initialized this way, there is just one group and its always enabled.
 	group_to_variant_map.insert(0, LocalVector<int>{});
@@ -1027,11 +1041,19 @@ void ShaderRD::_initialize_cache() {
 		for (uint32_t i = 0; i < E.value.size(); i++) {
 			hash_build.append("[variant_defines:" + itos(E.value[i]) + "]");
 			hash_build.append(variant_defines[E.value[i]].text.get_data());
+			for (const RD::ShaderTextureTable &table : variant_defines[E.value[i]].texture_tables) {
+				hash_build.append("[variant_texture_table]");
+				hash_build.append(uitos(table.set) + ":" + uitos(table.capacity) + ":" + itos(table.texture_type));
+			}
 		}
 
 		for (const uint64_t dyn_buffer : dynamic_buffers) {
 			hash_build.append("[dynamic_buffer]");
 			hash_build.append(uitos(dyn_buffer));
+		}
+		for (const RD::ShaderTextureTable &table : texture_tables) {
+			hash_build.append("[texture_table]");
+			hash_build.append(uitos(table.set) + ":" + uitos(table.capacity) + ":" + itos(table.texture_type));
 		}
 
 		group_sha256[E.key] = hash_build.as_string().sha256_text();
@@ -1068,13 +1090,14 @@ void ShaderRD::_initialize_cache() {
 }
 
 // Same as above, but allows specifying shader compilation groups.
-void ShaderRD::initialize(const Vector<VariantDefine> &p_variant_defines, const String &p_general_defines, const Vector<RD::PipelineImmutableSampler> &p_immutable_samplers, const Vector<uint64_t> &p_dynamic_buffers) {
+void ShaderRD::initialize(const Vector<VariantDefine> &p_variant_defines, const String &p_general_defines, const Vector<RD::PipelineImmutableSampler> &p_immutable_samplers, const Vector<uint64_t> &p_dynamic_buffers, const Vector<RD::ShaderTextureTable> &p_texture_tables) {
 	ERR_FAIL_COND(variant_defines.size());
 	ERR_FAIL_COND(p_variant_defines.is_empty());
 
 	general_defines = p_general_defines.utf8();
 	immutable_samplers = p_immutable_samplers;
 	dynamic_buffers = p_dynamic_buffers;
+	texture_tables = p_texture_tables;
 
 	int max_group_id = 0;
 
@@ -1151,7 +1174,7 @@ void ShaderRD::set_shader_cache_save_debug(bool p_enable) {
 	shader_cache_save_debug = p_enable;
 }
 
-Vector<RD::ShaderStageSPIRVData> ShaderRD::compile_stages(const Vector<String> &p_stage_sources, const Vector<uint64_t> &p_dynamic_buffers) {
+Vector<RD::ShaderStageSPIRVData> ShaderRD::compile_stages(const Vector<String> &p_stage_sources, const Vector<uint64_t> &p_dynamic_buffers, const Vector<RD::ShaderTextureTable> &p_texture_tables) {
 	RD::ShaderStageSPIRVData stage;
 	Vector<RD::ShaderStageSPIRVData> stages;
 	String error;
@@ -1164,6 +1187,7 @@ Vector<RD::ShaderStageSPIRVData> ShaderRD::compile_stages(const Vector<String> &
 
 		stage.spirv = RD::get_singleton()->shader_compile_spirv_from_source(RD::ShaderStage(i), p_stage_sources[i], RD::SHADER_LANGUAGE_GLSL, &error);
 		stage.dynamic_buffers = p_dynamic_buffers;
+		stage.texture_tables = p_texture_tables;
 		stage.shader_stage = RD::ShaderStage(i);
 		if (!stage.spirv.is_empty()) {
 			stages.push_back(stage);

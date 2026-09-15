@@ -40,7 +40,10 @@ static String _mktab(int p_level) {
 	return String("\t").repeat(p_level);
 }
 
-static String _typestr(SL::DataType p_type) {
+String ShaderCompiler::_typestr(SL::DataType p_type) const {
+	if (const String *replacement = actions.type_renames.getptr(p_type)) {
+		return *replacement;
+	}
 	String type = ShaderLanguage::get_datatype_name(p_type);
 	if (!RS::get_singleton()->is_low_end() && ShaderLanguage::is_sampler_type(p_type)) {
 		type = type.replace("sampler", "texture"); //we use textures instead of samplers in Vulkan GLSL
@@ -173,8 +176,8 @@ static String _opstr(SL::Operator p_op) {
 	return SL::get_operator_text(p_op);
 }
 
-static String _mkid(const String &p_id) {
-	String id = "m_" + p_id.replace("__", "_dus_");
+String ShaderCompiler::_mkid(const String &p_id) const {
+	String id = actions.identifier_prefix + "m_" + p_id.replace("__", "_dus_");
 	return id.replace("__", "_dus_"); //doubleunderscore is reserved in glsl
 }
 
@@ -590,7 +593,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					continue; // Don't create uniforms in the generated code for these.
 				}
 
-				if (SL::is_sampler_type(uniform.type)) {
+				if (SL::is_sampler_type(uniform.type) && !actions.texture_uniforms_as_globals) {
 					// Texture layouts are different for OpenGL GLSL and Vulkan GLSL
 					if (!RS::get_singleton()->is_low_end()) {
 						ucode = "layout(set = " + itos(actions.texture_layout_set) + ", binding = " + itos(actions.base_texture_binding_index + uniform.texture_binding) + ") ";
@@ -1196,6 +1199,15 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					const SL::VariableNode *vnode = static_cast<const SL::VariableNode *>(onode->arguments[0]);
 					const SL::FunctionNode *func = nullptr;
 					const bool is_internal_func = internal_functions.has(vnode->name);
+					if (onode->op == SL::OP_CALL && is_internal_func && p_actions.custom_functions.has(vnode->name)) {
+						ERR_FAIL_NULL_V(p_actions.custom_function_call, String());
+						Vector<String> arguments;
+						for (int i = 1; i < onode->arguments.size(); i++) {
+							arguments.push_back(_dump_node_code(onode->arguments[i], p_level, r_gen_code, p_actions, p_default_actions, false));
+						}
+						code = p_actions.custom_function_call(p_actions.custom_function_userdata, onode, arguments);
+						break;
+					}
 
 					if (!is_internal_func) {
 						for (int i = 0; i < shader->vfunctions.size(); i++) {

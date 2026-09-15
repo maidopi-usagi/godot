@@ -1026,6 +1026,9 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 #ifdef MACOS_ENABLED
 			ERR_FAIL_COND_V_MSG(!device_features_vk_1_2.shaderSampledImageArrayNonUniformIndexing, ERR_CANT_CREATE, "Your GPU doesn't support shaderSampledImageArrayNonUniformIndexing which is required to use the Vulkan-based renderers in Godot.");
 #endif
+			texture_table_support = device_features_vk_1_2.shaderSampledImageArrayNonUniformIndexing &&
+					device_features_vk_1_2.runtimeDescriptorArray && device_features_vk_1_2.descriptorBindingPartiallyBound &&
+					device_features_vk_1_2.descriptorBindingSampledImageUpdateAfterBind;
 			if (enabled_device_extension_names.has(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)) {
 				shader_capabilities.shader_float16_is_supported = device_features_vk_1_2.shaderFloat16;
 				shader_capabilities.shader_int8_is_supported = device_features_vk_1_2.shaderInt8;
@@ -1113,6 +1116,11 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 
 	if (functions.GetPhysicalDeviceProperties2 != nullptr) {
 		void *next_properties = nullptr;
+		if (texture_table_support) {
+			texture_table_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES;
+			texture_table_properties.pNext = next_properties;
+			next_properties = &texture_table_properties;
+		}
 		VkPhysicalDeviceFragmentShadingRatePropertiesKHR fsr_properties = {};
 		VkPhysicalDeviceFragmentDensityMapPropertiesEXT fdm_properties = {};
 		VkPhysicalDeviceFragmentDensityMapOffsetPropertiesQCOM fdmo_properties = {};
@@ -1352,6 +1360,16 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 	}
 
 	void *create_info_next = nullptr;
+	VkPhysicalDeviceDescriptorIndexingFeatures texture_table_features = {};
+	if (texture_table_support) {
+		texture_table_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+		texture_table_features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+		texture_table_features.runtimeDescriptorArray = VK_TRUE;
+		texture_table_features.descriptorBindingPartiallyBound = VK_TRUE;
+		texture_table_features.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+		texture_table_features.pNext = create_info_next;
+		create_info_next = &texture_table_features;
+	}
 	VkPhysicalDeviceShaderFloat16Int8FeaturesKHR shader_features = {};
 	shader_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR;
 	shader_features.pNext = create_info_next;
@@ -4494,6 +4512,15 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 		placeholder_binding.stageFlags = VK_SHADER_STAGE_ALL;
 
 		for (uint32_t i = 0; i < shader_refl.uniform_sets.size(); i++) {
+			if (!shader_refl.uniform_sets[i].is_empty() && shader_refl.uniform_sets[i][0].texture_table) {
+				VkDescriptorSetLayout layout = _texture_table_create_layout(shader_refl.uniform_sets[i][0].length);
+				if (layout == VK_NULL_HANDLE) {
+					error_text = vformat("Failed to create texture table layout for set %d.", i);
+					break;
+				}
+				shader_info.vk_descriptor_set_layouts.push_back(layout);
+				continue;
+			}
 			// Empty ones are fine if they were not used according to spec (binding count will be 0).
 			VkDescriptorSetLayoutCreateInfo layout_create_info = {};
 			layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -5027,10 +5054,113 @@ RDD::UniformSetID RenderingDeviceDriverVulkan::uniform_set_create(VectorView<Bou
 	return UniformSetID(usi);
 }
 
+VkDescriptorSetLayout RenderingDeviceDriverVulkan::_texture_table_create_layout(uint32_t p_capacity) {
+	ERR_FAIL_COND_V(!texture_table_support || p_capacity == 0 || p_capacity > limit_get(LIMIT_MAX_TEXTURE_TABLE_SIZE), VK_NULL_HANDLE);
+	VkDescriptorSetLayoutBinding binding = {};
+	binding.binding = 0;
+	binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	binding.descriptorCount = p_capacity;
+	for (uint32_t stage = 0; stage < SHADER_STAGE_MAX; stage++) {
+		binding.stageFlags |= RD_STAGE_TO_VK_SHADER_STAGE_BITS[stage];
+	}
+	VkDescriptorBindingFlags flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+	VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags = {};
+	binding_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+	binding_flags.bindingCount = 1;
+	binding_flags.pBindingFlags = &flags;
+	VkDescriptorSetLayoutCreateInfo create_info = {};
+	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	create_info.pNext = &binding_flags;
+	create_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+	create_info.bindingCount = 1;
+	create_info.pBindings = &binding;
+	VkDescriptorSetLayoutSupport support = {};
+	support.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT;
+	vkGetDescriptorSetLayoutSupport(vk_device, &create_info, &support);
+	ERR_FAIL_COND_V_MSG(!support.supported, VK_NULL_HANDLE, "The requested texture table layout is not supported.");
+	VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+	VkResult result = vkCreateDescriptorSetLayout(vk_device, &create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT), &layout);
+	ERR_FAIL_COND_V_MSG(result != VK_SUCCESS, VK_NULL_HANDLE, vformat("Failed to create texture table layout (%d).", result));
+	return layout;
+}
+
+RDD::UniformSetID RenderingDeviceDriverVulkan::texture_table_create(uint32_t p_capacity) {
+	ERR_FAIL_COND_V_MSG(texture_table_descriptor_count + p_capacity > texture_table_properties.maxUpdateAfterBindDescriptorsInAllPools, UniformSetID(), "Texture tables exceed the device's update-after-bind descriptor budget.");
+	VkDescriptorSetLayout layout = _texture_table_create_layout(p_capacity);
+	ERR_FAIL_COND_V(layout == VK_NULL_HANDLE, UniformSetID());
+	// One pool per snapshot avoids the ordinary per-material pool multiplier and
+	// its 16-bit descriptor counts. Pools are retired with the RD frame fence.
+	VkDescriptorPoolSize pool_size = { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, p_capacity };
+	VkDescriptorPoolCreateInfo pool_info = {};
+	pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+	pool_info.maxSets = 1;
+	pool_info.poolSizeCount = 1;
+	pool_info.pPoolSizes = &pool_size;
+	VkDescriptorPool pool = VK_NULL_HANDLE;
+	VkResult result = vkCreateDescriptorPool(vk_device, &pool_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DESCRIPTOR_POOL), &pool);
+	if (result != VK_SUCCESS) {
+		vkDestroyDescriptorSetLayout(vk_device, layout, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT));
+		ERR_FAIL_V_MSG(UniformSetID(), vformat("Failed to create texture table pool (%d).", result));
+	}
+	VkDescriptorSetAllocateInfo allocate_info = {};
+	allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocate_info.descriptorPool = pool;
+	allocate_info.descriptorSetCount = 1;
+	allocate_info.pSetLayouts = &layout;
+	VkDescriptorSet set = VK_NULL_HANDLE;
+	result = vkAllocateDescriptorSets(vk_device, &allocate_info, &set);
+	if (result != VK_SUCCESS) {
+		vkDestroyDescriptorPool(vk_device, pool, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DESCRIPTOR_POOL));
+		vkDestroyDescriptorSetLayout(vk_device, layout, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT));
+		ERR_FAIL_V_MSG(UniformSetID(), vformat("Failed to allocate texture table (%d).", result));
+	}
+	UniformSetInfo *info = VersatileResource::allocate<UniformSetInfo>(resources_allocator);
+	info->vk_descriptor_set = set;
+	info->vk_descriptor_pool = pool;
+	info->texture_table_capacity = p_capacity;
+	// Descriptor updates require the allocating layout to remain alive. It is
+	// owned by this snapshot, independently of compatible shader layouts.
+	info->texture_table_layout = layout;
+	texture_table_descriptor_count += p_capacity;
+	return UniformSetID(info);
+}
+
+void RenderingDeviceDriverVulkan::texture_table_update(UniformSetID p_table, VectorView<TextureTableUpdate> p_updates) {
+	UniformSetInfo *info = (UniformSetInfo *)p_table.id;
+	ERR_FAIL_NULL(info);
+	ERR_FAIL_COND(info->texture_table_capacity == 0);
+	LocalVector<VkDescriptorImageInfo> images;
+	LocalVector<VkWriteDescriptorSet> writes;
+	images.resize(p_updates.size());
+	writes.resize(p_updates.size());
+	for (uint32_t i = 0; i < p_updates.size(); i++) {
+		ERR_FAIL_UNSIGNED_INDEX(p_updates[i].index, info->texture_table_capacity);
+		const TextureInfo *texture = (const TextureInfo *)p_updates[i].texture.id;
+		ERR_FAIL_NULL(texture);
+		images[i] = {};
+		images[i].imageView = texture->vk_view;
+		images[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		writes[i] = {};
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = info->vk_descriptor_set;
+		writes[i].dstBinding = 0;
+		writes[i].dstArrayElement = p_updates[i].index;
+		writes[i].descriptorCount = 1;
+		writes[i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		writes[i].pImageInfo = &images[i];
+	}
+	vkUpdateDescriptorSets(vk_device, writes.size(), writes.ptr(), 0, nullptr);
+}
+
 void RenderingDeviceDriverVulkan::uniform_set_free(UniformSetID p_uniform_set) {
 	UniformSetInfo *usi = (UniformSetInfo *)p_uniform_set.id;
 
-	if (usi->vk_linear_descriptor_pool) {
+	if (usi->texture_table_capacity != 0) {
+		texture_table_descriptor_count -= usi->texture_table_capacity;
+		vkDestroyDescriptorPool(vk_device, usi->vk_descriptor_pool, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DESCRIPTOR_POOL));
+		vkDestroyDescriptorSetLayout(vk_device, usi->texture_table_layout, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT));
+	} else if (usi->vk_linear_descriptor_pool) {
 		// Nothing to do. All sets are freed at once using vkResetDescriptorPool.
 		//
 		// We can NOT decrease the reference count (i.e. call _descriptor_set_pool_unreference())
@@ -7431,6 +7561,8 @@ uint64_t RenderingDeviceDriverVulkan::limit_get(Limit p_limit) {
 			// The Vulkan spec states that built in varyings like gl_FragCoord should count against this, but in
 			// practice, that doesn't seem to be the case. The validation layers don't even complain.
 			return MIN(limits.maxVertexOutputComponents / 4, limits.maxFragmentInputComponents / 4);
+		case LIMIT_MAX_TEXTURE_TABLE_SIZE:
+			return texture_table_support ? MIN(texture_table_properties.maxPerStageUpdateAfterBindResources, MIN(texture_table_properties.maxPerStageDescriptorUpdateAfterBindSampledImages, texture_table_properties.maxDescriptorSetUpdateAfterBindSampledImages)) : 0;
 		default: {
 #ifdef DEV_ENABLED
 			WARN_PRINT("Returning maximum value for unknown limit " + itos(p_limit) + ".");
@@ -7482,6 +7614,8 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
 			return true;
 		case SUPPORTS_RAY_QUERY:
 			return acceleration_structure_capabilities.acceleration_structure_support && ray_query_support;
+		case SUPPORTS_TEXTURE_TABLE:
+			return texture_table_support;
 		case SUPPORTS_RAYTRACING_PIPELINE:
 			return acceleration_structure_capabilities.acceleration_structure_support && raytracing_capabilities.raytracing_pipeline_support;
 		case SUPPORTS_HDR_OUTPUT:

@@ -300,6 +300,8 @@ public:
 	virtual SamplerID sampler_create(const SamplerState &p_state) = 0;
 	virtual void sampler_free(SamplerID p_sampler) = 0;
 	virtual bool sampler_is_format_supported_for_filter(DataFormat p_format, SamplerFilter p_filter) = 0;
+	// Used when lowering an implicit texture bias to explicit ray gradients.
+	virtual float sampler_get_max_lod_bias() const { return 0.0f; }
 
 	/**********************/
 	/**** VERTEX ARRAY ****/
@@ -543,6 +545,13 @@ public:
 	virtual void linear_uniform_set_pools_reset(int p_linear_pool_index) {}
 	virtual void uniform_set_free(UniformSetID p_uniform_set) = 0;
 	virtual bool uniform_sets_have_linear_pools() const { return false; }
+	// Dedicated pools and layouts; these sets are not owned by a shader.
+	struct TextureTableUpdate {
+		uint32_t index = 0;
+		TextureID texture;
+	};
+	virtual UniformSetID texture_table_create(uint32_t p_capacity) { return UniformSetID(); }
+	virtual void texture_table_update(UniformSetID p_table, VectorView<TextureTableUpdate> p_updates) {}
 	virtual uint32_t uniform_sets_get_dynamic_offsets(VectorView<UniformSetID> p_uniform_sets, ShaderID p_shader, uint32_t p_first_set_index, uint32_t p_set_count) const = 0;
 
 	// ----- COMMANDS -----

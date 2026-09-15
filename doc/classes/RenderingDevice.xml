@@ -164,6 +164,18 @@
 				Tells the GPU what compute pipeline to use when processing the compute list. If the shader has changed since the last time this function was called, Godot will unbind all descriptor sets and will re-bind them inside [method compute_list_dispatch].
 			</description>
 		</method>
+		<method name="compute_list_bind_texture_table" experimental="">
+			<return type="void" />
+			<param index="0" name="compute_list" type="int" />
+			<param index="1" name="table" type="RID" />
+			<param index="2" name="set" type="int" />
+			<param index="3" name="used_indices" type="PackedInt32Array" />
+			<description>
+				Binds a snapshot of [param table] to [param compute_list]. The shader must declare a compatible texture table at [param set]; see [method shader_create_from_spirv_with_texture_table].
+				[param used_indices] must include every slot that any subsequent dispatch using this binding can access, including accesses through GPU-generated indices. These slots must contain valid textures. The device uses this declaration to synchronize texture reads; binding a table does not declare a read of every populated slot. Duplicate indices are allowed. Slots outside this declaration must not be accessed.
+				Changes made with [method texture_table_set_texture] become visible on the next table bind. Previously recorded commands retain their descriptor snapshot. Texture content updates still affect the same texture and follow normal resource synchronization.
+			</description>
+		</method>
 		<method name="compute_list_bind_uniform_set">
 			<return type="void" />
 			<param index="0" name="compute_list" type="int" />
@@ -332,6 +344,16 @@
 			<param index="1" name="render_pipeline" type="RID" />
 			<description>
 				Binds [param render_pipeline] to the specified [param draw_list].
+			</description>
+		</method>
+		<method name="draw_list_bind_texture_table" experimental="">
+			<return type="void" />
+			<param index="0" name="draw_list" type="int" />
+			<param index="1" name="table" type="RID" />
+			<param index="2" name="set" type="int" />
+			<param index="3" name="used_indices" type="PackedInt32Array" />
+			<description>
+				Binds a texture table snapshot to [param draw_list]. See [method compute_list_bind_texture_table] for the snapshot and resource declaration contract. [param used_indices] must cover all slots that subsequent draws using this binding can access. Declared textures must not alias an active framebuffer attachment.
 			</description>
 		</method>
 		<method name="draw_list_bind_uniform_set">
@@ -870,6 +892,16 @@
 				Binds [param raytracing_pipeline] to the specified [param raytracing_list].
 			</description>
 		</method>
+		<method name="raytracing_list_bind_texture_table" experimental="">
+			<return type="void" />
+			<param index="0" name="raytracing_list" type="int" />
+			<param index="1" name="table" type="RID" />
+			<param index="2" name="set" type="int" />
+			<param index="3" name="used_indices" type="PackedInt32Array" />
+			<description>
+				Binds a texture table snapshot to [param raytracing_list]. See [method compute_list_bind_texture_table] for the snapshot and resource declaration contract. [param used_indices] must cover all slots potentially accessed by any shader invoked by subsequent ray dispatches using this binding, including hit and miss shaders.
+			</description>
+		</method>
 		<method name="raytracing_list_bind_uniform_set" experimental="">
 			<return type="void" />
 			<param index="0" name="raytracing_list" type="int" />
@@ -1047,6 +1079,17 @@
 			<return type="RID" />
 			<description>
 				Create a placeholder RID by allocating an RID without initializing it for use in [method shader_create_from_bytecode]. This allows you to create an RID for a shader and pass it around, but defer compiling the shader to a later time.
+			</description>
+		</method>
+		<method name="shader_create_from_spirv_with_texture_table" experimental="">
+			<return type="RID" />
+			<param index="0" name="spirv_data" type="RDShaderSPIRV" />
+			<param index="1" name="table" type="RID" />
+			<param index="2" name="set" type="int" default="0" />
+			<description>
+				Creates a shader with an explicit texture table layout at [param set], using the capacity and texture type of [param table]. This set must contain only a sampled-texture array at binding [code]0[/code]. For example, a 2D table at set 1 uses [code]layout(set = 1, binding = 0) uniform texture2D textures[];[/code]. Samplers belong in a separate set. Use [code]GL_EXT_nonuniform_qualifier[/code] and [code]nonuniformEXT(index)[/code] when indices can vary between shader invocations.
+				The declared table layout is preserved even if the shader does not access it. Shaders with the same table capacity and texture type can share that table across raster, compute, and raytracing pipelines. Creating or freeing the shader does not change the lifetime of the table.
+				Bind this set using the appropriate [code]*_list_bind_texture_table[/code] method. Free the returned shader with [method free_rid] when finished.
 			</description>
 		</method>
 		<method name="shader_get_vertex_input_attribute_mask">
@@ -1274,6 +1317,34 @@
 				Updates the discardable property of [param texture].
 				If a texture is discardable, its contents do not need to be preserved between frames. This flag is only relevant when the texture is used as target in a draw list.
 				This information is used by [RenderingDevice] to figure out if a texture's contents can be discarded, eliminating unnecessary writes to memory and boosting performance.
+			</description>
+		</method>
+		<method name="texture_table_create" experimental="">
+			<return type="RID" />
+			<param index="0" name="capacity" type="int" />
+			<param index="1" name="texture_type" type="int" enum="RenderingDevice.TextureType" default="1" />
+			<description>
+				Creates a fixed-capacity table of sampled textures independently of any shader. Check [constant SUPPORTS_TEXTURE_TABLE] first. [param capacity] must be positive and must not exceed [constant LIMIT_MAX_TEXTURE_TABLE_SIZE]. All slots initially contain an empty [RID] and must be populated before being accessed by a shader. Every populated slot must match [param texture_type].
+				A table occupies one dedicated uniform set at binding [code]0[/code]. It supports sparse population and nonuniform shader indexing. Its descriptor storage is allocated lazily on binding and consumes additional memory for frames in flight and changes after a table has already been bound in the current frame. Publish batches of changes before binding when possible.
+				The caller assigns slot indices and is responsible for keeping GPU material or instance indices consistent with them. Free the table with [method free_rid] when finished. Freeing a table does not free its textures.
+			</description>
+		</method>
+		<method name="texture_table_get_texture" experimental="">
+			<return type="RID" />
+			<param index="0" name="table" type="RID" />
+			<param index="1" name="index" type="int" />
+			<description>
+				Returns the texture assigned to [param index] in [param table], or an empty [RID] if the slot is empty. This returns the current CPU assignment, which may differ from a snapshot used by previously recorded commands.
+			</description>
+		</method>
+		<method name="texture_table_set_texture" experimental="">
+			<return type="int" enum="Error" />
+			<param index="0" name="table" type="RID" />
+			<param index="1" name="index" type="int" />
+			<param index="2" name="texture" type="RID" />
+			<description>
+				Assigns [param texture] to [param index] in [param table]. The texture must have [constant TEXTURE_USAGE_SAMPLING_BIT] and the table's texture type. An empty [RID] clears the slot. Changes are published when the table is next bound; earlier recorded commands keep their descriptor snapshot.
+				Freeing a texture clears all slots referring to it without freeing the table. Empty slots must never be accessed by a shader. See [method compute_list_bind_texture_table] for the required resource access declaration.
 			</description>
 		</method>
 		<method name="texture_update">
@@ -2853,6 +2924,9 @@
 		<constant name="SUPPORTS_RASTERIZATION_RATE_MAP" value="14" enum="Features">
 			Support for rasterization rate maps. The current implementation targets Metal on Apple platforms. This allows for foveated rendering, which is used by the visionOS XR module.
 		</constant>
+		<constant name="SUPPORTS_TEXTURE_TABLE" value="16" enum="Features">
+			Support for typed sampled-texture tables with sparse population and nonuniform indexing. Currently requires Vulkan 1.2 descriptor indexing with partially bound and sampled-image update-after-bind support. Other rendering drivers return [code]false[/code].
+		</constant>
 		<constant name="LIMIT_MAX_BOUND_UNIFORM_SETS" value="0" enum="Limit">
 			Maximum number of uniform sets that can be bound at a given time.
 		</constant>
@@ -2971,6 +3045,9 @@
 		<constant name="LIMIT_METALFX_TEMPORAL_SCALER_MAX_SCALE" value="47" enum="Limit">
 			Returns the largest value for [member ProjectSettings.rendering/scaling_3d/scale] when using the MetalFX temporal upscaler.
 			[b]Note:[/b] The returned value is multiplied by a factor of [code]1000000[/code] to preserve 6 digits of precision. It must be divided by [code]1000000.0[/code] to convert the value to a floating point number.
+		</constant>
+		<constant name="LIMIT_MAX_TEXTURE_TABLE_SIZE" value="49" enum="Limit">
+			Maximum capacity of an individual texture table. Pipeline descriptor limits still apply to the total resources declared across all sets, and descriptor storage for every live snapshot counts against the device's allocation budget. Check [constant SUPPORTS_TEXTURE_TABLE] before using this limit.
 		</constant>
 		<constant name="MEMORY_TEXTURES" value="0" enum="MemoryType">
 			Memory taken by textures.

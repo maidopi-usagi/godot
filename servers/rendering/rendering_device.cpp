@@ -4227,6 +4227,12 @@ String RenderingDevice::_shader_uniform_debug(RID p_shader, int p_set) {
 }
 
 Vector<uint8_t> RenderingDevice::shader_compile_binary_from_spirv(const Vector<ShaderStageSPIRVData> &p_spirv, const String &p_shader_name) {
+	for (const ShaderStageSPIRVData &stage : p_spirv) {
+		ERR_FAIL_COND_V_MSG(!stage.texture_tables.is_empty() && !has_feature(SUPPORTS_TEXTURE_TABLE), Vector<uint8_t>(), "Texture tables are not supported by this rendering device.");
+		for (const ShaderTextureTable &table : stage.texture_tables) {
+			ERR_FAIL_COND_V_MSG(table.capacity > limit_get(LIMIT_MAX_TEXTURE_TABLE_SIZE) || table.set >= limit_get(LIMIT_MAX_BOUND_UNIFORM_SETS), Vector<uint8_t>(), "Texture table layout exceeds the device limits.");
+		}
+	}
 	const RenderingShaderContainerFormat &container_format = driver->get_shader_container_format();
 	Ref<RenderingShaderContainer> shader_container = container_format.create_container();
 	ERR_FAIL_COND_V(shader_container.is_null(), Vector<uint8_t>());
@@ -4252,6 +4258,12 @@ RID RenderingDevice::shader_create_from_bytecode_with_samplers(const Vector<uint
 
 	bool parsed_container = shader_container->from_bytes(p_shader_binary);
 	ERR_FAIL_COND_V_MSG(!parsed_container, RID(), "Failed to parse shader container from binary.");
+	ShaderReflection reflection = shader_container->get_shader_reflection();
+	for (const Vector<ShaderUniform> &set : reflection.uniform_sets) {
+		for (const ShaderUniform &uniform : set) {
+			ERR_FAIL_COND_V_MSG(uniform.texture_table && (!has_feature(SUPPORTS_TEXTURE_TABLE) || uniform.length > limit_get(LIMIT_MAX_TEXTURE_TABLE_SIZE)), RID(), "Shader texture table layout is not supported by this rendering device.");
+		}
+	}
 
 	Vector<RDD::ImmutableSampler> driver_immutable_samplers;
 	for (const PipelineImmutableSampler &source_sampler : p_immutable_samplers) {
@@ -4284,7 +4296,7 @@ RID RenderingDevice::shader_create_from_bytecode_with_samplers(const Vector<uint
 	Shader *shader = shader_owner.get_or_null(id);
 	ERR_FAIL_NULL_V(shader, RID());
 
-	*((ShaderReflection *)shader) = shader_container->get_shader_reflection();
+	*((ShaderReflection *)shader) = reflection;
 	shader->name.clear();
 	shader->name.append_utf8(shader_container->shader_name);
 	shader->driver_id = shader_id;
@@ -4452,6 +4464,7 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 	// See that all sets in shader are satisfied.
 
 	const Vector<ShaderUniform> &set = shader->uniform_sets[p_shader_set];
+	ERR_FAIL_COND_V_MSG(set[0].texture_table, RID(), "Use a texture table binding command for a shader texture table set.");
 
 	uint32_t uniform_count = p_uniforms.size();
 	const Uniform *uniforms = p_uniforms.ptr();
@@ -7720,6 +7733,7 @@ void RenderingDevice::_free_internal(RID p_id) {
 	if (texture_owner.owns(p_id)) {
 		Texture *texture = texture_owner.get_or_null(p_id);
 		_check_transfer_worker_texture(texture);
+		_texture_tables_replace_texture(p_id, RID());
 
 		RDG::ResourceTracker *draw_tracker = texture->draw_tracker;
 		if (draw_tracker != nullptr) {
@@ -7802,6 +7816,8 @@ void RenderingDevice::_free_internal(RID p_id) {
 		RDG::resource_tracker_free(storage_buffer->draw_tracker);
 		frames[frame].buffers_to_dispose_of.push_back(*storage_buffer);
 		storage_buffer_owner.free(p_id);
+	} else if (texture_table_owner.owns(p_id)) {
+		_texture_table_free(p_id);
 	} else if (uniform_set_owner.owns(p_id)) {
 		UniformSet *uniform_set = uniform_set_owner.get_or_null(p_id);
 		frames[frame].uniform_sets_to_dispose_of.push_back(*uniform_set);
@@ -7965,6 +7981,7 @@ void RenderingDevice::texture_replace_rid(RID p_old_texture, RID p_new_texture) 
 		uniform_set_owner.free(new_us_rid);
 	}
 
+	_texture_tables_replace_texture(p_old_texture, p_new_texture);
 	free_rid(p_old_texture);
 
 	frames_pending_resources_for_processing = uint32_t(frames.size());
@@ -9095,6 +9112,7 @@ void RenderingDevice::finalize() {
 	_free_rids(raytracing_pipeline_owner, "RaytracingPipeline");
 	_free_rids(acceleration_structure_owner, "AccelerationStructure");
 	_free_rids(hit_sbt_owner, "HitShaderBindingTable");
+	_free_rids(texture_table_owner, "TextureTable");
 	_free_rids(uniform_set_owner, "UniformSet");
 	_free_rids(texture_buffer_owner, "TextureBuffer");
 	_free_rids(storage_buffer_owner, "StorageBuffer");
@@ -9268,6 +9286,7 @@ bool RenderingDevice::has_feature(const Features p_feature) const {
 }
 
 void RenderingDevice::_bind_methods() {
+	_bind_texture_table_methods();
 	ClassDB::bind_method(D_METHOD("texture_create", "format", "view", "data"), &RenderingDevice::_texture_create, DEFVAL(Array()));
 	ClassDB::bind_method(D_METHOD("texture_create_shared", "view", "with_texture"), &RenderingDevice::_texture_create_shared);
 	ClassDB::bind_method(D_METHOD("texture_create_shared_from_slice", "view", "with_texture", "layer", "mipmap", "mipmaps", "slice_type", "layers"), &RenderingDevice::_texture_create_shared_from_slice, DEFVAL(1), DEFVAL(TEXTURE_SLICE_2D), DEFVAL(0));

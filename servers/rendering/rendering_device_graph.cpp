@@ -587,7 +587,10 @@ void RenderingDeviceGraph::_add_command_to_graph(ResourceTracker **p_resource_tr
 		bool resource_has_parent = resource_tracker->parent != nullptr;
 		ResourceTracker *search_tracker = resource_has_parent ? resource_tracker->parent : resource_tracker;
 		bool different_usage = resource_tracker->usage != new_resource_usage;
-		bool write_usage_after_write = (write_usage && search_tracker->write_command_or_list_index >= 0);
+		// Command indices are reset each frame, but a previous frame's write still
+		// needs a memory dependency when the resource keeps the same usage/layout.
+		bool previous_frame_write = !search_tracker->previous_frame_stages.is_empty() && _is_write_usage(resource_tracker->usage);
+		bool write_usage_after_write = write_usage && (search_tracker->write_command_or_list_index >= 0 || previous_frame_write);
 		if (different_usage || write_usage_after_write) {
 			// A barrier must be pushed if the usage is different of it's a write usage and there was already a command that wrote to this resource previously.
 			if (resource_tracker->texture_driver_id.id != 0) {
@@ -599,6 +602,10 @@ void RenderingDeviceGraph::_add_command_to_graph(ResourceTracker **p_resource_tr
 
 				_add_texture_barrier_to_command(resource_tracker->texture_driver_id, resource_tracker->usage_access, new_usage_access, resource_tracker->usage, new_resource_usage, resource_tracker->texture_subresources, command_transition_barriers, r_command->transition_barrier_index, r_command->transition_barrier_count);
 			} else if (resource_tracker->buffer_driver_id.id != 0) {
+				// Different read-only buffer usages (e.g. skinning input followed by
+				// a template copy) do not have a write dependency in the graph. Their
+				// barriers still need stages that support the tracked source access.
+				r_command->previous_stages = r_command->previous_stages | search_tracker->current_frame_stages;
 #if USE_BUFFER_BARRIERS
 				_add_buffer_barrier_to_command(resource_tracker->buffer_driver_id, resource_tracker->usage_access, new_usage_access, r_command->buffer_barrier_index, r_command->buffer_barrier_count);
 #endif

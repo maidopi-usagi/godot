@@ -4,6 +4,8 @@
 
 #VERSION_DEFINES
 
+#include "../gpu_scene_geometry_inc.glsl"
+
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 // Native 3D skinning/blend shapes write tightly packed float3 positions first.
@@ -22,15 +24,15 @@ layout(set = 0, binding = 2, std430) restrict writeonly buffer Vertices {
 }
 vertices;
 
-layout(set = 0, binding = 3, std430) restrict writeonly buffer Normals {
-	vec4 data[];
+layout(set = 0, binding = 3, std430) restrict writeonly buffer Triangles {
+	GPUSceneTriangle data[];
 }
-normals;
+triangles;
 
 layout(push_constant, std430) uniform Params {
 	uint triangle_offset;
 	uint triangle_count;
-	uint normal_offset;
+	uint triangle_data_offset;
 	uint pad;
 }
 params;
@@ -50,8 +52,7 @@ void main() {
 		vertices.data[target + 1] = points[corner].y;
 		vertices.data[target + 2] = points[corner].z;
 	}
-	vec3 normal = cross(points[1] - points[0], points[2] - points[0]);
-	float length_squared = dot(normal, normal);
 	// A pose can collapse a triangle; keep its primitive/material index stable.
-	normals.data[params.normal_offset + triangle] = vec4(length_squared > 0.0 ? normal * inversesqrt(length_squared) : vec3(0.0, 0.0, 1.0), 0.0);
+	triangles.data[params.triangle_data_offset + triangle].edge1 = vec4(points[1] - points[0], 0.0);
+	triangles.data[params.triangle_data_offset + triangle].edge2 = vec4(points[2] - points[0], 0.0);
 }

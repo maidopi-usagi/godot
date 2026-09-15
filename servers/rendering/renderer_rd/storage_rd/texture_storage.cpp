@@ -1639,6 +1639,7 @@ void TextureStorage::_texture_2d_update(RID p_texture, const Ref<Image> &p_image
 	Ref<Image> validated = _validate_texture_format(p_image, f);
 
 	RD::get_singleton()->texture_update(tex->rd_texture, p_layer, validated->get_data());
+	tex->data_version++;
 }
 
 void TextureStorage::texture_2d_update(RID p_texture, const Ref<Image> &p_image, int p_layer) {
@@ -2052,7 +2053,9 @@ void TextureStorage::texture_replace(RID p_texture, RID p_by_texture) {
 
 	RID streaming_state = tex->streaming_state;
 
+	const uint64_t next_version = tex->data_version + 1;
 	*tex = *by_tex;
+	tex->data_version = next_version;
 
 	tex->streaming_state = streaming_state; // restore streaming state
 
@@ -2100,7 +2103,9 @@ void TextureStorage::texture_replace_compatible(RID p_texture, RID p_by_texture)
 	Vector<RID> proxies_to_update = tex->proxies;
 	Vector<RID> proxies_to_redirect = by_tex->proxies;
 
+	const uint64_t next_version = tex->data_version + 1;
 	*tex = *by_tex;
+	tex->data_version = next_version;
 
 	tex->proxies = proxies_to_update; //restore proxies, so they can be updated
 

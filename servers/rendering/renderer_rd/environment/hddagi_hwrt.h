@@ -35,6 +35,7 @@
 #include "servers/rendering/renderer_geometry_instance.h"
 #include "servers/rendering/renderer_rd/shaders/environment/hddagi_hwrt_deform.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/hddagi_hwrt_material.glsl.gen.h"
+#include "servers/rendering/renderer_rd/storage_rd/gpu_scene_material_storage.h"
 #include "servers/rendering/rendering_device.h"
 
 class RenderSceneDataRD;
@@ -92,13 +93,18 @@ class HDDAGIHwrt {
 		uint64_t last_seen = 0;
 		uint64_t bytes = 0;
 	};
+	struct TriangleData {
+		float edge1[4] = {};
+		float edge2[4] = {};
+	};
+	static_assert(sizeof(TriangleData) == 32);
 	struct Mesh {
 		MeshKey family; // Surface identity, without a selected LOD.
 		RID vertices;
 		RID blas;
 		RID material_mesh;
 		RID triangle_indices;
-		RID normal_template;
+		RID triangle_template;
 		uint32_t triangle_count = 0;
 		struct DeformSurface {
 			uint32_t surface = 0;
@@ -108,7 +114,8 @@ class HDDAGIHwrt {
 		LocalVector<DeformSurface> deform_surfaces;
 		Size2i material_size;
 		Vector<int> material_surfaces;
-		Range normals; // One vec4 per triangle, in object space.
+		Range triangles; // Two vec4 edges per triangle, in object space.
+		Range uvs; // Three vec2 UVs per triangle, in BLAS primitive order.
 		uint64_t bytes = 0; // Geometry/cache estimate for the inactive retention budget.
 		uint64_t version = 0;
 		uint64_t last_seen = 0;
@@ -124,6 +131,8 @@ class HDDAGIHwrt {
 	struct Material {
 		MaterialKey family;
 		Range samples; // Ten valid 4x4 chart samples: albedo/metallic + RGB9E5 emission.
+		RID source_material;
+		uint32_t gpu_scene_index = GPUSceneMaterialStorage::INVALID_INDEX;
 		uint64_t last_seen = 0;
 		bool valid = false;
 	};
@@ -132,7 +141,7 @@ class HDDAGIHwrt {
 		RID mesh_instance;
 		RID vertices;
 		RID blas;
-		Range normals;
+		Range triangles;
 		uint64_t version = 0;
 		uint64_t mesh_version = 0;
 		uint64_t last_seen = 0;
@@ -153,8 +162,10 @@ class HDDAGIHwrt {
 		uint64_t deformation_version = 0;
 		uint64_t surface_version = 0;
 		uint32_t metadata_index = 0;
-		uint32_t normal_offset = 0;
+		uint32_t triangle_offset = 0;
 		uint32_t material_offset = 0;
+		uint32_t uv_offset = 0;
+		uint32_t gpu_scene_index = GPUSceneMaterialStorage::INVALID_INDEX;
 		bool same_geometry(const Instance &p_other) const {
 			return key == p_other.key && blas == p_other.blas && transform == p_other.transform && mesh_version == p_other.mesh_version && deformation_version == p_other.deformation_version;
 		}
@@ -192,7 +203,16 @@ class HDDAGIHwrt {
 	float lod_threshold = 0.0f;
 	bool lod_orthogonal = false;
 	RID tlas;
-	Pool normal_pool;
+	Pool triangle_pool;
+	Pool uv_pool;
+	GPUSceneMaterialStorage gpu_scene_materials;
+	ShaderRD *program_shader = nullptr;
+	RID program_shader_version;
+	Vector<RID> program_shaders;
+	Vector<RID> program_pipelines;
+	String compiled_program_source;
+	String failed_program_source;
+	void _free_program_pipelines();
 	RID instance_buffer;
 	Pool material_pool;
 	HddagiHwrtMaterialShaderRD material_shader;
@@ -211,7 +231,9 @@ class HDDAGIHwrt {
 		float exposure = 1.0f;
 		float max_distance = 100.0f;
 		float bounce_feedback = 0.0f;
+		float animation[4] = {}; // Scene time, sampler bias, device bias limit, padding.
 	} scene_data;
+	static_assert(sizeof(SceneData) == 32);
 	uint64_t scene_version = 0;
 	uint64_t surface_version = 0;
 	uint64_t lighting_version = 0;
@@ -229,7 +251,7 @@ class HDDAGIHwrt {
 
 	const SourceSurface *_get_source_surface(RID p_mesh, int p_surface);
 	bool _prepare_lods(RenderGeometryInstanceBase *p_instance, const CachedInstance &p_cached, uint64_t p_version);
-	bool _create_mesh(const MeshKey &p_key, Mesh &r_mesh, bool p_create_geometry = true);
+	bool _create_mesh(const MeshKey &p_key, Mesh &r_mesh, bool p_create_geometry = true, bool p_create_material_geometry = true);
 	bool _update_deformed(RID p_mesh_instance, const Mesh &p_mesh, DeformedMesh &r_deformed, bool &r_changed);
 	MaterialKey _material_key(RenderGeometryInstanceBase *p_instance, int p_surface) const;
 	bool _material_is_current(const MaterialKey &p_key) const;
@@ -247,7 +269,12 @@ public:
 	static bool is_supported();
 	void update(const PagedArray<RenderGeometryInstance *> *p_instances, const RenderSceneDataRD *p_scene_data);
 	void update_lights(RID p_lights_buffer, uint32_t p_light_count, float p_exposure, float p_bounce_feedback, uint32_t p_lighting_signature);
-	void append_uniforms(LocalVector<RD::Uniform> &r_uniforms) const;
+	void update_sampling(float p_mipmap_bias);
+	void append_uniforms(LocalVector<RD::Uniform> &r_uniforms, const MaterialStorage::Samplers &p_samplers) const;
+	void bind_texture_table(RD::ComputeListID p_list) const;
+	bool update_program_pipelines(ShaderRD &p_shader, const RID *p_base_shaders, const RID *p_base_pipelines, int p_first_mode, int p_mode_count);
+	const RID *get_program_shaders() const { return program_shaders.is_empty() ? nullptr : program_shaders.ptr(); }
+	const RID *get_program_pipelines() const { return program_pipelines.is_empty() ? nullptr : program_pipelines.ptr(); }
 	const AABB &get_bounds() const { return bounds; }
 	float get_max_distance() const { return scene_data.max_distance; }
 	uint64_t get_scene_version() const { return scene_version; }

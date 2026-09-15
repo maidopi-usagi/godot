@@ -2245,6 +2245,9 @@ void MaterialStorage::shader_set_code(RID p_shader, const String &p_code) {
 	MutexLock lock(*shader->mutex);
 
 	shader->code = p_code;
+	shader->material_profile = RenderingServerTypes::ShaderMaterialProfile();
+	shader->raytracing_material = RayTracingMaterialCompiler::Result();
+	shader->raytracing_material_checked = false;
 	String mode_string = ShaderLanguage::get_shader_type(p_code);
 
 	ShaderType new_type;
@@ -2315,6 +2318,16 @@ void MaterialStorage::shader_set_code(RID p_shader, const String &p_code) {
 	for (Material *E : shader->owners) {
 		Material *material = E;
 		material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
+		_material_queue_update(material, true, true);
+	}
+}
+
+void MaterialStorage::shader_set_material_profile(RID p_shader, const RenderingServerTypes::ShaderMaterialProfile &p_profile) {
+	Shader *shader = shader_owner.get_or_null(p_shader);
+	ERR_FAIL_NULL(shader);
+	MutexLock lock(*shader->mutex);
+	shader->material_profile = p_profile;
+	for (Material *material : shader->owners) {
 		_material_queue_update(material, true, true);
 	}
 }
@@ -2575,6 +2588,111 @@ MaterialStorage::ShaderData *MaterialStorage::material_get_shader_data(RID p_mat
 uint64_t MaterialStorage::material_get_data_version(RID p_material) const {
 	const Material *material = material_owner.get_or_null(p_material);
 	return material ? material->data_version : 0;
+}
+
+bool MaterialStorage::material_get_raytracing_data(RID p_material, RayTracingMaterialData &r_data) const {
+	r_data = RayTracingMaterialData();
+	if (p_material.is_null()) {
+		return true;
+	}
+	const Material *material = material_owner.get_or_null(p_material);
+	if (!material || !material->shader || !material->shader->data || material->next_pass.is_valid()) {
+		return false;
+	}
+	const RenderingServerTypes::ShaderMaterialProfile &profile = material->shader->material_profile;
+	if (profile.type == RenderingServerTypes::ShaderMaterialProfile::CUSTOM) {
+		if (material->shader_type != SHADER_TYPE_3D || !material->data) {
+			return false;
+		}
+		MutexLock lock(*material->shader->mutex);
+		if (!material->shader->raytracing_material_checked) {
+			material->shader->raytracing_material = RayTracingMaterialCompiler::compile(material->shader->code, material->shader->path_hint);
+			material->shader->raytracing_material_checked = true;
+		}
+		const RayTracingMaterialCompiler::Result &program = material->shader->raytracing_material;
+		if (!program.is_valid()) {
+			return false;
+		}
+		r_data.program_code = program.code;
+		r_data.program_function = program.function;
+		r_data.program_uses_time = program.uses_time;
+		r_data.program_texture_word = program.uniform_size / sizeof(uint32_t);
+		for (const ShaderCompiler::GeneratedCode::Texture &texture : program.textures) {
+			const Variant *parameter = material->params.getptr(texture.name);
+			const HashMap<int, RID> *defaults = material->shader->default_texture_parameter.getptr(texture.name);
+			Array array;
+			if (parameter && parameter->is_array()) {
+				array = *parameter;
+			}
+			const uint32_t filter = texture.filter == ShaderLanguage::FILTER_DEFAULT ? ShaderLanguage::FILTER_LINEAR_MIPMAP : texture.filter;
+			const bool repeat = texture.repeat != ShaderLanguage::REPEAT_DISABLE;
+			for (int element = 0; element < MAX(1, texture.array_size); element++) {
+				RayTracingMaterialData::Texture source;
+				if (parameter && parameter->is_array()) {
+					if (element < array.size()) {
+						source.texture = array[element];
+					} else if (defaults && defaults->has(element)) {
+						source.texture = (*defaults)[element];
+					}
+				} else if (parameter && element == 0) {
+					source.texture = *parameter;
+				} else if (defaults && defaults->has(element)) {
+					source.texture = (*defaults)[element];
+				}
+				source.fallback = material->data->get_default_texture_id(texture.type, texture.hint);
+				source.srgb = texture.use_color;
+				source.sampler = (filter & 1) + uint32_t(repeat) * 2 + (filter / 2) * 4;
+				r_data.program_textures.push_back(source);
+			}
+		}
+		const uint64_t parameter_size = uint64_t(program.uniform_size) + uint64_t(r_data.program_textures.size()) * 2 * sizeof(uint32_t);
+		ERR_FAIL_COND_V(parameter_size > UINT32_MAX, false);
+		if (parameter_size) {
+			r_data.program_parameters.resize(parameter_size);
+			memset(r_data.program_parameters.ptrw(), 0, parameter_size);
+		}
+		if (program.uniform_size) {
+			material->data->update_uniform_buffer(program.uniforms, program.uniform_offsets.ptr(), material->params, r_data.program_parameters.ptrw(), program.uniform_size, true);
+		}
+		return true;
+	}
+	if (!material->shader->data->supports_hddagi_hwrt()) {
+		return false;
+	}
+	auto parameter = [&](const StringName &p_name, const Variant &p_default) -> Variant {
+		const Variant *value = material->params.getptr(p_name);
+		if (value) {
+			return *value;
+		}
+		if (p_default.get_type() == Variant::RID) {
+			const HashMap<int, RID> *defaults = material->shader->default_texture_parameter.getptr(p_name);
+			return defaults && defaults->has(0) ? Variant((*defaults)[0]) : p_default;
+		}
+		Variant shader_default = material->shader->data->get_default_parameter(p_name);
+		return shader_default.get_type() == Variant::NIL ? p_default : shader_default;
+	};
+	r_data.albedo = Color(parameter(SNAME("albedo"), Color(1, 1, 1, 1))).srgb_to_linear();
+	r_data.uv_scale = parameter(SNAME("uv1_scale"), Vector3(1, 1, 1));
+	r_data.uv_offset = parameter(SNAME("uv1_offset"), Vector3());
+	r_data.textures[0] = parameter(SNAME("texture_albedo"), RID());
+	if (profile.type == RenderingServerTypes::ShaderMaterialProfile::ORM) {
+		r_data.metallic = 1.0f;
+		r_data.metallic_channel = Vector4(0, 0, 1, 0);
+		r_data.textures[1] = parameter(SNAME("texture_orm"), RID());
+	} else {
+		r_data.metallic = parameter(SNAME("metallic"), 0.0f);
+		r_data.metallic_channel = parameter(SNAME("metallic_texture_channel"), Vector4(1, 0, 0, 0));
+		r_data.textures[1] = parameter(SNAME("texture_metallic"), RID());
+	}
+	if (profile.emission_enabled) {
+		r_data.emission = Color(parameter(SNAME("emission"), Color(0, 0, 0, 1))).srgb_to_linear();
+		r_data.emission_energy = parameter(SNAME("emission_energy"), 1.0f);
+		r_data.textures[2] = parameter(SNAME("texture_emission"), RID());
+		r_data.emission_multiply = profile.emission_multiply;
+	}
+	const uint32_t filter = profile.texture_filter - RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST;
+	r_data.sampler = (filter & 1) + uint32_t(profile.repeat) * 2 + (filter / 2) * 4;
+	return true;
 }
 
 void MaterialStorage::material_set_param(RID p_material, const StringName &p_param, const Variant &p_value) {

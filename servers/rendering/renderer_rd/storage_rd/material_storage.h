@@ -33,6 +33,7 @@
 #include "core/templates/rid_owner.h"
 #include "core/templates/self_list.h"
 #include "servers/rendering/renderer_rd/pipeline_cache_rd.h"
+#include "servers/rendering/renderer_rd/storage_rd/raytracing_material_compiler.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/rendering_server_types.h"
 #include "servers/rendering/shader_compiler.h"
@@ -273,6 +274,9 @@ private:
 		String code;
 		String path_hint;
 		ShaderType type;
+		RenderingServerTypes::ShaderMaterialProfile material_profile;
+		RayTracingMaterialCompiler::Result raytracing_material;
+		bool raytracing_material_checked = false;
 		HashMap<StringName, HashMap<int, RID>> default_texture_parameter;
 		HashSet<Material *> owners;
 		bool embedded = false;
@@ -469,6 +473,7 @@ public:
 	virtual void shader_free(RID p_rid) override;
 
 	virtual void shader_set_code(RID p_shader, const String &p_code) override;
+	virtual void shader_set_material_profile(RID p_shader, const RenderingServerTypes::ShaderMaterialProfile &p_profile) override;
 	virtual void shader_set_path_hint(RID p_shader, const String &p_path) override;
 	virtual String shader_get_code(RID p_shader) const override;
 	virtual void get_shader_parameter_list(RID p_shader, List<PropertyInfo> *p_param_list) const override;
@@ -495,6 +500,31 @@ public:
 	virtual void material_initialize(RID p_material) override;
 	virtual void material_free(RID p_rid) override;
 	uint64_t material_get_data_version(RID p_material) const;
+	struct RayTracingMaterialData {
+		struct Texture {
+			RID texture; // RenderingServer texture; keep resolving native views.
+			RID fallback; // RD default selected by the shader's texture hint.
+			bool srgb = false;
+			uint32_t sampler = 0;
+		};
+		String program_code;
+		String program_function;
+		Vector<uint8_t> program_parameters;
+		Vector<Texture> program_textures;
+		uint32_t program_texture_word = 0;
+		bool program_uses_time = false;
+		Color albedo = Color(1, 1, 1, 1);
+		Color emission = Color(0, 0, 0, 1);
+		float emission_energy = 0.0f;
+		float metallic = 0.0f;
+		Vector4 metallic_channel = Vector4(1, 0, 0, 0);
+		Vector3 uv_scale = Vector3(1, 1, 1);
+		Vector3 uv_offset;
+		RID textures[3]; // RenderingServer textures: albedo, metallic/ORM, emission.
+		uint32_t sampler = 7; // Nearest/linear and clamp/repeat, in no-mip/mip/anisotropic groups.
+		bool emission_multiply = false;
+	};
+	bool material_get_raytracing_data(RID p_material, RayTracingMaterialData &r_data) const;
 
 	virtual void material_set_shader(RID p_material, RID p_shader) override;
 	ShaderData *material_get_shader_data(RID p_material);

@@ -109,6 +109,11 @@ class RenderingDeviceDriverVulkan : public RenderingDeviceDriver {
 		bool validation = false;
 	};
 
+	bool texture_table_support = false;
+	VkPhysicalDeviceDescriptorIndexingProperties texture_table_properties = {};
+	uint64_t texture_table_descriptor_count = 0;
+	VkDescriptorSetLayout _texture_table_create_layout(uint32_t p_capacity);
+
 	struct DeviceFunctions {
 		PFN_vkCreateSwapchainKHR CreateSwapchainKHR = nullptr;
 		PFN_vkDestroySwapchainKHR DestroySwapchainKHR = nullptr;
@@ -314,6 +319,7 @@ public:
 	virtual SamplerID sampler_create(const SamplerState &p_state) final override;
 	virtual void sampler_free(SamplerID p_sampler) final override;
 	virtual bool sampler_is_format_supported_for_filter(DataFormat p_format, SamplerFilter p_filter) override final;
+	virtual float sampler_get_max_lod_bias() const override final { return physical_device_properties.limits.maxSamplerLodBias; }
 
 	/**********************/
 	/**** VERTEX ARRAY ****/
@@ -548,6 +554,8 @@ private:
 		VkDescriptorSet vk_descriptor_set = VK_NULL_HANDLE;
 		VkDescriptorPool vk_descriptor_pool = VK_NULL_HANDLE;
 		VkDescriptorPool vk_linear_descriptor_pool = VK_NULL_HANDLE;
+		uint32_t texture_table_capacity = 0; // Nonzero for a dedicated table pool.
+		VkDescriptorSetLayout texture_table_layout = VK_NULL_HANDLE;
 		DescriptorSetPools::Iterator pool_sets_it;
 		TightLocalVector<const BufferInfo *, uint32_t> dynamic_buffers;
 	};
@@ -559,6 +567,8 @@ public:
 	virtual void linear_uniform_set_pools_reset(int p_linear_pool_index) override final;
 	virtual void uniform_set_free(UniformSetID p_uniform_set) override final;
 	virtual bool uniform_sets_have_linear_pools() const override final;
+	virtual UniformSetID texture_table_create(uint32_t p_capacity) override final;
+	virtual void texture_table_update(UniformSetID p_table, VectorView<TextureTableUpdate> p_updates) override final;
 	virtual uint32_t uniform_sets_get_dynamic_offsets(VectorView<UniformSetID> p_uniform_sets, ShaderID p_shader, uint32_t p_first_set_index, uint32_t p_set_count) const override final;
 
 	// ----- COMMANDS -----

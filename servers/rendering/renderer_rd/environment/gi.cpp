@@ -3409,7 +3409,15 @@ void GI::init(SkyRD *p_sky) {
 		Vector<ShaderRD::VariantDefine> screen_probe_variants;
 		for (int i = 0; i < screen_probe_modes.size(); i++) {
 			bool hwrt = i >= HDDAGIShader::SCREEN_PROBE_MODE_TRACE_HWRT;
-			screen_probe_variants.push_back(ShaderRD::VariantDefine(hwrt ? 1 : 0, screen_probe_modes[i], !hwrt));
+			ShaderRD::VariantDefine variant(hwrt ? 1 : 0, screen_probe_modes[i], !hwrt);
+			if (hwrt && GPUSceneMaterialStorage::get_texture_capacity()) {
+				variant.text = (screen_probe_modes[i] + "\n#define USE_BINDLESS_HWRT\n").utf8();
+				RD::ShaderTextureTable table;
+				table.set = GPUSceneMaterialStorage::TEXTURE_SET;
+				table.capacity = GPUSceneMaterialStorage::get_texture_capacity();
+				variant.texture_tables.push_back(table);
+			}
+			screen_probe_variants.push_back(variant);
 		}
 		hddagi_shader.screen_probe.initialize(screen_probe_variants, screen_probe_defines);
 		if (!HDDAGIHwrt::is_supported()) {

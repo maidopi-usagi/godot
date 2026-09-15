@@ -1,6 +1,8 @@
 #ifndef HDDAGI_SCREEN_PROBE_HWRT_INC_GLSL
 #define HDDAGI_SCREEN_PROBE_HWRT_INC_GLSL
 
+#include "../gpu_scene_geometry_inc.glsl"
+
 #ifdef MODE_SPECULAR_TRACE
 vec3 hwrt_specular_direct_radiance = vec3(0.0);
 vec3 hwrt_specular_albedo = vec3(0.0);
@@ -8,13 +10,13 @@ vec3 hwrt_specular_albedo = vec3(0.0);
 
 layout(set = 0, binding = 45) uniform accelerationStructureEXT screen_probe_hwrt_scene;
 layout(set = 0, binding = 46, std430) restrict readonly buffer HWRTInstances {
-	uvec4 data[]; // Triangle-normal offset, material sample offset, reserved.
+	uvec4 data[]; // Two records: triangle/sample offsets + surface version; UV offset + material index.
 }
 screen_probe_hwrt_instances;
-layout(set = 0, binding = 47, std430) restrict readonly buffer HWRTNormals {
-	vec4 data[];
+layout(set = 0, binding = 47, std430) restrict readonly buffer HWRTTriangles {
+	GPUSceneTriangle data[];
 }
-screen_probe_hwrt_normals;
+screen_probe_hwrt_triangles;
 
 layout(set = 0, binding = 48, std430) restrict readonly buffer HWRTMaterials {
 	uvec2 data[];
@@ -45,14 +47,44 @@ layout(set = 0, binding = 50, std140) uniform HWRTScene {
 	float exposure;
 	float max_distance;
 	float bounce_feedback;
+	vec4 animation;
 }
 hwrt_scene;
 layout(set = 0, binding = 51) uniform texture2D hwrt_area_light_atlas;
 layout(set = 0, binding = 52) uniform sampler hwrt_area_light_sampler;
 
+#ifdef USE_BINDLESS_HWRT
+layout(set = 4, binding = 0) uniform texture2D gpu_scene_textures[];
+layout(set = 0, binding = 56) uniform sampler gpu_scene_samplers[12];
+#include "../gpu_scene_material_inc.glsl"
+layout(set = 0, binding = 54, std430) restrict readonly buffer GPUSceneMaterials {
+	GPUSceneMaterial data[];
+}
+gpu_scene_materials;
+layout(set = 0, binding = 55, std430) restrict readonly buffer HWRTUVs {
+	vec2 data[];
+}
+screen_probe_hwrt_uvs;
+layout(set = 0, binding = 57, std430) restrict readonly buffer GPUSceneCustomUniforms {
+	uint data[];
+}
+gpu_scene_custom_uniforms;
+
+#CODE : GPU_SCENE_CUSTOM
+#endif
+
 #include "../area_lights_inc.glsl"
 
 #ifndef MODE_IRRADIANCE_CACHE_UPDATE_MULTIBOUNCE
+vec2 hwrt_camera_ray_cone(vec3 origin_view) {
+	bool orthogonal = abs(scene_data.projection[params.view_index][3][3]) > 0.5;
+	vec2 pixel_size = 2.0 * abs(vec2(scene_data.inv_projection[params.view_index][0][0], scene_data.inv_projection[params.view_index][1][1])) / vec2(params.gi_size);
+	float width = max(pixel_size.x, pixel_size.y) * (orthogonal ? 1.0 : abs(origin_view.z));
+	// Rough reflections already sample the GGX lobe. Widening this cone by the
+	// same roughness would filter the lobe twice and erase reflected detail.
+	return vec2(width, orthogonal ? 0.0 : width / max(length(origin_view), 1e-6));
+}
+
 vec3 hwrt_offset_reconstructed_origin(vec3 origin_world, vec3 normal_world) {
 	// Orthographic depth reconstruction subtracts values on the scale of the
 	// far plane. Its float rounding error can exceed the world-space ray epsilon.
@@ -93,7 +125,7 @@ void hwrt_material(uint base, vec2 barycentric, out vec3 albedo, out vec3 emissi
 	emission = max(e0 * weights.x + e1 * weights.y + e2 * weights.z, vec3(0.0));
 }
 
-bool hwrt_trace(vec3 origin_world, vec3 direction_world, vec3 receiver_normal_world, out vec3 position, out vec3 normal, out vec3 albedo, out vec3 emission, out uvec3 surface_key) {
+bool hwrt_trace(vec3 origin_world, vec3 direction_world, vec3 receiver_normal_world, vec2 ray_cone, out vec3 position, out vec3 normal, out vec3 albedo, out vec3 emission, out uvec3 surface_key) {
 	position = vec3(0.0);
 	normal = vec3(0.0, 0.0, 1.0);
 	albedo = vec3(0.0);
@@ -109,22 +141,47 @@ bool hwrt_trace(vec3 origin_world, vec3 direction_world, vec3 receiver_normal_wo
 		return false;
 	}
 	uint instance_index = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
-	uvec4 instance = screen_probe_hwrt_instances.data[instance_index];
+	uvec4 instance = screen_probe_hwrt_instances.data[instance_index * 2u];
 	surface_key = uvec3(instance_index, instance.zw);
 	uint primitive = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
-	vec3 normal_object = screen_probe_hwrt_normals.data[instance.x + primitive].xyz;
-	normal = normalize(transpose(mat3(rayQueryGetIntersectionWorldToObjectEXT(query, true))) * normal_object);
+	GPUSceneTriangle triangle = screen_probe_hwrt_triangles.data[instance.x + primitive];
+	mat3 object_to_world = mat3(rayQueryGetIntersectionObjectToWorldEXT(query, true));
+	vec3 edge1 = object_to_world * triangle.edge1.xyz;
+	vec3 edge2 = object_to_world * triangle.edge2.xyz;
+	normal = gpu_scene_triangle_normal(edge1, edge2);
 	if (dot(normal, direction_world) > 0.0) {
 		normal = -normal;
 	}
-	position = origin + direction_world * rayQueryGetIntersectionTEXT(query, true);
-	hwrt_material(instance.y + primitive * 10u, rayQueryGetIntersectionBarycentricsEXT(query, true), albedo, emission);
+	float hit_distance = rayQueryGetIntersectionTEXT(query, true);
+	position = origin + direction_world * hit_distance;
+	vec2 barycentric = rayQueryGetIntersectionBarycentricsEXT(query, true);
+#ifdef USE_BINDLESS_HWRT
+	uvec4 attributes = screen_probe_hwrt_instances.data[instance_index * 2u + 1u];
+	if (attributes.y != 0xffffffffu) {
+		uint vertex = attributes.x + primitive * 3u;
+		vec2 uv0 = screen_probe_hwrt_uvs.data[vertex];
+		vec2 uv1 = screen_probe_hwrt_uvs.data[vertex + 1u] - uv0;
+		vec2 uv2 = screen_probe_hwrt_uvs.data[vertex + 2u] - uv0;
+		vec2 uv = uv0 + uv1 * barycentric.x + uv2 * barycentric.y;
+		mat2 gradients = gpu_scene_ray_cone_gradients(edge1, edge2, uv1, uv2, direction_world, ray_cone.x + hit_distance * ray_cone.y);
+		GPUSceneMaterial material = gpu_scene_materials.data[attributes.y];
+#ifdef GPU_SCENE_CUSTOM_CODE_USED
+		if (!gpu_scene_evaluate_custom(material, uv, gradients, hwrt_scene.animation.xyz, albedo, emission))
+#endif
+		{
+			gpu_scene_sample_material(material, uv, gradients, albedo, emission);
+		}
+	} else
+#endif
+	{
+		hwrt_material(instance.y + primitive * 10u, barycentric, albedo, emission);
+	}
 	return true;
 }
 
-bool hwrt_trace(vec3 origin_world, vec3 direction_world, vec3 receiver_normal_world, out vec3 position, out vec3 normal, out vec3 albedo, out vec3 emission) {
+bool hwrt_trace(vec3 origin_world, vec3 direction_world, vec3 receiver_normal_world, vec2 ray_cone, out vec3 position, out vec3 normal, out vec3 albedo, out vec3 emission) {
 	uvec3 surface_key;
-	return hwrt_trace(origin_world, direction_world, receiver_normal_world, position, normal, albedo, emission, surface_key);
+	return hwrt_trace(origin_world, direction_world, receiver_normal_world, ray_cone, position, normal, albedo, emission, surface_key);
 }
 
 bool hwrt_shadowed(vec3 position, vec3 normal, vec3 direction, float distance) {
@@ -184,11 +241,11 @@ vec3 hwrt_direct_lighting(vec3 position, vec3 normal, vec3 albedo, vec3 emission
 
 // A cosine-weighted estimate of incident irradiance / PI, independent of the
 // root material. Recursive queries read only the previously resolved lighting.
-vec3 hwrt_sample_incident(vec3 position, vec3 normal, vec2 random_sample, bool request_surface) {
+vec3 hwrt_sample_incident(vec3 position, vec3 normal, vec2 ray_cone, vec2 random_sample, bool request_surface) {
 	vec3 direction = tangent_to_world(cosine_sample_hemisphere(random_sample), normal);
 	vec3 next_position, next_normal, next_albedo, next_emission;
 	uvec3 surface_key;
-	if (!hwrt_trace(position, direction, normal, next_position, next_normal, next_albedo, next_emission, surface_key)) {
+	if (!hwrt_trace(position, direction, normal, ray_cone, next_position, next_normal, next_albedo, next_emission, surface_key)) {
 		return sample_environment(transpose(mat3(scene_data.cam_transform)) * direction);
 	}
 	vec3 incoming = hwrt_direct_lighting(next_position, next_normal, next_albedo, next_emission);
@@ -205,7 +262,8 @@ vec3 hwrt_sample_incident(vec3 position, vec3 normal, vec2 random_sample, bool r
 			vec2 secondary_sample = sample_r2_sequence(seed, hddagi_irradiance_cache_params.control.x);
 			vec3 direction = tangent_to_world(cosine_sample_hemisphere(secondary_sample), next_normal);
 			vec3 fallback_position, fallback_normal, fallback_albedo, fallback_emission;
-			if (hwrt_trace(next_position, direction, next_normal, fallback_position, fallback_normal, fallback_albedo, fallback_emission)) {
+			vec2 next_cone = vec2(ray_cone.x + length(next_position - position) * ray_cone.y, ray_cone.y);
+			if (hwrt_trace(next_position, direction, next_normal, next_cone, fallback_position, fallback_normal, fallback_albedo, fallback_emission)) {
 				next_incident = hwrt_direct_lighting(fallback_position, fallback_normal, fallback_albedo, fallback_emission);
 			} else {
 				next_incident = sample_environment(transpose(mat3(scene_data.cam_transform)) * direction);
@@ -236,13 +294,13 @@ void irradiance_cache_update_multibounce_hwrt() {
 	vec3 incident = vec3(0.0);
 	for (uint sample_index = 0u; sample_index < sample_count; sample_index++) {
 		vec2 random_sample = sample_r2_sequence(uvec2(entry_index, root.generation), (frame / stride) * sample_count + sample_index);
-		incident += hwrt_sample_incident(root.sample_position, root.sample_normal, random_sample, sample_index == 0u);
+		incident += hwrt_sample_incident(root.sample_position, root.sample_normal, vec2(root.cell_size, 0.0), random_sample, sample_index == 0u);
 	}
 	incident = min(incident / float(sample_count), vec3(HDDAGI_IRRADIANCE_CACHE_RADIANCE_CLAMP));
 	hddagi_irradiance_cache_submit(root, root.sample_position, root.sample_normal, incident, sample_count);
 }
 #else
-bool trace_screen_probe_hwrt(vec3 origin_world, vec3 direction_world, vec3 receiver_normal_world,
+bool trace_screen_probe_hwrt(vec3 origin_world, vec3 direction_world, vec3 receiver_normal_world, vec2 ray_cone,
 		out vec3 radiance, out int hit_cascade, out vec3 endpoint_world, out vec3 endpoint_normal_world) {
 	radiance = vec3(0.0);
 	hit_cascade = -1;
@@ -251,7 +309,7 @@ bool trace_screen_probe_hwrt(vec3 origin_world, vec3 direction_world, vec3 recei
 	vec3 albedo;
 	vec3 emission;
 	uvec3 surface_key;
-	if (!hwrt_trace(origin_world, direction_world, receiver_normal_world, endpoint_world, endpoint_normal_world, albedo, emission, surface_key)) {
+	if (!hwrt_trace(origin_world, direction_world, receiver_normal_world, ray_cone, endpoint_world, endpoint_normal_world, albedo, emission, surface_key)) {
 		return false;
 	}
 	hit_cascade = HDDAGI_TRACE_HWRT_ENDPOINT;
@@ -287,7 +345,8 @@ bool trace_screen_probe_hwrt(vec3 origin_world, vec3 direction_world, vec3 recei
 		uvec2 seed = floatBitsToUint(origin_world.xy) ^ uvec2(floatBitsToUint(origin_world.z));
 		vec2 random_sample = sample_r2_sequence(seed, params.frame_index);
 #endif
-		vec3 incoming = hwrt_sample_incident(endpoint_world, endpoint_normal_world, random_sample, false);
+		vec2 next_cone = vec2(ray_cone.x + length(endpoint_world - origin_world) * ray_cone.y, ray_cone.y);
+		vec3 incoming = hwrt_sample_incident(endpoint_world, endpoint_normal_world, next_cone, random_sample, false);
 		radiance += hwrt_scene.bounce_feedback * albedo * incoming;
 #ifdef MODE_IRRADIANCE_CACHE_QUERY
 		if (cache_update && hddagi_irradiance_cache_should_submit_endpoint_sample(lookup)) {

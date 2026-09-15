@@ -4,6 +4,10 @@
 
 #VERSION_DEFINES
 
+#ifdef USE_BINDLESS_HWRT
+#extension GL_EXT_nonuniform_qualifier : require
+#endif
+
 #ifdef USE_HWRT
 #extension GL_EXT_ray_query : require
 #ifdef MODE_DIRECTIONAL_RESOLVE
@@ -344,6 +348,7 @@ layout(set = 0, binding = 7, std140) uniform SceneDataBuffer {
 layout(set = 0, binding = 8) uniform texture2D directional_base_ambient_input;
 layout(set = 0, binding = 13) uniform utexture2D directional_adaptive_tile_data_input;
 layout(set = 0, binding = 14) uniform texture2D directional_resolve_lighting_response_input;
+layout(set = 0, binding = 16) uniform sampler directional_tile_sampler;
 #endif
 #ifdef MODE_SVGF_PREPARE
 layout(rgba8, set = 0, binding = 6) uniform restrict writeonly image2D svgf_normal_roughness_output;
@@ -2484,7 +2489,7 @@ bool trace_hddagi_sample(ivec2 origin_position, float origin_depth, vec3 origin_
 
 #ifdef USE_HWRT
 	trace_origin_world = hwrt_offset_reconstructed_origin(trace_origin_world, trace_normal_world);
-	return trace_screen_probe_hwrt(trace_origin_world, trace_direction_world, trace_normal_world, r_radiance, r_hit_cascade, r_endpoint_world, r_endpoint_normal_world);
+	return trace_screen_probe_hwrt(trace_origin_world, trace_direction_world, trace_normal_world, hwrt_camera_ray_cone(origin_view), r_radiance, r_hit_cascade, r_endpoint_world, r_endpoint_normal_world);
 #else
 
 	if (trace_screen_detail(origin_view, ray_direction_view, detail_distance_limit, r_endpoint_world, r_endpoint_normal_world)) {
@@ -4632,7 +4637,7 @@ void screen_probe_resolve_main() {
 			float selected_receiver_weight = directional_receiver_weight(selected_probe, pixel_view_position, pixel_normal, pixel_dynamic, selected_screen_position);
 			float selected_weight = bilinear_weight * selected_receiver_weight;
 			if ((params.flags & SCREEN_PROBE_FLAG_DIRECTIONAL_ADAPTIVE) != 0u && selected_weight < SCREEN_PROBE_DIRECTIONAL_ADAPTIVE_SPAWN_COVERAGE) {
-				uvec2 adaptive_tile_data = texelFetch(usampler2D(directional_adaptive_tile_data_input, nearest_sampler), probe_position, 0).rg;
+				uvec2 adaptive_tile_data = texelFetch(usampler2D(directional_adaptive_tile_data_input, directional_tile_sampler), probe_position, 0).rg;
 				uint base_probe_total = uint(probe_count.x * probe_count.y);
 				vec2 probe_screen_extent = max(vec2(params.probe_size) * vec2(params.screen_size) / vec2(params.gi_size), vec2(1.0));
 				for (uint adaptive_offset = 0u; adaptive_offset < min(adaptive_tile_data.y, SCREEN_PROBE_DIRECTIONAL_ADAPTIVE_MAX_PER_TILE); adaptive_offset++) {
@@ -4731,7 +4736,7 @@ void screen_probe_resolve_main() {
 		vec3 direction_world = normalize(mat3(scene_data.cam_transform) * direction_view);
 		vec3 radiance, endpoint, endpoint_normal;
 		int hit_cascade;
-		if (trace_screen_probe_hwrt(origin_world, direction_world, pixel_world_normal, radiance, hit_cascade, endpoint, endpoint_normal)) {
+		if (trace_screen_probe_hwrt(origin_world, direction_world, pixel_world_normal, hwrt_camera_ray_cone(pixel_view_position), radiance, hit_cascade, endpoint, endpoint_normal)) {
 			resolved.a = min(length(endpoint - origin_world), SCREEN_PROBE_DIRECTIONAL_FP16_MAX);
 		} else {
 			radiance = sample_environment(direction_view);

@@ -42,7 +42,7 @@ class RenderingShaderContainer : public RefCounted {
 
 public:
 	static const uint32_t CONTAINER_MAGIC_NUMBER = 0x43535247;
-	static const uint32_t CONTAINER_VERSION = 2;
+	static const uint32_t CONTAINER_VERSION = 3;
 
 protected:
 	using RDC = RenderingDeviceCommons;
@@ -77,6 +77,7 @@ protected:
 		uint32_t stages = 0;
 		uint32_t length = 0; // Size of arrays (in total elements), or UBOs (in bytes * total elements).
 		uint32_t writable = 0;
+		uint32_t texture_table = 0;
 		RDC::TextureType texture_type = RDC::TEXTURE_TYPE_MAX;
 		RDC::DataFormat texture_format = RDC::DATA_FORMAT_MAX;
 
@@ -170,6 +171,7 @@ protected:
 		uint32_t binding = 0;
 		uint32_t length = 0; // Size of arrays (in total elements), or ubos (in bytes * total elements).
 		bool writable = false;
+		bool texture_table = false;
 		RDC::TextureType texture_type = RDC::TEXTURE_TYPE_MAX;
 		RDC::DataFormat texture_format = RDC::DATA_FORMAT_MAX;
 

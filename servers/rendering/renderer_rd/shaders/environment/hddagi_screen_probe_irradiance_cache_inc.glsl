@@ -179,8 +179,8 @@ bool hddagi_irradiance_cache_geometry_current(uint entry_index) {
 		return true;
 	}
 	uvec3 key = hddagi_irradiance_cache_surface_key(entry_index);
-	return key.x < uint(hddagi_irradiance_cache_geometry.length()) && any(notEqual(key.yz, uvec2(0u))) &&
-			all(equal(key.yz, hddagi_irradiance_cache_geometry[key.x].zw));
+	return key.x < uint(hddagi_irradiance_cache_geometry.length()) / 2u && any(notEqual(key.yz, uvec2(0u))) &&
+			all(equal(key.yz, hddagi_irradiance_cache_geometry[key.x * 2u].zw));
 }
 
 uint hddagi_irradiance_cache_training_stride() {

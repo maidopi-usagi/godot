@@ -45,6 +45,7 @@ public:
 		int group = 0;
 		CharString text;
 		bool default_enabled = true;
+		Vector<RD::ShaderTextureTable> texture_tables;
 		VariantDefine() {}
 		VariantDefine(int p_group, const String &p_text, bool p_default_enabled) {
 			group = p_group;
@@ -67,6 +68,7 @@ private:
 
 	Vector<RD::PipelineImmutableSampler> immutable_samplers;
 	Vector<uint64_t> dynamic_buffers;
+	Vector<RD::ShaderTextureTable> texture_tables;
 
 	struct Version {
 		Mutex *mutex = nullptr;
@@ -91,6 +93,7 @@ private:
 		bool dirty;
 		bool initialize_needed;
 		bool embedded;
+		int only_group = -1;
 	};
 
 	struct CompileData {
@@ -191,7 +194,7 @@ protected:
 	void setup_raytracing(const char *p_raygen_code, const char *p_any_hit_code, const char *p_closest_hit_code, const char *p_miss_code, const char *p_intersection_code, const char *p_name);
 
 public:
-	RID version_create(bool p_embedded = true);
+	RID version_create(bool p_embedded = true, int p_only_group = -1);
 
 	void version_set_code(RID p_version, const HashMap<String, String> &p_code, const String &p_uniforms, const String &p_vertex_globals, const String &p_fragment_globals, const Vector<String> &p_custom_defines);
 	void version_set_compute_code(RID p_version, const HashMap<String, String> &p_code, const String &p_uniforms, const String &p_compute_globals, const Vector<String> &p_custom_defines);
@@ -248,6 +251,7 @@ public:
 	const String &get_name() const;
 
 	const Vector<uint64_t> &get_dynamic_buffers() const;
+	Vector<RD::ShaderTextureTable> get_texture_tables(int p_variant) const;
 
 	static void shaders_embedded_set_lock();
 	static const ShaderVersionPairSet &shaders_embedded_set_get();
@@ -261,7 +265,7 @@ public:
 	static void set_shader_cache_save_compressed_zstd(bool p_enable);
 	static void set_shader_cache_save_debug(bool p_enable);
 
-	static Vector<RD::ShaderStageSPIRVData> compile_stages(const Vector<String> &p_stage_sources, const Vector<uint64_t> &p_dynamic_buffers);
+	static Vector<RD::ShaderStageSPIRVData> compile_stages(const Vector<String> &p_stage_sources, const Vector<uint64_t> &p_dynamic_buffers, const Vector<RD::ShaderTextureTable> &p_texture_tables = Vector<RD::ShaderTextureTable>());
 	static PackedByteArray save_shader_cache_bytes(const LocalVector<int> &p_variants, const Vector<Vector<uint8_t>> &p_variant_data);
 
 	Vector<String> version_build_variant_stage_sources(RID p_version, int p_variant);
@@ -279,8 +283,10 @@ public:
 	// uniform buffer and a dynamic uniform buffer. At shader level they're the same thing, but the PSO
 	// is created slightly differently and they're bound differently.
 	// On D3D12 the Root Layout is also different.
-	void initialize(const Vector<String> &p_variant_defines, const String &p_general_defines = "", const Vector<RD::PipelineImmutableSampler> &p_immutable_samplers = Vector<RD::PipelineImmutableSampler>(), const Vector<uint64_t> &p_dynamic_buffers = Vector<uint64_t>());
-	void initialize(const Vector<VariantDefine> &p_variant_defines, const String &p_general_defines = "", const Vector<RD::PipelineImmutableSampler> &p_immutable_samplers = Vector<RD::PipelineImmutableSampler>(), const Vector<uint64_t> &p_dynamic_buffers = Vector<uint64_t>());
+	// Texture tables reserve a compatible sampled-texture set across all variants,
+	// even when a variant does not statically access the table.
+	void initialize(const Vector<String> &p_variant_defines, const String &p_general_defines = "", const Vector<RD::PipelineImmutableSampler> &p_immutable_samplers = Vector<RD::PipelineImmutableSampler>(), const Vector<uint64_t> &p_dynamic_buffers = Vector<uint64_t>(), const Vector<RD::ShaderTextureTable> &p_texture_tables = Vector<RD::ShaderTextureTable>());
+	void initialize(const Vector<VariantDefine> &p_variant_defines, const String &p_general_defines = "", const Vector<RD::PipelineImmutableSampler> &p_immutable_samplers = Vector<RD::PipelineImmutableSampler>(), const Vector<uint64_t> &p_dynamic_buffers = Vector<uint64_t>(), const Vector<RD::ShaderTextureTable> &p_texture_tables = Vector<RD::ShaderTextureTable>());
 
 	virtual ~ShaderRD();
 };

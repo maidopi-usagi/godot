@@ -634,10 +634,21 @@ public:
 		SHADER_SPIRV_VERSION_1_6 = (1 << 16) | (6 << 8),
 	};
 
+	// A dedicated sampled-texture array at binding 0. The layout is shared by
+	// raster, compute and raytracing shaders, independently of shader lifetime.
+	struct ShaderTextureTable {
+		uint32_t set = 0;
+		uint32_t capacity = 0;
+		TextureType texture_type = TEXTURE_TYPE_2D;
+	};
+
+	static constexpr uint32_t TEXTURE_TABLE_SHADER_STAGES = (1U << SHADER_STAGE_MAX) - 1;
+
 	struct ShaderStageSPIRVData {
 		ShaderStage shader_stage = SHADER_STAGE_MAX;
 		Vector<uint8_t> spirv;
 		Vector<uint64_t> dynamic_buffers;
+		Vector<ShaderTextureTable> texture_tables;
 	};
 
 	/*********************/
@@ -1018,6 +1029,7 @@ public:
 		LIMIT_METALFX_TEMPORAL_SCALER_MIN_SCALE = 46,
 		LIMIT_METALFX_TEMPORAL_SCALER_MAX_SCALE,
 		LIMIT_MAX_SHADER_VARYINGS,
+		LIMIT_MAX_TEXTURE_TABLE_SIZE,
 	};
 
 	enum Features {
@@ -1038,6 +1050,7 @@ public:
 		SUPPORTS_HDR_OUTPUT,
 		SUPPORTS_RASTERIZATION_RATE_MAP,
 		SUPPORTS_GPU_MAPPABLE_BUFFER,
+		SUPPORTS_TEXTURE_TABLE,
 	};
 
 	enum SubgroupOperations {
@@ -1118,6 +1131,7 @@ public:
 	struct ShaderUniform {
 		UniformType type = UniformType::UNIFORM_TYPE_MAX;
 		bool writable = false;
+		bool texture_table = false;
 		uint32_t binding = 0;
 		BitField<ShaderStage> stages = {};
 		uint32_t length = 0; // Size of arrays (in total elements), or ubos (in bytes * total elements).
@@ -1125,7 +1139,7 @@ public:
 		DataFormat texture_format = DATA_FORMAT_MAX;
 
 		bool operator!=(const ShaderUniform &p_other) const {
-			return binding != p_other.binding || type != p_other.type || writable != p_other.writable || stages != p_other.stages || length != p_other.length || texture_type != p_other.texture_type || texture_format != p_other.texture_format;
+			return binding != p_other.binding || type != p_other.type || writable != p_other.writable || texture_table != p_other.texture_table || stages != p_other.stages || length != p_other.length || texture_type != p_other.texture_type || texture_format != p_other.texture_format;
 		}
 
 		bool operator<(const ShaderUniform &p_other) const {
@@ -1137,6 +1151,9 @@ public:
 			}
 			if (writable != p_other.writable) {
 				return writable < p_other.writable;
+			}
+			if (texture_table != p_other.texture_table) {
+				return texture_table < p_other.texture_table;
 			}
 			if (stages != p_other.stages) {
 				return stages < p_other.stages;

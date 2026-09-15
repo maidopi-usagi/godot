@@ -147,6 +147,7 @@ private:
 	class Texture {
 	public:
 		TextureType type;
+		uint64_t data_version = 1;
 		RSE::TextureLayeredType layered_type = RSE::TEXTURE_LAYERED_2D_ARRAY;
 		RSE::TextureDrawableFormat drawable_type = RSE::TEXTURE_DRAWABLE_FORMAT_RGBA8;
 
@@ -648,6 +649,19 @@ public:
 	virtual uint64_t texture_get_native_handle(RID p_texture, bool p_srgb = false) const override;
 
 	//internal usage
+	_FORCE_INLINE_ uint64_t texture_get_data_version(RID p_texture) const {
+		const Texture *texture = texture_owner.get_or_null(p_texture);
+		if (texture && texture->proxy_to.is_valid()) {
+			texture = texture_owner.get_or_null(texture->proxy_to);
+		}
+		return texture ? texture->data_version : 0;
+	}
+
+	_FORCE_INLINE_ bool texture_is_render_target(RID p_texture) const {
+		const Texture *texture = texture_owner.get_or_null(p_texture);
+		return texture && texture->render_target;
+	}
+
 	_FORCE_INLINE_ TextureType texture_get_type(RID p_texture) {
 		RendererRD::TextureStorage::Texture *tex = texture_owner.get_or_null(p_texture);
 		if (tex == nullptr) {

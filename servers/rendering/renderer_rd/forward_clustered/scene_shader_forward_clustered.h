@@ -309,7 +309,7 @@ public:
 		virtual bool supports_hddagi_hwrt() const override {
 			return is_valid() && !uses_alpha_pass() && !uses_alpha_clip && !uses_discard && !uses_vertex &&
 					!uses_position && !writes_modelview_or_projection && !uses_particle_trails && !wireframe &&
-					!uses_world_coordinates && !uses_hwrt_uncaptured_attributes && !unshaded;
+					!uses_world_coordinates && !uses_hwrt_uncaptured_attributes && !unshaded && !uses_time;
 		}
 
 		_FORCE_INLINE_ bool uses_shared_shadow_material() const {

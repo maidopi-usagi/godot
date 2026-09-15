@@ -2059,6 +2059,29 @@ void fragment() {)";
 	// other tasks in the WorkerThreadPool simultaneously creating materials, which
 	// may also hold the shared shader_map_mutex lock.
 	RID new_shader = RS::get_singleton()->shader_create_from_code(code);
+	// Publish an explicit material contract for ray hits. Features that change
+	// UVs or the diffuse/emission expressions keep the shader capture path.
+	RenderingServerTypes::ShaderMaterialProfile profile;
+	if (transparency == TRANSPARENCY_DISABLED && shading_mode == SHADING_MODE_PER_PIXEL &&
+			billboard_mode == BILLBOARD_DISABLED && !features[FEATURE_DETAIL] && !features[FEATURE_HEIGHT_MAPPING] &&
+			!features[FEATURE_REFRACTION] && !flags[FLAG_ALBEDO_FROM_VERTEX_COLOR] && !flags[FLAG_USE_POINT_SIZE] &&
+			!flags[FLAG_UV1_USE_TRIPLANAR] && !flags[FLAG_EMISSION_ON_UV2] &&
+			!flags[FLAG_ALBEDO_TEXTURE_FORCE_SRGB] && !flags[FLAG_ALBEDO_TEXTURE_MSDF]) {
+		profile.type = orm ? RenderingServerTypes::ShaderMaterialProfile::ORM : RenderingServerTypes::ShaderMaterialProfile::STANDARD;
+		profile.emission_enabled = features[FEATURE_EMISSION];
+		profile.emission_multiply = emission_op == EMISSION_OP_MULTIPLY;
+		static const RSE::CanvasItemTextureFilter filters[TEXTURE_FILTER_MAX] = {
+			RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST,
+			RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR,
+			RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST_WITH_MIPMAPS,
+			RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS,
+			RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST_WITH_MIPMAPS_ANISOTROPIC,
+			RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC,
+		};
+		profile.texture_filter = filters[texture_filter];
+		profile.repeat = flags[FLAG_USE_TEXTURE_REPEAT];
+	}
+	RS::get_singleton()->shader_set_material_profile(new_shader, profile);
 
 	MutexLock lock(shader_map_mutex);
 

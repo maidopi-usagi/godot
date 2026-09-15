@@ -670,8 +670,46 @@ Error RenderingShaderContainer::reflect_spirv(const String &p_shader_name, Span<
 		}
 	}
 
+	// Explicit table layouts survive unused-resource elimination and use the
+	// same stage visibility across compute, raster and raytracing pipelines.
+	HashMap<uint32_t, RDC::ShaderTextureTable> texture_tables;
+	for (const RDC::ShaderStageSPIRVData &stage : p_spirv) {
+		for (const RDC::ShaderTextureTable &table : stage.texture_tables) {
+			ERR_FAIL_COND_V_MSG(table.set >= RDC::MAX_UNIFORM_SETS || table.capacity == 0 || table.texture_type < 0 || table.texture_type >= RDC::TEXTURE_TYPE_MAX, FAILED, "Invalid texture table layout.");
+			if (texture_tables.has(table.set)) {
+				const RDC::ShaderTextureTable &existing = texture_tables[table.set];
+				ERR_FAIL_COND_V_MSG(existing.capacity != table.capacity || existing.texture_type != table.texture_type, FAILED, "Texture table layouts must match across shader stages.");
+			}
+			texture_tables[table.set] = table;
+		}
+	}
+	for (const KeyValue<uint32_t, RDC::ShaderTextureTable> &entry : texture_tables) {
+		const RDC::ShaderTextureTable &table = entry.value;
+		if (table.set >= uint32_t(reflection.uniform_sets.size())) {
+			reflection.uniform_sets.resize(table.set + 1);
+		}
+		ReflectDescriptorSet &set = reflection.uniform_sets[table.set];
+		ERR_FAIL_COND_V_MSG(set.size() > 1, FAILED, "A texture table set must contain only a sampled-texture array at binding 0.");
+		if (set.is_empty()) {
+			set.resize(1);
+		} else {
+			const ReflectUniform &uniform = set[0];
+			ERR_FAIL_COND_V_MSG(uniform.binding != 0 || uniform.type != RDC::UNIFORM_TYPE_TEXTURE || uniform.texture_type != table.texture_type || (uniform.length != 0 && uniform.length > table.capacity), FAILED, "Shader binding does not match its texture table layout.");
+		}
+		ReflectUniform &uniform = set[0];
+		uniform.type = RDC::UNIFORM_TYPE_TEXTURE;
+		uniform.binding = 0;
+		uniform.length = table.capacity;
+		uniform.texture_type = table.texture_type;
+		uniform.texture_table = true;
+		uniform.stages = RDC::TEXTURE_TABLE_SHADER_STAGES;
+	}
+
 	// Sort all uniform_sets by binding.
 	for (uint32_t i = 0; i < reflection.uniform_sets.size(); i++) {
+		for (const ReflectUniform &uniform : reflection.uniform_sets[i]) {
+			ERR_FAIL_COND_V_MSG(uniform.type == RDC::UNIFORM_TYPE_TEXTURE && uniform.length == 0, FAILED, "Runtime sampled-texture arrays require an explicit texture table layout.");
+		}
 		reflection.uniform_sets[i].sort();
 	}
 
@@ -709,6 +747,7 @@ void RenderingShaderContainer::set_from_shader_reflection(const ReflectShader &p
 			binding_data.stages = uint32_t(uniform.stages);
 			binding_data.length = uniform.length;
 			binding_data.writable = uint32_t(uniform.writable);
+			binding_data.texture_table = uint32_t(uniform.texture_table);
 			binding_data.texture_type = uniform.texture_type;
 			binding_data.texture_format = uniform.texture_format;
 			reflection_binding_set_uniforms_data.push_back(binding_data);
@@ -771,6 +810,7 @@ RenderingDeviceCommons::ShaderReflection RenderingShaderContainer::get_shader_re
 			RDC::ShaderUniform &uniform = uniform_set.ptrw()[j];
 			uniform.type = RDC::UniformType(binding.type);
 			uniform.writable = binding.writable;
+			uniform.texture_table = binding.texture_table;
 			uniform.length = binding.length;
 			uniform.binding = binding.binding;
 			uniform.stages = binding.stages;

@@ -49,6 +49,11 @@ public:
 	};
 
 	struct IdentifierActions {
+		// Optional lowering for built-ins that have a different execution model
+		// in a non-raster stage. Arguments are emitted with the normal renames.
+		HashSet<StringName> custom_functions;
+		String (*custom_function_call)(void *, const ShaderLanguage::OperatorNode *, const Vector<String> &) = nullptr;
+		void *custom_function_userdata = nullptr;
 		HashMap<StringName, Stage> entry_point_stages;
 
 		HashMap<StringName, Pair<int *, int>> render_mode_values;
@@ -93,6 +98,9 @@ public:
 	};
 
 	struct DefaultIdentifierActions {
+		String identifier_prefix;
+		HashMap<int, String> type_renames;
+		bool texture_uniforms_as_globals = false;
 		HashMap<StringName, String> renames;
 		HashMap<StringName, String> render_mode_defines;
 		HashMap<StringName, String> stencil_mode_defines;
@@ -112,6 +120,8 @@ public:
 
 private:
 	ShaderLanguage parser;
+	String _typestr(ShaderLanguage::DataType p_type) const;
+	String _mkid(const String &p_id) const;
 
 	String _get_sampler_name(ShaderLanguage::TextureFilter p_filter, ShaderLanguage::TextureRepeat p_repeat);
 
@@ -136,6 +146,7 @@ private:
 	static ShaderLanguage::DataType _get_global_shader_uniform_type(const StringName &p_name);
 
 public:
+	const ShaderLanguage::ShaderNode *get_parsed_shader() const { return shader; }
 	Error compile(RSE::ShaderMode p_mode, const String &p_code, IdentifierActions *p_actions, const String &p_path, GeneratedCode &r_gen_code);
 
 	void initialize(DefaultIdentifierActions p_actions);

@@ -731,6 +731,7 @@ private:
 public:
 	RID sampler_create(const SamplerState &p_state);
 	bool sampler_is_format_supported_for_filter(DataFormat p_format, SamplerFilter p_sampler_filter) const;
+	float sampler_get_max_lod_bias() const { return driver->sampler_get_max_lod_bias(); }
 
 	/**********************/
 	/**** VERTEX ARRAY ****/
@@ -1201,6 +1202,44 @@ public:
 	void uniform_set_set_invalidation_callback(RID p_uniform_set, InvalidationCallback p_callback, void *p_userdata);
 
 	bool uniform_sets_have_linear_pools() const;
+
+private:
+	struct TextureTable {
+		TextureType texture_type = TEXTURE_TYPE_2D;
+		uint32_t format = 0;
+		Vector<RID> textures;
+		HashMap<RID, HashSet<uint32_t>> texture_slots;
+		struct Frame {
+			RID uniform_set;
+			uint64_t last_used_frame = 0;
+			HashSet<uint32_t> dirty_slots;
+			LocalVector<RID> retired_uniform_sets;
+		};
+		LocalVector<Frame> frames;
+	};
+	RID_Owner<TextureTable, true> texture_table_owner;
+	HashMap<RID, HashSet<RID>> texture_table_users;
+	void _texture_table_set_texture(RID p_table, TextureTable &p_data, uint32_t p_index, RID p_texture);
+	void _texture_tables_replace_texture(RID p_old_texture, RID p_new_texture);
+	RID _texture_table_prepare(RID p_table, VectorView<uint32_t> p_used_indices, UniformSet &r_resources);
+	void _texture_table_free(RID p_table);
+	static void _bind_texture_table_methods();
+	RID _shader_create_from_spirv_with_texture_table(const Ref<RDShaderSPIRV> &p_spirv, RID p_table, uint32_t p_set);
+	void _draw_list_bind_texture_table(DrawListID p_list, RID p_table, uint32_t p_set, const Vector<int32_t> &p_used_indices);
+	void _compute_list_bind_texture_table(ComputeListID p_list, RID p_table, uint32_t p_set, const Vector<int32_t> &p_used_indices);
+	void _raytracing_list_bind_texture_table(RaytracingListID p_list, RID p_table, uint32_t p_set, const Vector<int32_t> &p_used_indices);
+
+public:
+	// Fixed-capacity, typed sampled-texture table at binding 0. Empty slots must
+	// never be accessed. Updates publish a new snapshot on the next bind.
+	RID texture_table_create(uint32_t p_capacity, TextureType p_texture_type = TEXTURE_TYPE_2D);
+	Error texture_table_set_texture(RID p_table, uint32_t p_index, RID p_texture);
+	RID texture_table_get_texture(RID p_table, uint32_t p_index);
+	// The declared indices must cover every slot potentially accessed by this
+	// list. Binding a table alone does not imply a read of every resident texture.
+	void draw_list_bind_texture_table(DrawListID p_list, RID p_table, uint32_t p_set, VectorView<uint32_t> p_used_indices);
+	void compute_list_bind_texture_table(ComputeListID p_list, RID p_table, uint32_t p_set, VectorView<uint32_t> p_used_indices);
+	void raytracing_list_bind_texture_table(RaytracingListID p_list, RID p_table, uint32_t p_set, VectorView<uint32_t> p_used_indices);
 
 	/*******************/
 	/**** PIPELINES ****/
